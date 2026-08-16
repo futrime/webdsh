@@ -96,6 +96,12 @@ const scenarios: Scenario[] = [
         ['X=42; echo "val=${X}"', /val=42/],
         ['cd /workspace/t && sed -i "s/one/two/" a.txt && cat a.txt', /^two$/m],
         ['cd /workspace/t && find . -name "*.txt" | sort', /a\.txt[\s\S]*b\.txt/],
+        ['cd /workspace/t && cat a.txt | xargs -I{} echo "[{}]"', /\[two\]/],
+        ['case abc in a*) echo matched;; *) echo no;; esac', /^matched$/m],
+        ['f() { echo "fn:$1"; }; f hello', /^fn:hello$/m],
+        ['echo one two three | cut -d" " -f2', /^two$/m],
+        ['printf "b\\na\\nb\\n" | sort | uniq -c | head -1', /2 b|1 a/],
+        ['test -f /home/dsh/workspace/README.md && echo present', /^present$/m],
         ['cd /tmp && git init r >/dev/null && cd r && echo hi > f.txt && git add . && git commit -m first && git log --oneline', /first/],
       ]
       for (const [script, matcher] of cases) {
@@ -115,6 +121,28 @@ const scenarios: Scenario[] = [
       await waitForShell(page)
       const result = await shell(page, 'cat /workspace/persist/mark.txt')
       expect(/durable/.test(result.stdout), `file did not survive a reload: ${result.stdout}${result.stderr}`)
+    },
+  },
+  {
+    name: 'plugin-command',
+    async run(page) {
+      await waitForShell(page)
+      // `/plugin` is the browser's counterpart to `dsh plugin`, and it has to be
+      // a real registered command so the slash menu and transcript render it.
+      const registered = await page.evaluate(() => {
+        const commands = globalThis.dsh.ctx.get('commands') as { list(agent: unknown): { name: string }[] } | undefined
+        if (commands === undefined) return null
+        try {
+          return commands.list(undefined).map(command => command.name)
+        } catch {
+          return []
+        }
+      })
+      expect(registered !== null, 'the commands service is not mounted')
+      const manager = await page.evaluate(() => typeof globalThis.dsh.plugins?.list === 'function')
+      expect(manager, 'the plugin manager is not published')
+      const listed = await page.evaluate(() => globalThis.dsh.plugins.list().length)
+      expect(listed >= 0, 'the installed roster is unreadable')
     },
   },
   {

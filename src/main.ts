@@ -12,10 +12,12 @@ import './node/install-globals.ts'
 import { attachHost, installVirtualNetwork } from './net/virtual-network.ts'
 import { installRequestRouter } from './net/service-worker.ts'
 import { bootHost } from './host/boot.ts'
-import { installPluginManager } from './plugins/manager.ts'
+import { disableAllPlugins, installedPluginNames, installPluginManager } from './plugins/manager.ts'
 import { installWindowApi } from './api.ts'
 import { SHELL_ENTRY, SHELL_STYLES } from './generated/shell-assets.ts'
-import { renderBootFailure, renderBootProgress } from './boot-screen.ts'
+import { renderBootFailure, renderBootProgress, type BootRecovery } from './boot-screen.ts'
+import { attachPersistence } from './vfs/persist.ts'
+import { volume } from './vfs/volume.ts'
 
 /** Load the shell's stylesheets, which its entry chunk expects to already be present. */
 function injectStyles(): void {
@@ -25,6 +27,42 @@ function injectStyles(): void {
     link.href = new URL(href, document.baseURI).href
     document.head.append(link)
   }
+}
+
+/**
+ * What the failure screen can offer.
+ *
+ * An installed plugin can break the composition in ways no shim prevents — a
+ * row id that collides with one this profile already defines, for instance —
+ * and the user needs a way back that does not also delete their files.
+ * @returns the recoveries, most conservative first.
+ */
+async function bootRecoveries(): Promise<BootRecovery[]> {
+  const recoveries: BootRecovery[] = []
+  try {
+    const installed = installedPluginNames()
+    if (installed.length > 0) {
+      recoveries.push({
+        label: 'Disable installed plugins',
+        description: `Turns off ${installed.join(', ')} and starts without them. Your files and sessions are kept.`,
+        run: async () => {
+          disableAllPlugins()
+          await (await attachPersistence(volume)).flush()
+        },
+      })
+    }
+  } catch {
+    // The roster is unreadable; the reset below is still offered.
+  }
+  recoveries.push({
+    label: 'Reset browser storage',
+    description: 'Erases the virtual filesystem, settings, and sessions for this site. This cannot be undone.',
+    run: async () => {
+      await (await attachPersistence(volume)).clear()
+      localStorage.clear()
+    },
+  })
+  return recoveries
 }
 
 /** Boot the host, publish the client graph, then hand the page to the shell. */
@@ -65,7 +103,7 @@ async function main(): Promise<void> {
     progress.done()
   } catch (error) {
     console.error('[dsh-web] boot failed:', error)
-    renderBootFailure(error)
+    renderBootFailure(error, await bootRecoveries())
   }
 }
 

@@ -175,6 +175,42 @@ async function main(): Promise<void> {
     })
     expect(/from-the-browser/.test(onDisk), `the agent's file edit did not land: ${onDisk}\n${editReply.slice(-1500)}`)
 
+    console.log('▶ durability')
+    // Sessions are the product; a reload has to keep them, their titles, and
+    // their transcripts. This is the check that the JSONL log and the virtual
+    // filesystem's write-behind mirror actually agree.
+    const titleBefore = await page.locator('body').innerText()
+    await page.evaluate(async () => { await globalThis.dsh.flush() })
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await waitForShell(page)
+    await page.waitForTimeout(3000)
+    await page.screenshot({ path: `${shots}-7-reloaded.png` })
+    const afterReload = await page.locator('body').innerText()
+    expect(/workspace/.test(afterReload), `the workspace is gone after a reload:\n${afterReload.slice(0, 800)}`)
+    // The sidebar lists the session by its generated title.
+    const sessionTitle = /^(.+)\s+now$/m.exec(titleBefore)?.[1]?.trim()
+    if (sessionTitle !== undefined && sessionTitle.length > 0) {
+      expect(afterReload.includes(sessionTitle), `session "${sessionTitle}" is not listed after a reload`)
+    }
+    const restored = await page.evaluate(async () => {
+      const result = await globalThis.dsh.shell('ls /home/dsh/.dsh/sessions/*/*/session.jsonl 2>&1 | head -3')
+      return result.stdout
+    })
+    expect(/session\.jsonl/.test(restored), `no session log survived the reload: ${restored}`)
+    // The log is append-only and its first line is the header the backend reads
+    // to recognise the session at all. Checking both catches a descriptor that
+    // writes at the wrong offset — which leaves a plausible-looking file whose
+    // header has been overwritten, so the session silently disappears.
+    const log = await page.evaluate(async () => {
+      const path = '/home/dsh/.dsh/sessions/*/*/session.jsonl'
+      return {
+        header: (await globalThis.dsh.shell(`head -1 ${path}`)).stdout,
+        lines: (await globalThis.dsh.shell(`wc -l ${path}`)).stdout,
+      }
+    })
+    expect(/"type"\s*:\s*"session"/.test(log.header), `the session log lost its header line: ${log.header.slice(0, 200)}`)
+    expect(Number(/(\d+)/.exec(log.lines)?.[1] ?? '0') > 1, `the session log did not accumulate events: ${log.lines}`)
+
     const fatal = errors.filter(line => !/Failed to load resource|favicon|net::ERR_/.test(line))
     expect(fatal.length === 0, `console errors during the run:\n  ${fatal.join('\n  ')}`)
 

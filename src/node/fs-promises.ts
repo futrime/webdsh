@@ -33,17 +33,35 @@ export class FileHandle {
     return { bytesRead, buffer: target }
   }
 
+  /**
+   * `filehandle.write`, in both of Node's shapes: `(buffer, offset, length,
+   * position)` and `(string, position, encoding)`. The buffer form's `offset`
+   * and `length` select a window into the caller's buffer — Node's own
+   * `writeFile` loop passes a moving offset, so ignoring them would rewrite the
+   * same prefix on every iteration.
+   */
   async write(data: BinaryLike, ...rest: unknown[]): Promise<{ bytesWritten: number, buffer: BinaryLike }> {
-    const encoding = rest.find(argument => typeof argument === 'string') as string | undefined
-    const position = typeof rest[0] === 'number' ? rest[0] : null
-    const bytes = toBytes(data, encoding ?? 'utf8')
-    const bytesWritten = core.write(this.fd, bytes, typeof data === 'string' ? position : (rest[2] as number | null ?? null))
-    return { bytesWritten, buffer: data }
+    if (typeof data === 'string') {
+      const position = typeof rest[0] === 'number' ? rest[0] : null
+      const encoding = typeof rest[1] === 'string' ? rest[1] : 'utf8'
+      return { bytesWritten: core.write(this.fd, toBytes(data, encoding), position), buffer: data }
+    }
+    const bytes = toBytes(data, 'utf8')
+    const offset = typeof rest[0] === 'number' ? rest[0] : 0
+    const length = typeof rest[1] === 'number' ? rest[1] : bytes.length - offset
+    const position = typeof rest[2] === 'number' ? rest[2] : null
+    const window = bytes.subarray(offset, offset + length)
+    return { bytesWritten: core.write(this.fd, window, position), buffer: data }
   }
 
+  /**
+   * `fsPromises.writeFile(filehandle, …)`, which — unlike the path-taking
+   * overload — neither truncates nor seeks: it writes at the descriptor's
+   * current position, and an `'a'` handle therefore appends.
+   */
   async writeFile(data: BinaryLike, options?: unknown): Promise<void> {
     const opts = readOptions(options)
-    core.write(this.fd, toBytes(data, opts.encoding ?? 'utf8'), 0)
+    core.write(this.fd, toBytes(data, opts.encoding ?? 'utf8'), null)
   }
 
   async readFile(options?: unknown): Promise<Buffer | string> {
@@ -121,6 +139,7 @@ export const writeFile = async (path: unknown, data: BinaryLike, options?: unkno
   core.writeFile(toPath(path), data, readOptions(options))
 }
 export const appendFile = async (path: unknown, data: BinaryLike, options?: unknown): Promise<void> => {
+  if (path instanceof FileHandle) return path.writeFile(data, options)
   core.appendFile(toPath(path), data, readOptions(options))
 }
 export const mkdir = async (path: unknown, options?: unknown): Promise<string | undefined> => {

@@ -215,6 +215,28 @@ function numericFlagsToString(flags: number): string {
   return `${base}${exclusive ? 'x' : ''}`
 }
 
+/**
+ * Optional operation tracing.
+ *
+ * Filesystem behaviour is where a browser port diverges most subtly from Node,
+ * and the divergences show up as "this file was there a moment ago". Setting
+ * `localStorage['dsh:trace-fs']` to a substring logs every operation touching a
+ * matching path, which is how those get diagnosed without a debugger.
+ */
+const tracePattern = ((): string | undefined => {
+  try {
+    return localStorage.getItem('dsh:trace-fs') ?? undefined
+  } catch {
+    return undefined
+  }
+})()
+
+/** Log one operation when tracing is on and the path matches. */
+function trace(operation: string, path: string, detail?: unknown): void {
+  if (tracePattern === undefined || !path.includes(tracePattern)) return
+  console.info(`[fs] ${operation} ${path}`, detail ?? '')
+}
+
 /** ---- operations --------------------------------------------------------- */
 
 export const core = {
@@ -246,12 +268,19 @@ export const core = {
 
   /** `fs.readFileSync`; returns a string when an encoding is given. */
   readFile(path: string, encoding?: string): Buffer | string {
-    const bytes = volume.readFile(path)
-    return encoding === undefined || encoding === null ? asBuffer(bytes) : toText(bytes, encoding)
+    try {
+      const bytes = volume.readFile(path)
+      trace('read', path, `${String(bytes.length)} bytes`)
+      return encoding === undefined || encoding === null ? asBuffer(bytes) : toText(bytes, encoding)
+    } catch (error) {
+      trace('read-failed', path, (error as { code?: string }).code)
+      throw error
+    }
   },
 
   /** `fs.writeFileSync`. */
   writeFile(path: string, data: BinaryLike, options: { encoding?: string, mode?: number, flag?: string } = {}): void {
+    trace('write', path)
     const bytes = toBytes(data, options.encoding ?? 'utf8')
     if (options.flag?.startsWith('a') === true) {
       volume.appendFile(path, bytes, options.mode)
@@ -284,6 +313,7 @@ export const core = {
 
   /** `fs.rmSync`. */
   rm(path: string, options: { recursive?: boolean, force?: boolean } = {}): void {
+    trace('rm', path, options)
     volume.rm(path, options)
   },
 
@@ -295,11 +325,13 @@ export const core = {
 
   /** `fs.unlinkSync`. */
   unlink(path: string): void {
+    trace('unlink', path)
     volume.unlink(path)
   },
 
   /** `fs.renameSync`. */
   rename(from: string, to: string): void {
+    trace('rename', `${from} -> ${to}`)
     volume.rename(from, to)
   },
 
@@ -343,8 +375,14 @@ export const core = {
    * `fs.linkSync`. The VFS has no hard links, so this copies content; the
    * observable difference (shared inode) is not something dsh depends on — it
    * uses `link` only to publish an already-final file under a second name.
+   *
+   * The refusal to clobber, though, is depended on: that is what makes `link`
+   * the publish step of a no-clobber protocol, and two tabs on this origin are
+   * two writers over one IndexedDB mirror. So an existing destination fails with
+   * `EEXIST`, as a real `link` does.
    */
   link(from: string, to: string): void {
+    if (volume.exists(to)) throw fsError('EEXIST', 'link', resolve(from), resolve(to))
     core.copyFile(from, to)
   },
 
@@ -433,12 +471,21 @@ export const core = {
     return slice.length
   },
 
-  /** `fs.writeSync`; advances the descriptor position when `position` is null. */
+  /**
+   * `fs.writeSync`; advances the descriptor position when `position` is null.
+   *
+   * An `O_APPEND` descriptor ignores `position` entirely and writes at the
+   * current end of file, as POSIX specifies. That is load-bearing rather than
+   * pedantic: the session log opens `'a'` and appends batches through
+   * `FileHandle.writeFile`, and a descriptor that honored a stale position would
+   * overwrite the log's header line instead of extending the file.
+   */
   write(fd: number, data: Uint8Array, position: number | null): number {
     const handle = core.describe(fd)
-    const start = position ?? handle.position
+    const end = (): number => (volume.exists(handle.path) ? volume.readFile(handle.path).length : 0)
+    const start = handle.appending ? end() : position ?? handle.position
     volume.writeAt(handle.path, start, data)
-    if (position === null) handle.position = start + data.length
+    if (handle.appending || position === null) handle.position = start + data.length
     return data.length
   },
 

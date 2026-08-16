@@ -362,6 +362,27 @@ export function installedPatchFiles(): { label: string, path: string }[] {
     .filter(entry => volume.exists(entry.path))
 }
 
+/**
+ * Names of every installed plugin, readable before the host boots.
+ * @returns the roster's package names.
+ */
+export function installedPluginNames(): string[] {
+  return readRoster().plugins.map(plugin => plugin.name)
+}
+
+/**
+ * Turn every installed plugin's layer off without removing its files.
+ *
+ * The boot-failure screen offers this: a plugin can break the composition in a
+ * way the per-row retry cannot isolate, and disabling the layers is a recovery
+ * that keeps the user's files, sessions, and the packages themselves.
+ */
+export function disableAllPlugins(): void {
+  const roster = readRoster()
+  for (const plugin of roster.plugins) plugin.enabled = false
+  writeRoster(roster)
+}
+
 /** Register host module loaders for installed packages before the tree boots. */
 export function registerInstalledModules(): void {
   for (const name of installedPackageNames()) registerPackageLoaders(name)

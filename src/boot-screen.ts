@@ -27,6 +27,12 @@ const STYLE = `
 .dshw-error{white-space:pre-wrap;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;
  background:rgba(127,127,127,.12);padding:1rem;border-radius:.5rem;margin-top:1rem;max-height:60vh;overflow:auto}
 .dshw-hint{opacity:.7;margin-top:1rem}
+.dshw-actions{margin-top:1rem;display:flex;flex-direction:column;gap:.5rem}
+.dshw-action{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}
+.dshw-action-note{opacity:.7;font-size:.85em}
+.dshw-button{font:inherit;padding:.4rem .9rem;border-radius:.5rem;border:1px solid currentColor;
+ background:transparent;color:inherit;cursor:pointer}
+.dshw-button:disabled{opacity:.5;cursor:default}
 `
 
 /** Ensure the screen's stylesheet is present exactly once. */
@@ -70,8 +76,27 @@ export function renderBootProgress(): BootProgress {
   }
 }
 
-/** Replace the boot screen with a failure report. */
-export function renderBootFailure(error: unknown): void {
+/** A recovery the failure screen can offer. */
+export interface BootRecovery {
+  /** Button label. */
+  label: string
+  /** One line explaining what it does. */
+  description: string
+  /** Perform it; the screen reloads afterwards. */
+  run(): Promise<void>
+}
+
+/**
+ * Replace the boot screen with a failure report.
+ *
+ * The recoveries matter as much as the report: a plugin whose composition
+ * conflicts with this one takes the whole tree down, and without a way back the
+ * only remedy would be clearing site storage — which also throws away the
+ * user's files and sessions.
+ * @param error - the boot failure.
+ * @param recoveries - actions offered to the user, in order.
+ */
+export function renderBootFailure(error: unknown, recoveries: BootRecovery[] = []): void {
   const element = container()
   const detail = error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error)
   const causes = collectCauses(error)
@@ -79,13 +104,39 @@ export function renderBootFailure(error: unknown): void {
     <div class="dshw-panel">
       <p class="dshw-title">DeepSeek Harness could not start</p>
       <div class="dshw-error"></div>
-      <p class="dshw-hint">
-        The full error is in the browser console. If this persists, clearing this site's storage
-        resets the virtual filesystem and settings to a fresh state.
-      </p>
+      <div class="dshw-actions"></div>
+      <p class="dshw-hint">The full error is also in the browser console.</p>
     </div>`
   const report = element.querySelector('.dshw-error')
   if (report !== null) report.textContent = [detail, ...causes].join('\n\ncaused by:\n')
+
+  const actions = element.querySelector('.dshw-actions')
+  if (actions === null) return
+  for (const recovery of recoveries) {
+    const button = document.createElement('button')
+    button.className = 'dshw-button'
+    button.textContent = recovery.label
+    button.title = recovery.description
+    button.addEventListener('click', () => {
+      button.disabled = true
+      button.textContent = `${recovery.label}…`
+      void recovery.run().then(
+        () => { location.reload() },
+        (reason: unknown) => {
+          button.disabled = false
+          button.textContent = `${recovery.label} (failed: ${reason instanceof Error ? reason.message : String(reason)})`
+        },
+      )
+    })
+    const line = document.createElement('div')
+    line.className = 'dshw-action'
+    line.append(button)
+    const description = document.createElement('span')
+    description.className = 'dshw-action-note'
+    description.textContent = recovery.description
+    line.append(description)
+    actions.append(line)
+  }
 }
 
 /** Flatten an error's `cause` chain and `AggregateError` members into readable text. */

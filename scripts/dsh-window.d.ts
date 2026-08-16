@@ -16,7 +16,10 @@ declare global {
       install(spec: string): Promise<{ name: string, version: string, hasClient: boolean, patch?: string }>
       list(): { name: string, version: string, enabled: boolean, hasClient: boolean }[]
     }
-    ctx: { loader?: { entries(): Iterable<Record<string, unknown>> } }
+    ctx: {
+      loader?: { entries(): Iterable<Record<string, unknown>> }
+      get(name: string): unknown
+    }
   }
 }
 

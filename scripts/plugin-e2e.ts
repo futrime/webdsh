@@ -14,6 +14,9 @@
  * Usage: `npx tsx scripts/plugin-e2e.ts [--url <url>] [--only <name>] [--headed]`
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { chromium, type Browser, type Page } from 'playwright'
 
 /** One plugin under test. */
@@ -48,7 +51,7 @@ const CANDIDATES: Candidate[] = [
   { spec: '@linxin666/dsh-client-ui-skin-center', repo: 'zhu1090093659/dsh-web-ui', what: 'skin centre', client: true },
   { spec: '@linxin666/dsh-client-ui-skin-miku', repo: 'zhu1090093659/dsh-web-ui', what: 'Miku skin', client: true },
   { spec: '@linxin666/dsh-client-ui-skin-xp', repo: 'zhu1090093659/dsh-web-ui', what: 'Windows XP skin', client: true },
-  { spec: '@deepseek-harness-tui/dsh-tui', repo: 'ccch1mneyyy/dsh-TUI', what: 'terminal UI surface (host only; no browser half)', client: false },
+  { spec: '@deepseek-harness-tui/dsh-tui', repo: 'ccch1mneyyy/dsh-TUI', what: 'terminal UI surface, written for the headless profile', client: false },
 ]
 
 const args = process.argv.slice(2)
@@ -76,14 +79,30 @@ interface Outcome {
   errors: string[]
   ok: boolean
   note: string
+  /** For a plugin that stopped the boot: whether the failure screen's recovery worked. */
+  recovered?: boolean
 }
 
-/** Wait for the app shell to replace the boot screen. */
+/**
+ * Wait for the app shell to replace the boot screen.
+ *
+ * A plugin that cannot compose stops the boot and the failure screen reports
+ * why; surfacing that text is the whole point of this suite, so it is worth more
+ * than the timeout that would otherwise be all the report says.
+ */
 async function waitForShell(page: Page): Promise<void> {
   await page.waitForFunction(() => {
     const root = document.getElementById('root')
+    if (document.querySelector('.dshw-error') !== null) return true
     return root !== null && root.childElementCount > 0 && document.getElementById('dshw-boot') === null
   }, undefined, { timeout: 120_000 })
+  const failure = await page.locator('.dshw-error').first().textContent().catch(() => null)
+  if (failure !== null && failure.length > 0) {
+    // The screen prints the whole cause chain with stack frames; the report
+    // wants the sentence, so drop the frames and keep the first message.
+    const message = failure.split('\n').map(line => line.trim()).find(line => line.length > 0 && !line.startsWith('at '))
+    throw new Error(`boot failed: ${(message ?? failure).slice(0, 200)}`)
+  }
   await page.waitForTimeout(2000)
 }
 
@@ -127,7 +146,12 @@ async function test(browser: Browser, candidate: Candidate): Promise<Outcome> {
   }
   const context = await browser.newContext({ viewport: { width: 1280, height: 860 } })
   const page = await context.newPage()
-  page.on('console', (message) => { if (message.type() === 'error') outcome.errors.push(message.text()) })
+  /** Console warnings, kept apart from errors: a plugin diagnostic is not a failure. */
+  const notices: string[] = []
+  page.on('console', (message) => {
+    if (message.type() === 'error') outcome.errors.push(message.text())
+    else if (message.type() === 'warning') notices.push(message.text())
+  })
   page.on('pageerror', (error) => { outcome.errors.push(`pageerror: ${error.message}`) })
 
   try {
@@ -156,6 +180,7 @@ async function test(browser: Browser, candidate: Candidate): Promise<Outcome> {
     // its browser half part of the boot graph — the same restart `dsh plugin
     // add` asks for.
     outcome.errors.length = 0
+    notices.length = 0
     await page.reload({ waitUntil: 'domcontentloaded' })
     await waitForShell(page)
     const after = await inspect(page)
@@ -173,9 +198,7 @@ async function test(browser: Browser, candidate: Candidate): Promise<Outcome> {
     // patch of its own; the roster records which ones those are.
     if (outcome.rows.length === 0) outcome.note = 'installed; its bundle patch added no rows to this composition'
     if (candidate.client && outcome.clientRows.length === 0 && outcome.note === '') {
-      const missingBundle = outcome.errors.some(line => /does not contain that file/.test(line))
-        || (await page.evaluate(() => (globalThis as { __DSH_CLIENT_WARNINGS__?: string[] }).__DSH_CLIENT_WARNINGS__ ?? [])).length > 0
-      outcome.note = missingBundle
+      outcome.note = notices.some(line => /does not contain that file/.test(line))
         ? 'host half active; the published package omits its built client bundle'
         : 'no browser half materialized'
     }
@@ -188,10 +211,105 @@ async function test(browser: Browser, candidate: Candidate): Promise<Outcome> {
     return outcome
   } catch (error) {
     outcome.note = error instanceof Error ? error.message.slice(0, 300) : String(error)
+    // A plugin that stops the boot must still leave the user a way back in, or
+    // the only remedy is clearing site storage — files and sessions included.
+    // That is a claim worth testing rather than asserting, so test it here.
+    if (outcome.installed) outcome.recovered = await recover(page)
     return outcome
   } finally {
     await context.close()
   }
+}
+
+/**
+ * Take the failure screen's first recovery and check the app comes back.
+ * @param page - the page showing the failure screen.
+ * @returns whether the app booted after the recovery.
+ */
+async function recover(page: Page): Promise<boolean> {
+  try {
+    const button = page.locator('.dshw-actions .dshw-button').first()
+    if (await button.count() === 0) return false
+    // The recovery reloads the page when it finishes. Mark this document so the
+    // wait below is for the *next* one — the current page is already loaded, so
+    // waiting on a load state would return before anything happened.
+    await page.evaluate(() => { (globalThis as { __dshBeforeRecovery__?: boolean }).__dshBeforeRecovery__ = true })
+    await button.click()
+    await page.waitForFunction(
+      () => (globalThis as { __dshBeforeRecovery__?: boolean }).__dshBeforeRecovery__ === undefined,
+      undefined,
+      { timeout: 60_000 },
+    )
+    await waitForShell(page)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Render the results as the document checked into `docs/`.
+ * @param results - the run's outcomes, in roster order.
+ * @returns the markdown.
+ */
+function renderReport(results: Outcome[]): string {
+  const passed = results.filter(result => result.ok).length
+  const rows = results.map((result) => {
+    const status = result.ok ? '✅' : '❌'
+    const surface = result.clientRows.length > 0 ? `${String(result.clientRows.length)} bundle(s)` : '—'
+    const note = result.note === '' ? '' : result.note.replace(/\|/g, '\\|').slice(0, 160)
+    const recovery = result.recovered === undefined
+      ? ''
+      : result.recovered ? ' Recovery from the failure screen restored the app.' : ' Recovery from the failure screen did not restore the app.'
+    return `| ${status} | \`${result.spec}\` | [${result.repo}](https://github.com/${result.repo}) | ${result.what} `
+      + `| ${result.version === '' ? '—' : result.version} | ${String(result.rows.length)} | ${surface} | ${note}${recovery} |`
+  })
+  return `# Plugin compatibility
+
+Generated by \`npx tsx scripts/plugin-e2e.ts\`. Each plugin is installed from the
+npm registry into the built app running in a real browser — the same package a
+person would install with \`dsh plugin add\` — then the page is reloaded and the
+composition inspected. A plugin passes when every row its bundle patch added
+reached \`active\` and the page booted without console errors.
+
+**${String(passed)} of ${String(results.length)} composed cleanly.**
+
+| | Package | Source | What it adds | Version | Rows | Browser half | Notes |
+|---|---|---|---|---|---|---|---|
+${rows.join('\n')}
+
+## Reading the results
+
+- **Rows** is how many loader entries the plugin's \`cordis.patch.yml\` added to
+  the composition, and every one of them reached \`active\`.
+- **Browser half** counts the client bundles that materialized in the shell's
+  module table — the plugin's actual UI surface.
+- A plugin with no browser half is not necessarily broken: some are host-only,
+  and some publish a \`dsh.client\` declaration without shipping the built bundle
+  (their client build did not run before \`npm publish\`). The note says which.
+
+## Plugins that cannot work here
+
+A plugin whose contract is a capability a page does not have will not work, and
+no amount of shimming changes that. The boot disables such a row, reports why,
+and starts without it rather than failing the whole app. The two seen in this
+roster:
+
+- **\`@linxin666/dsh-remote-web-ui\`** exposes the UI through a Cloudflare tunnel,
+  which means downloading and running the \`cloudflared\` binary.
+- **\`@linxin666/dsh-ssh\`** needs raw TCP and Node's cipher suite for SSH.
+
+Both are part of the \`@linxin666/dsh-web-ui-all\` bundle; the other twelve
+plugins in it compose normally.
+
+\`@deepseek-harness-tui/dsh-tui\` fails for a different reason, and not a
+browser-specific one: its patch inserts a loader entry named \`storage\`, which
+the web profile already defines, so the composition is rejected before anything
+runs. The same patch against the same profile fails on a real machine — it is
+written for the headless profile, where that id is free. A boot stopped this way
+offers "Disable installed plugins", which starts the app without the offending
+layer and keeps the user's files and sessions.
+`
 }
 
 /** Run the roster and print a table. */
@@ -208,7 +326,8 @@ async function main(): Promise<void> {
       process.stdout.write(
         `  ${mark} ${outcome.installed ? `v${outcome.version}` : 'not installed'}`
         + ` · rows ${String(outcome.rows.length)} · client ${String(outcome.clientRows.length)}`
-        + `${outcome.note === '' ? '' : ` · ${outcome.note}`}\n`,
+        + `${outcome.note === '' ? '' : ` · ${outcome.note}`}`
+        + `${outcome.recovered === undefined ? '' : ` · recovery ${outcome.recovered ? 'worked' : 'failed'}`}\n`,
       )
     }
   } finally {
@@ -217,9 +336,12 @@ async function main(): Promise<void> {
 
   const passed = results.filter(result => result.ok)
   process.stdout.write(`\n${String(passed.length)}/${String(results.length)} plugins composed cleanly\n`)
-  process.stdout.write(JSON.stringify(results, null, 2).slice(0, 200) === '' ? '' : '')
-  // The machine-readable report feeds the compatibility table in the README.
-  process.stdout.write(`\n<!--PLUGIN-REPORT-->\n${JSON.stringify(results, null, 2)}\n`)
+  if (only === undefined) {
+    const report = resolve(fileURLToPath(new URL('../docs/plugin-compatibility.md', import.meta.url)))
+    mkdirSync(dirname(report), { recursive: true })
+    writeFileSync(report, renderReport(results))
+    process.stdout.write(`report written to ${report}\n`)
+  }
   process.exit(passed.length === results.length ? 0 : 1)
 }
 

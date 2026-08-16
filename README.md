@@ -48,7 +48,9 @@ Your API key, files, sessions, and settings live in your browser's storage for
 that origin and are never uploaded. Model requests go from your browser
 straight to the provider.
 
-- **Files** persist across reloads. `window.dsh.exportFs()` downloads the
+- **Files and sessions** persist across reloads: reopening the page restores the
+  workspace, its session list, and each session's transcript from the same
+  append-only JSONL logs `dsh web` writes. `window.dsh.exportFs()` downloads the
   workspace as a zip; `window.dsh.reset()` clears everything.
 - **Shell** commands run in the in-browser shell. `git init/add/commit/log/diff/
   branch/checkout` work locally; `git clone` needs an origin that permits
