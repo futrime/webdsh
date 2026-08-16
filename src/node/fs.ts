@@ -6,14 +6,14 @@
  * preserves Node's "callbacks never run in the same tick" contract.
  */
 
-import { constants, core, Dirent, Stats, toPath } from './fs-core.ts'
+import { BigIntStats, constants, core, Dirent, Stats, toPath } from './fs-core.ts'
 import { asBuffer, readOptions, toBytes, toText, type BinaryLike } from './binary.ts'
 import { volume } from '../vfs/volume.ts'
 import { resolve as resolvePath } from '../vfs/path.ts'
 import { fsError } from '../vfs/errors.ts'
 import * as promises from './fs-promises.ts'
 
-export { constants, Dirent, Stats, promises }
+export { BigIntStats, constants, Dirent, Stats, promises }
 
 /** Node's callback shape: `(err, value?)`. */
 type Callback<T = void> = (error: NodeJS.ErrnoException | null, value?: T) => void
@@ -45,17 +45,17 @@ function defer<T>(body: () => T, callback: Callback<T>): void {
 
 // ---- sync API --------------------------------------------------------------
 
-export const statSync = (path: unknown, options?: { throwIfNoEntry?: boolean }): Stats | undefined => {
+export const statSync = (path: unknown, options?: { throwIfNoEntry?: boolean, bigint?: boolean }): Stats | BigIntStats | undefined => {
   try {
-    return core.stat(toPath(path))
+    return core.stat(toPath(path), options?.bigint === true)
   } catch (error) {
     if (options?.throwIfNoEntry === false) return undefined
     throw error
   }
 }
-export const lstatSync = (path: unknown, options?: { throwIfNoEntry?: boolean }): Stats | undefined => {
+export const lstatSync = (path: unknown, options?: { throwIfNoEntry?: boolean, bigint?: boolean }): Stats | BigIntStats | undefined => {
   try {
-    return core.lstat(toPath(path))
+    return core.lstat(toPath(path), options?.bigint === true)
   } catch (error) {
     if (options?.throwIfNoEntry === false) return undefined
     throw error
@@ -105,7 +105,7 @@ export const truncateSync = (path: unknown, length?: number): void => { core.tru
 export const mkdtempSync = (prefix: unknown): string => core.mkdtemp(toPath(prefix))
 export const openSync = (path: unknown, flags?: string | number, mode?: number): number => core.open(toPath(path), flags, mode)
 export const closeSync = (fd: number): void => { core.close(fd) }
-export const fstatSync = (fd: number): Stats => core.fstat(fd)
+export const fstatSync = (fd: number, options?: { bigint?: boolean }): Stats | BigIntStats => core.fstat(fd, options?.bigint === true)
 export const ftruncateSync = (fd: number, length?: number): void => { core.ftruncate(fd, length) }
 export const fsyncSync = (): void => {}
 export const fdatasyncSync = (): void => {}
@@ -139,8 +139,14 @@ export const writeSync = (fd: number, data: BinaryLike, offsetOrPosition?: numbe
 
 // ---- callback API ----------------------------------------------------------
 
-export const stat = (path: unknown, ...rest: unknown[]): void => { const { callback } = splitTail(rest); defer(() => core.stat(toPath(path)), callback as Callback<Stats>) }
-export const lstat = (path: unknown, ...rest: unknown[]): void => { const { callback } = splitTail(rest); defer(() => core.lstat(toPath(path)), callback as Callback<Stats>) }
+export const stat = (path: unknown, ...rest: unknown[]): void => {
+  const { options, callback } = splitTail(rest)
+  defer(() => core.stat(toPath(path), (options as { bigint?: boolean }).bigint === true), callback as Callback<Stats | BigIntStats>)
+}
+export const lstat = (path: unknown, ...rest: unknown[]): void => {
+  const { options, callback } = splitTail(rest)
+  defer(() => core.lstat(toPath(path), (options as { bigint?: boolean }).bigint === true), callback as Callback<Stats | BigIntStats>)
+}
 export const access = (path: unknown, ...rest: unknown[]): void => {
   const mode = typeof rest[0] === 'number' ? rest[0] : undefined
   const callback = rest[rest.length - 1] as Callback

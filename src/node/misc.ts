@@ -10,6 +10,7 @@
 import { Buffer, toBytes, toText } from './binary.ts'
 import { resolve as resolvePath, isAbsolute } from '../vfs/path.ts'
 import { deflateSync, gunzipSync, gzipSync, inflateSync } from 'fflate'
+import { AsyncLocalStorage, AsyncResource } from './async-context.ts'
 
 // ---- node:url --------------------------------------------------------------
 
@@ -396,53 +397,9 @@ perfHooksModule.default = perfHooksModule
 
 // ---- node:async_hooks ------------------------------------------------------
 
-/**
- * `AsyncLocalStorage` over a single mutable slot.
- *
- * The browser has no continuation-local storage, so the store survives only for
- * the synchronous part of `run()` plus any `await` inside it that does not
- * interleave with a competing `run()`. dsh uses this for logger scoping only —
- * a wrong label in a log line is the whole failure mode.
- */
-export class AsyncLocalStorage<T> {
-  private store: T | undefined
-
-  run<R>(store: T, body: (...args: unknown[]) => R, ...args: unknown[]): R {
-    const previous = this.store
-    this.store = store
-    try {
-      return body(...args)
-    } finally {
-      this.store = previous
-    }
-  }
-
-  getStore(): T | undefined {
-    return this.store
-  }
-
-  enterWith(store: T): void {
-    this.store = store
-  }
-
-  exit<R>(body: () => R): R {
-    const previous = this.store
-    this.store = undefined
-    try {
-      return body()
-    } finally {
-      this.store = previous
-    }
-  }
-
-  disable(): void {
-    this.store = undefined
-  }
-}
-
 export const asyncHooksModule = {
   AsyncLocalStorage,
-  AsyncResource: class { runInAsyncScope<R>(body: () => R): R { return body() } bind<T>(fn: T): T { return fn } emitDestroy(): void {} },
+  AsyncResource,
   executionAsyncId: (): number => 0,
   triggerAsyncId: (): number => 0,
   createHook: () => ({ enable: () => undefined, disable: () => undefined }),

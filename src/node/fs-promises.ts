@@ -3,12 +3,12 @@
  * `FileHandle` object dsh's atomic-write and spill paths open.
  */
 
-import { constants, core, Dirent, Stats, toPath } from './fs-core.ts'
+import { BigIntStats, constants, core, Dirent, Stats, toPath } from './fs-core.ts'
 import { asBuffer, readOptions, toBytes, toText, type BinaryLike } from './binary.ts'
 import { volume } from '../vfs/volume.ts'
 import { fsError } from '../vfs/errors.ts'
 
-export { constants, Dirent, Stats }
+export { BigIntStats, constants, Dirent, Stats }
 
 /**
  * `fs.promises.FileHandle`. Backed by a descriptor from the sync core, so a
@@ -51,8 +51,8 @@ export class FileHandle {
     return core.readFile(core.describe(this.fd).path, opts.encoding)
   }
 
-  async stat(): Promise<Stats> {
-    return core.fstat(this.fd)
+  async stat(options?: { bigint?: boolean }): Promise<Stats | BigIntStats> {
+    return core.fstat(this.fd, options?.bigint === true)
   }
 
   async truncate(length?: number): Promise<void> {
@@ -107,11 +107,10 @@ export class Dir {
   }
 }
 
-export const stat = async (path: unknown, options?: { throwIfNoEntry?: boolean }): Promise<Stats> => {
-  void options
-  return core.stat(toPath(path))
-}
-export const lstat = async (path: unknown): Promise<Stats> => core.lstat(toPath(path))
+export const stat = async (path: unknown, options?: { bigint?: boolean }): Promise<Stats | BigIntStats> =>
+  core.stat(toPath(path), options?.bigint === true)
+export const lstat = async (path: unknown, options?: { bigint?: boolean }): Promise<Stats | BigIntStats> =>
+  core.lstat(toPath(path), options?.bigint === true)
 export const access = async (path: unknown, mode?: number): Promise<void> => { core.access(toPath(path), mode) }
 export const readFile = async (path: unknown, options?: unknown): Promise<Buffer | string> => {
   if (path instanceof FileHandle) return path.readFile(options)

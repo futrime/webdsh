@@ -131,6 +131,34 @@ export async function runShell(script: string, options: RunOptions = {}): Promis
     return status
   })
 
+  // `bash`/`sh` as first-class commands.
+  //
+  // A confined tool call arrives as `dsh-confine … -- bash -lc <script>`, so the
+  // shell has to be able to run a shell. Without this, `bash` resolves through
+  // $PATH to the `/bin/bash` marker file — which exists only so executable
+  // lookup succeeds — and the script silently produces nothing.
+  const runNestedShell: CommandImpl = async (context) => {
+    const args = context.argv.slice(1)
+    const dashC = args.findIndex(argument => /^-[a-z]*c[a-z]*$/.test(argument))
+    if (dashC !== -1) {
+      const script = args[dashC + 1] ?? ''
+      const saved = state.positional
+      state.positional = args.slice(dashC + 2)
+      try {
+        return await interpreter.run(script, { stdin: context.stdin, stdout: context.stdout, stderr: context.stderr })
+      } finally {
+        state.positional = saved
+      }
+    }
+    const file = args.find(argument => !argument.startsWith('-'))
+    if (file === undefined) return 0
+    const quoted = `. '${file.replaceAll("'", `'\\''`)}'`
+    return interpreter.run(quoted, { stdin: context.stdin, stdout: context.stdout, stderr: context.stderr })
+  }
+  for (const name of ['sh', 'bash', 'zsh', 'dash', '/bin/sh', '/bin/bash', '/usr/bin/sh', '/usr/bin/bash']) {
+    state.commands.set(name, runNestedShell)
+  }
+
   // The guard the sandbox backend prefixes onto a confined command's argv.
   // It installs the policy for the duration of the wrapped command only, so a
   // later command in the same script is judged on its own policy.

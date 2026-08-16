@@ -38,12 +38,6 @@
 - id: typert-loader
   disabled: true
 
-# `directory-picker-auto` chooses between a native OS dialog and the in-app
-# browser by probing the display and SSH environment. In a page the answer is
-# always the in-app browser, so mount it directly.
-- id: directory-picker
-  disabled: true
-
 # The OS process sandbox (Landlock on Linux, Seatbelt on macOS, a restricted
 # token on Windows) loads a native FFI binding. Its browser counterpart
 # enforces the same file-effect vocabulary through the shell's own guard.
@@ -67,9 +61,6 @@
       name: 'browser:typert-loader'
       config:
         packages: []
-
-    - id: directory-picker-browser
-      name: '@deepseek-ai/dsh-host-directory-picker-browse'
 
     - id: sandbox-browser
       name: 'browser:sandbox'
@@ -104,7 +95,7 @@
 - id: client-hmr
   disabled: true
 
-# OTLP export is already DISABLED by default upstream; disabling the row keeps
-# the exporter and its transport out of the running tree entirely.
-- id: session-telemetry-otel
-  disabled: true
+# `session-telemetry-otel` is deliberately NOT disabled here. Its shipped mode
+# is DISABLED, so it exports nothing unless a deployment opts in — and leaving
+# the row mounted keeps `--dump-config` and the plugin inventory honest about
+# what this build composes.

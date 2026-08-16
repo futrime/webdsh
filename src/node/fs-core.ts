@@ -64,6 +64,69 @@ export class Stats {
   isSocket(): boolean { return false }
 }
 
+/**
+ * Node's `BigIntStats`, returned for `stat(path, { bigint: true })`.
+ *
+ * dsh's filesystem provider derives an opaque version token from
+ * `dev:ino:size:mtimeNs:ctimeNs` and masks `mode & 511n`, so these fields must
+ * genuinely be BigInt — a Number-valued stat makes every read and write fail
+ * with "Cannot mix BigInt and other types".
+ */
+export class BigIntStats {
+  readonly dev = 1n
+  readonly ino: bigint
+  readonly mode: bigint
+  readonly nlink = 1n
+  readonly uid = 1000n
+  readonly gid = 1000n
+  readonly rdev = 0n
+  readonly size: bigint
+  readonly blksize = 4096n
+  readonly blocks: bigint
+  readonly atimeMs: bigint
+  readonly mtimeMs: bigint
+  readonly ctimeMs: bigint
+  readonly birthtimeMs: bigint
+  readonly atimeNs: bigint
+  readonly mtimeNs: bigint
+  readonly ctimeNs: bigint
+  readonly birthtimeNs: bigint
+  readonly atime: Date
+  readonly mtime: Date
+  readonly ctime: Date
+  readonly birthtime: Date
+  private readonly kind: Inode['kind']
+
+  constructor(node: Inode) {
+    const plain = new Stats(node)
+    this.kind = node.kind
+    this.ino = BigInt(plain.ino)
+    this.mode = BigInt(plain.mode)
+    this.size = BigInt(plain.size)
+    this.blocks = BigInt(plain.blocks)
+    this.atimeMs = BigInt(Math.trunc(plain.atimeMs))
+    this.mtimeMs = BigInt(Math.trunc(plain.mtimeMs))
+    this.ctimeMs = BigInt(Math.trunc(plain.ctimeMs))
+    this.birthtimeMs = BigInt(Math.trunc(plain.birthtimeMs))
+    this.atimeNs = this.atimeMs * 1000000n
+    this.mtimeNs = this.mtimeMs * 1000000n
+    this.ctimeNs = this.ctimeMs * 1000000n
+    this.birthtimeNs = this.birthtimeMs * 1000000n
+    this.atime = plain.atime
+    this.mtime = plain.mtime
+    this.ctime = plain.ctime
+    this.birthtime = plain.birthtime
+  }
+
+  isFile(): boolean { return this.kind === 'file' }
+  isDirectory(): boolean { return this.kind === 'dir' }
+  isSymbolicLink(): boolean { return this.kind === 'link' }
+  isBlockDevice(): boolean { return false }
+  isCharacterDevice(): boolean { return false }
+  isFIFO(): boolean { return false }
+  isSocket(): boolean { return false }
+}
+
 /** Node-compatible `fs.Dirent`. */
 export class Dirent {
   constructor(
@@ -155,14 +218,16 @@ function numericFlagsToString(flags: number): string {
 /** ---- operations --------------------------------------------------------- */
 
 export const core = {
-  /** `fs.statSync` / `fs.promises.stat`. */
-  stat(path: string): Stats {
-    return new Stats(volume.statNode(path, true))
+  /** `fs.statSync` / `fs.promises.stat`; `bigint` selects the BigInt shape. */
+  stat(path: string, bigint = false): Stats | BigIntStats {
+    const node = volume.statNode(path, true)
+    return bigint ? new BigIntStats(node) : new Stats(node)
   },
 
   /** `fs.lstatSync`: does not follow a trailing symlink. */
-  lstat(path: string): Stats {
-    return new Stats(volume.statNode(path, false))
+  lstat(path: string, bigint = false): Stats | BigIntStats {
+    const node = volume.statNode(path, false)
+    return bigint ? new BigIntStats(node) : new Stats(node)
   },
 
   /** `fs.existsSync`. */
@@ -378,8 +443,8 @@ export const core = {
   },
 
   /** `fs.fstatSync`. */
-  fstat(fd: number): Stats {
-    return core.stat(core.describe(fd).path)
+  fstat(fd: number, bigint = false): Stats | BigIntStats {
+    return core.stat(core.describe(fd).path, bigint)
   },
 
   /** `fs.ftruncateSync`. */

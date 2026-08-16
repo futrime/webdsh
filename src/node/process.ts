@@ -13,7 +13,7 @@ import { Buffer } from './binary.ts'
 /** Environment variables. Seeded at boot from persisted settings. */
 export const env: Record<string, string | undefined> = {
   HOME: '/home/dsh',
-  PWD: '/workspace',
+  PWD: '/home/dsh/workspace',
   TMPDIR: '/tmp',
   PATH: '/usr/local/bin:/usr/bin:/bin',
   SHELL: '/bin/sh',
@@ -26,7 +26,7 @@ export const env: Record<string, string | undefined> = {
   DSH_RUNTIME: 'browser',
 }
 
-let workingDirectory = '/workspace'
+let workingDirectory = '/home/dsh/workspace'
 
 /** Simple event registry for `process.on('exit' | 'uncaughtException' | ...)`. */
 const listeners = new Map<string, Set<(...args: unknown[]) => void>>()

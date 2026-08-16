@@ -15,6 +15,7 @@ import { toBytes, toText } from './node/binary.ts'
 import type { PersistenceHandle } from './vfs/persist.ts'
 import { zipSync, unzipSync } from 'fflate'
 import { dirname } from './vfs/path.ts'
+import { WORKSPACE_ROOT } from './host/seed.ts'
 
 /** The object published at `window.dsh`. */
 export interface DshWindowApi {
@@ -52,7 +53,7 @@ export function installWindowApi(ctx: Context, persistence: PersistenceHandle): 
     ctx,
 
     async shell(script, options) {
-      return runShell(script, { cwd: options?.cwd ?? '/workspace' })
+      return runShell(script, { cwd: options?.cwd ?? WORKSPACE_ROOT })
     },
 
     async flush() {
@@ -68,7 +69,7 @@ export function installWindowApi(ctx: Context, persistence: PersistenceHandle): 
       volume.writeFile(path, toBytes(contents))
     },
 
-    async exportFs(prefix = '/workspace') {
+    async exportFs(prefix = WORKSPACE_ROOT) {
       const entries: Record<string, Uint8Array> = {}
       for (const [path, node] of volume.walkTree(prefix)) {
         if (node.kind !== 'file') continue

@@ -17,11 +17,19 @@ import browserPatchSource from './browser.patch.yml?raw'
 /** Root the build's own files live under. */
 export const DEPLOY_ROOT = '/opt/dsh'
 
+/**
+ * The starter workspace. It lives under the home directory because that is
+ * where the directory picker opens, so a first-time visitor sees a workspace
+ * they can select without navigating anywhere.
+ */
+export const WORKSPACE_ROOT = '/home/dsh/workspace'
+
 /** Directories a POSIX-shaped world is expected to have. */
 const SKELETON = [
   '/bin', '/usr/bin', '/usr/local/bin', '/etc', '/tmp', '/var', '/var/log',
-  '/home/dsh', '/workspace', '/opt', DEPLOY_ROOT,
+  '/home/dsh', WORKSPACE_ROOT, '/opt', DEPLOY_ROOT,
 ]
+
 
 /**
  * A stub executable for each command the shell implements internally. `bash`
@@ -59,8 +67,8 @@ function writeSkeleton(): void {
   }
   const home = env.HOME ?? '/home/dsh'
   volume.mkdirp(`${home}/.dsh`)
-  if (!volume.exists('/workspace/README.md')) {
-    volume.writeFile('/workspace/README.md', toBytes(WORKSPACE_README))
+  if (!volume.exists(`${WORKSPACE_ROOT}/README.md`)) {
+    volume.writeFile(`${WORKSPACE_ROOT}/README.md`, toBytes(WORKSPACE_README))
   }
 }
 

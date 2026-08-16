@@ -236,6 +236,22 @@ for (const name of specifiersIn(readFileSync(join(root, 'src', 'host', 'browser.
   specifiers.add(name)
 }
 
+// Every installed dsh package, whether or not a composition file names it.
+//
+// Compositions are not the only source of loader rows: a host plugin can create
+// one at runtime (`directory-picker-auto` mounts both the backend and the client
+// surface for whichever interaction it resolves), and a user's own patch layer
+// can name anything installed. A specifier missing from this map is a hard boot
+// failure, while an unused entry costs only a lazy chunk nothing ever fetches.
+for (const name of readdirSync(scope)) {
+  const manifest = join(scope, name, 'package.json')
+  if (!existsSync(manifest)) continue
+  const pkg = readJson(manifest)
+  const hasEntry = typeof pkg.main === 'string' || typeof pkg.module === 'string'
+    || (typeof pkg.exports === 'object' && pkg.exports !== null && '.' in (pkg.exports as Record<string, unknown>))
+  if (hasEntry) specifiers.add(String(pkg.name))
+}
+
 // Only specifiers that actually resolve become map entries; a composition may
 // legitimately name a row this deployment disables and never installs.
 const resolvable: string[] = []
