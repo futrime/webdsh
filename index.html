@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" type="image/svg+xml" href="./shell/favicon.svg" />
+    <title>DeepSeek Harness</title>
+    <script>
+      // Bootstrap placeholder. Bundled dependencies read `process.platform`
+      // while their module bodies evaluate, which happens before any of this
+      // app's own modules run — so the object has to exist here, in a classic
+      // script. `src/node/process.ts` merges the full implementation onto this
+      // same object, keeping one identity for anything that captured it early.
+      globalThis.process = globalThis.process || {
+        env: { NODE_ENV: 'production' },
+        platform: 'linux',
+        arch: 'wasm32',
+        argv: ['/usr/bin/node', '/usr/bin/dsh'],
+        version: 'v22.0.0',
+        versions: {},
+        cwd: function () { return '/workspace' },
+        nextTick: function (fn) { queueMicrotask(fn) },
+        emitWarning: function () {},
+        on: function () { return globalThis.process },
+        once: function () { return globalThis.process },
+        off: function () { return globalThis.process },
+      }
+      globalThis.global = globalThis.global || globalThis
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

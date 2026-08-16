@@ -1,0 +1,174 @@
+/**
+ * `window.dsh` — the page-level control surface.
+ *
+ * Everything the UI does goes through the normal client transport; this object
+ * exists for the things a GUI has no place for: driving the app from the
+ * console or an automated browser, exporting and importing the virtual
+ * filesystem, and forcing a durability flush. The plugin manager attaches
+ * itself here too.
+ */
+
+import type { Context } from '@deepseek-ai/cordis'
+import { runShell, type RunResult } from './shell/index.ts'
+import { volume } from './vfs/volume.ts'
+import { toBytes, toText } from './node/binary.ts'
+import type { PersistenceHandle } from './vfs/persist.ts'
+import { zipSync, unzipSync } from 'fflate'
+import { dirname } from './vfs/path.ts'
+
+/** The object published at `window.dsh`. */
+export interface DshWindowApi {
+  /** The settled host context (advanced use; the UI never needs it). */
+  ctx: Context
+  /** Run a shell script against the virtual filesystem. */
+  shell(script: string, options?: { cwd?: string }): Promise<RunResult>
+  /** Force every pending virtual-filesystem write to reach durable storage. */
+  flush(): Promise<void>
+  /** Read a file out of the virtual filesystem. */
+  readFile(path: string): string
+  /** Write a file into the virtual filesystem. */
+  writeFile(path: string, contents: string): void
+  /** Download the whole virtual filesystem as a zip. */
+  exportFs(prefix?: string): Promise<Blob>
+  /** Restore a previously exported zip. */
+  importFs(data: ArrayBuffer, prefix?: string): number
+  /** Erase all browser-stored state and reload. */
+  reset(): Promise<void>
+  /** Send one prompt through a fresh session and return the assistant's reply text. */
+  promptOnce(apiKey: string, text: string): Promise<string>
+}
+
+/** Files that belong to the build rather than the user; excluded from exports. */
+const EXPORT_EXCLUDE = ['/opt/dsh/bundles', '/opt/dsh/config', '/opt/dsh/cordis.yml', '/bin', '/usr']
+
+/**
+ * Publish the control surface.
+ * @param ctx - the settled host context.
+ * @param persistence - the virtual filesystem's durability handle.
+ * @returns the published object.
+ */
+export function installWindowApi(ctx: Context, persistence: PersistenceHandle): DshWindowApi {
+  const api: DshWindowApi = {
+    ctx,
+
+    async shell(script, options) {
+      return runShell(script, { cwd: options?.cwd ?? '/workspace' })
+    },
+
+    async flush() {
+      await persistence.flush()
+    },
+
+    readFile(path) {
+      return toText(volume.readFile(path))
+    },
+
+    writeFile(path, contents) {
+      volume.mkdirp(dirname(path))
+      volume.writeFile(path, toBytes(contents))
+    },
+
+    async exportFs(prefix = '/workspace') {
+      const entries: Record<string, Uint8Array> = {}
+      for (const [path, node] of volume.walkTree(prefix)) {
+        if (node.kind !== 'file') continue
+        if (EXPORT_EXCLUDE.some(excluded => path === excluded || path.startsWith(`${excluded}/`))) continue
+        entries[path.replace(/^\//, '')] = volume.readFile(path)
+      }
+      await persistence.flush()
+      return new Blob([zipSync(entries) as BlobPart], { type: 'application/zip' })
+    },
+
+    importFs(data, prefix = '/') {
+      const files = unzipSync(new Uint8Array(data))
+      let count = 0
+      for (const [name, bytes] of Object.entries(files)) {
+        if (name.endsWith('/')) continue
+        const path = `${prefix.replace(/\/$/, '')}/${name}`
+        volume.mkdirp(dirname(path))
+        volume.writeFile(path, bytes)
+        count++
+      }
+      return count
+    },
+
+    async reset() {
+      await persistence.clear()
+      localStorage.clear()
+      location.reload()
+    },
+
+    async promptOnce(apiKey, text) {
+      return promptOnce(ctx, apiKey, text)
+    },
+  }
+
+  const surface = (globalThis as { dsh?: Record<string, unknown> }).dsh ?? {}
+  Object.assign(surface, api)
+  ;(globalThis as { dsh?: Record<string, unknown> }).dsh = surface
+  return api
+}
+
+/**
+ * Drive one complete model turn through the host's own API proxy.
+ *
+ * This is the transport the browser client uses, so a green result here means
+ * the whole chain works: credentials, the DeepSeek adapter, the agent loop, the
+ * session log, and the event stream.
+ * @param ctx - the settled host context.
+ * @param apiKey - a DeepSeek API key, stored in the managed credential document.
+ * @param text - the prompt to send.
+ * @returns the concatenated assistant text.
+ */
+async function promptOnce(ctx: Context, apiKey: string, text: string): Promise<string> {
+  const credentials = ctx.get('credentials')
+  if (credentials === undefined) throw new Error('credentials service unavailable')
+  await (credentials as { set(reference: string, value: string): Promise<void> }).set('DEEPSEEK_API_KEY', apiKey)
+
+  const proxy = ctx.get('apiProxy') as {
+    sessions: {
+      create(request: { rpcId: string, payload: Record<string, unknown> }): Promise<{ result: { ok: boolean, value?: { sessionId: string }, error?: unknown } }>
+      prompt(request: { rpcId: string, payload: Record<string, unknown> }): Promise<{ result: { ok: boolean, error?: unknown } }>
+    }
+    events: {
+      mux(request: { rpcId: string, payload: Record<string, never> }, signal?: AbortSignal): AsyncIterable<{ payload: Record<string, unknown> }>
+    }
+  } | undefined
+  if (proxy === undefined) throw new Error('apiProxy service unavailable')
+
+  const created = await proxy.sessions.create({ rpcId: crypto.randomUUID(), payload: {} })
+  if (!created.result.ok || created.result.value === undefined) {
+    throw new Error(`session.create failed: ${JSON.stringify(created.result.error)}`)
+  }
+  const { sessionId } = created.result.value
+
+  const abort = new AbortController()
+  const frames = proxy.events.mux({ rpcId: crypto.randomUUID(), payload: {} }, abort.signal)
+  let reply = ''
+  const collected = (async () => {
+    for await (const frame of frames) {
+      // Frame shape: session/event → event.type → event.data. Text deltas are
+      // `assistant/chunk` with a `text-delta` chunk; reasoning deltas are a
+      // separate block type and are deliberately not collected here.
+      const payload = frame.payload as {
+        type?: string
+        event?: { type?: string, data?: { chunk?: { type?: string, text?: string } } }
+      }
+      const event = payload.event
+      if (event?.type === 'assistant/chunk' && event.data?.chunk?.type === 'text-delta') {
+        reply += event.data.chunk.text ?? ''
+      }
+      if (event?.type === 'turn/end') break
+    }
+  })()
+
+  const prompted = await proxy.sessions.prompt({
+    rpcId: crypto.randomUUID(),
+    payload: { sessionId, content: [{ type: 'text', text }] },
+  })
+  if (!prompted.result.ok) throw new Error(`session.prompt failed: ${JSON.stringify(prompted.result.error)}`)
+
+  await Promise.race([collected, new Promise(resolve => setTimeout(resolve, 120_000))])
+  abort.abort()
+  return reply
+}

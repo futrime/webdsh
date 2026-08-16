@@ -1,0 +1,110 @@
+# The browser overlay: the last patch layer, applied after dsh-base and
+# dsh-web-app. Every row here exists because the shipped value names a host
+# capability the page cannot have — a listening socket, a dist directory on
+# disk, a native file dialog, an OS sandbox — and replaces it with the
+# browser's equivalent rather than turning the feature off.
+#
+# Replacing a row's plugin is disable-plus-insert, not a `name:` override: in
+# this patch dialect `name` is an assertion the target must already match, and a
+# mismatch skips the whole patch. So each swap disables the shipped row (keeping
+# it visible in `--dump-config`, and re-enablable by a user layer) and inserts
+# the browser row beside it.
+
+# ── rows whose plugin the browser replaces ──────────────────────────────────
+
+# The app-owned command line. Upstream parses `dsh web --port …` through
+# `cmdlineArgs`; there is no command line here, so a browser provider publishes
+# the same `webStartup` shape from the page URL.
+- id: web-startup
+  disabled: true
+
+# Upstream's `web-runtime` resolves the built frontend dist and mounts the
+# static-file fallback owner over it. The frontend is already loaded in this
+# page, so the browser runtime keeps only the parts that are still true: the
+# `webRuntime` values the trust fence reads, the model-visible surface prompt,
+# and the shell-visible `DSH_WEB_*` variables.
+- id: web-runtime
+  disabled: true
+
+# The plugin table. Upstream's node half hashes bundles on disk and serves them
+# over HTTP; the browser build ships them as static assets and mints blob URLs
+# for plugins installed at runtime.
+- id: modules
+  disabled: true
+
+# The Typert manifest loader. Upstream resolves each package's `./typert`
+# artifact on disk and imports it by file URL; the browser build resolves the
+# same set at assemble time and imports it through the bundler.
+- id: typert-loader
+  disabled: true
+
+# `directory-picker-auto` chooses between a native OS dialog and the in-app
+# browser by probing the display and SSH environment. In a page the answer is
+# always the in-app browser, so mount it directly.
+- id: directory-picker
+  disabled: true
+
+# The OS process sandbox (Landlock on Linux, Seatbelt on macOS, a restricted
+# token on Windows) loads a native FFI binding. Its browser counterpart
+# enforces the same file-effect vocabulary through the shell's own guard.
+- id: sandbox
+  disabled: true
+
+- insert:
+    - id: web-startup-browser
+      name: 'browser:web-startup'
+
+    - id: web-runtime-browser
+      name: 'browser:web-runtime'
+      inject: [webStartup]
+      config:
+        surfaceContext: true
+
+    - id: modules-browser
+      name: 'browser:client-modules'
+
+    - id: typert-loader-browser
+      name: 'browser:typert-loader'
+      config:
+        packages: []
+
+    - id: directory-picker-browser
+      name: '@deepseek-ai/dsh-host-directory-picker-browse'
+
+    - id: sandbox-browser
+      name: 'browser:sandbox'
+
+# ── rows kept, with browser-appropriate values ──────────────────────────────
+
+# The shipped roster lives beside the installed app; here it is seeded into the
+# virtual filesystem at a fixed deployment root. `includeUserRoot` keeps
+# `$DSH_HOME/.agent-presets` writable, which is what preset authoring uses.
+- id: agent-presets
+  config:
+    default: standard
+    includeUserRoot: true
+    roots:
+      - path: /opt/dsh/config/agent-presets
+        trust: system
+
+# Session logs are stored uncompressed. The JSONL backend's default is
+# Zstandard through `node:zlib`, which has no browser implementation — and
+# plaintext is the better trade here anyway: the virtual filesystem is already
+# in memory, and an uncompressed log is one a person can read, grep, and export
+# straight out of the browser.
+- id: session-persistence-jsonl
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: none
+
+# ── rows whose backing capability does not exist in a page ──────────────────
+
+# Client-plugin hot reload needs a rebuild watcher writing new bundles to disk.
+# A static deployment has neither, and its node half binds an HTTP event route.
+- id: client-hmr
+  disabled: true
+
+# OTLP export is already DISABLED by default upstream; disabling the row keeps
+# the exporter and its transport out of the running tree entirely.
+- id: session-telemetry-otel
+  disabled: true

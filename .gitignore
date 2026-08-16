@@ -1,0 +1,10 @@
+node_modules/
+dist/
+
+# Build inputs derived from node_modules by scripts/assemble.ts.
+public/
+src/generated/
+
+# Local scratch
+*.log
+.DS_Store
