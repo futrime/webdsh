@@ -1,8 +1,9 @@
 node_modules/
 dist/
 
-# Build inputs derived from node_modules by scripts/assemble.ts.
-public/
+# Derived from node_modules by scripts/assemble.ts.
+public/plugins/
+public/shell/
 src/generated/
 
 # Local scratch
