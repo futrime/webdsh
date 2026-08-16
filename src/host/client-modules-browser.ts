@@ -88,7 +88,17 @@ function readInstalledClientHalf(packageName: string): { bundle: Uint8Array, inj
       : undefined
   if (relativePath === undefined) return undefined
   const bundlePath = `/opt/dsh/plugins/node_modules/${packageName}/${relativePath.replace(/^\.\//, '')}`
-  if (!volume.exists(bundlePath)) return undefined
+  if (!volume.exists(bundlePath)) {
+    // The package promised a browser half and shipped a tarball without it —
+    // an upstream packaging slip (its client build did not run before publish).
+    // Upstream fails the whole boot here; skipping keeps the plugin's host half
+    // working, so say what happened rather than silently dropping the surface.
+    console.warn(
+      `[plugins] ${packageName} declares a web client half at ${relativePath}, but its published package does not contain that file.`
+      + ' Its host half is loaded; its browser surface is unavailable until the package ships the built bundle.',
+    )
+    return undefined
+  }
   return {
     bundle: volume.readFile(bundlePath),
     inject: declaration.inject ?? [],

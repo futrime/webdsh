@@ -1,0 +1,65 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# The deploy job needs to publish an artifact and mint an id-token for the
+# Pages deployment; nothing else in this workflow writes to the repository.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and never cancel one mid-flight: a half-published
+# Pages site is worse than a slightly stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        # `npm run build` runs scripts/assemble.ts first, which derives the
+        # plugin roster, the client bundles, and the host module map from the
+        # installed @deepseek-ai packages.
+        run: npm run build
+
+      - name: Verify the build actually boots
+        # A static build can be produced from a broken tree, so the artifact is
+        # only published after a real browser has booted it, materialized the
+        # whole client plugin roster, and run the in-browser shell.
+        run: |
+          npx playwright install --with-deps chromium
+          node scripts/serve.mjs 4173 &
+          npx wait-on http://127.0.0.1:4173/ --timeout 60000 || sleep 5
+          npx tsx scripts/e2e.ts
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

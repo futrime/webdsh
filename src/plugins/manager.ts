@@ -21,6 +21,7 @@ import { volume } from '../vfs/volume.ts'
 import { toBytes, toText } from '../node/binary.ts'
 import { dirname } from '../vfs/path.ts'
 import { DEPLOY_ROOT } from '../host/seed.ts'
+import { setPluginManager } from '../host/plugin-command.ts'
 
 /** Where the installed-plugin roster lives. */
 const ROSTER_PATH = `${DEPLOY_ROOT}/plugins/installed.json`
@@ -301,6 +302,7 @@ export function installPluginManager(ctx: Context): PluginManager {
   }
 
   registerLoaders()
+  setPluginManager(manager)
   const surface = (globalThis as { dsh?: Record<string, unknown> }).dsh ?? {}
   surface.plugins = manager
   ;(globalThis as { dsh?: Record<string, unknown> }).dsh = surface

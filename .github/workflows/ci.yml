@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      - name: End-to-end
+        # Boot, client plugin roster, in-browser shell and git, and durability
+        # across a reload. The model turn is skipped without a key.
+        run: |
+          npx playwright install --with-deps chromium
+          node scripts/serve.mjs 4173 &
+          sleep 3
+          npx tsx scripts/e2e.ts
+
+      - name: Plugin compatibility
+        # Installs real community plugins from npm into the built app. Runs only
+        # on the default branch: it reaches the network for every package.
+        if: github.ref == 'refs/heads/main'
+        run: |
+          node scripts/serve.mjs 4174 &
+          sleep 3
+          npx tsx scripts/plugin-e2e.ts --url http://127.0.0.1:4174/ || true
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: /tmp/dshw-*.png
+          if-no-files-found: ignore

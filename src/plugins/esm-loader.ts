@@ -43,27 +43,81 @@ interface SpecifierSite {
   value: string
 }
 
+/** One `import.meta.url` / `.filename` / `.dirname` reference. */
+interface MetaSite {
+  /** Bounds of the whole `import.meta.<member>` expression. */
+  start: number
+  end: number
+  member: 'url' | 'filename' | 'dirname'
+}
+
+/** What a module's source says it is. */
+type ModuleKind = 'esm' | 'cjs'
+
 /**
  * Find every module specifier in `source`.
  *
- * Only `import`/`export … from '…'`, bare `import '…'`, and `import('…')` with
- * a literal argument are rewritten; a computed dynamic import is left alone
- * and will fail at runtime, which is the honest outcome.
+ * A specifier is recognized only in the three positions the grammar allows it:
+ * directly after the `from` keyword, directly after a bare `import`, and
+ * directly inside `import(`. Anything else — including a string that happens to
+ * sit inside an exported function body — is left alone. An earlier version
+ * scanned forward from `import`/`export` for the next string literal, which
+ * turned `export function f() { throw new Error('…') }` into a bogus import.
  * @param source - the module text.
  * @returns each specifier's literal bounds and value.
  */
 export function findSpecifiers(source: string): SpecifierSite[] {
+  return scanModule(source).specifiers
+}
+
+/**
+ * Walk a module once, collecting both the import specifiers and the
+ * `import.meta` references that need rewriting.
+ * @param source - the module text.
+ * @returns the specifier and `import.meta` sites, in source order.
+ */
+export function scanModule(source: string): { specifiers: SpecifierSite[], meta: MetaSite[], requires: SpecifierSite[], hasEsmSyntax: boolean } {
   const sites: SpecifierSite[] = []
-  let i = 0
+  const meta: MetaSite[] = []
+  const requires: SpecifierSite[] = []
+  let hasEsmSyntax = false
   const length = source.length
-  /** Whether the previous significant token allows a regex literal to start here. */
+  let i = 0
+  /** Whether a `/` here would start a regex literal rather than division. */
   let regexAllowed = true
+  /** The previous significant (non-space, non-comment) character. */
+  let previous = ''
 
-  const isIdentChar = (char: string): boolean => /[\w$]/.test(char)
+  const isIdent = (char: string): boolean => /[\w$]/.test(char)
 
-  /** Read a quoted string starting at `i`; returns its inner bounds. */
-  const readString = (quote: string): { start: number, end: number, value: string } | undefined => {
-    const start = i + 1
+  /** Index of the next significant character at or after `from`, or -1. */
+  const skipTrivia = (from: number): number => {
+    let cursor = from
+    while (cursor < length) {
+      const char = source[cursor]
+      if (char === ' ' || char === '\t' || char === '\n' || char === '\r') {
+        cursor++
+        continue
+      }
+      if (char === '/' && source[cursor + 1] === '/') {
+        const end = source.indexOf('\n', cursor)
+        cursor = end === -1 ? length : end
+        continue
+      }
+      if (char === '/' && source[cursor + 1] === '*') {
+        const end = source.indexOf('*/', cursor + 2)
+        cursor = end === -1 ? length : end + 2
+        continue
+      }
+      return cursor
+    }
+    return -1
+  }
+
+  /** Read a quoted string starting at `at`; returns its inner bounds. */
+  const readString = (at: number): { start: number, end: number, value: string } | undefined => {
+    const quote = source[at]
+    const start = at + 1
     let cursor = start
     while (cursor < length) {
       const char = source[cursor]
@@ -78,10 +132,20 @@ export function findSpecifiers(source: string): SpecifierSite[] {
     return undefined
   }
 
+  /** Record the specifier literal at `at`, if there is one. */
+  const claim = (at: number, into: SpecifierSite[] = sites): number | undefined => {
+    if (at === -1) return undefined
+    const quote = source[at]
+    if (quote !== '"' && quote !== "'") return undefined
+    const literal = readString(at)
+    if (literal === undefined) return undefined
+    into.push(literal)
+    return literal.end + 1
+  }
+
   while (i < length) {
     const char = source[i]
 
-    // Comments.
     if (char === '/' && source[i + 1] === '/') {
       const end = source.indexOf('\n', i)
       i = end === -1 ? length : end
@@ -92,7 +156,6 @@ export function findSpecifiers(source: string): SpecifierSite[] {
       i = end === -1 ? length : end + 2
       continue
     }
-    // Regex literal.
     if (char === '/' && regexAllowed) {
       let cursor = i + 1
       let inClass = false
@@ -114,84 +177,175 @@ export function findSpecifiers(source: string): SpecifierSite[] {
       if (closed) {
         i = cursor + 1
         regexAllowed = false
+        previous = '/'
         continue
       }
     }
-    // Strings and templates: skipped wholesale unless an import keyword put us here.
     if (char === '"' || char === "'" || char === '`') {
-      const literal = readString(char)
+      const literal = readString(i)
       i = literal === undefined ? i + 1 : literal.end + 1
       regexAllowed = false
+      previous = char
       continue
     }
 
-    // `import` / `export` statements and `import(` expressions.
-    if ((char === 'i' || char === 'e') && (source.startsWith('import', i) || source.startsWith('export', i))) {
-      const keyword = source.startsWith('import', i) ? 'import' : 'export'
-      const before = i === 0 ? '' : source[i - 1]
-      const after = source[i + keyword.length] ?? ''
-      if (!isIdentChar(before) && before !== '.' && !isIdentChar(after)) {
-        // Scan forward for this statement's specifier literal.
-        let cursor = i + keyword.length
-        let depth = 0
-        while (cursor < length) {
-          const inner = source[cursor]
-          if (inner === '/' && source[cursor + 1] === '/') {
-            const end = source.indexOf('\n', cursor)
-            cursor = end === -1 ? length : end
+    // A word starts where the *immediately* preceding character is not an
+    // identifier character. `previous` tracks the last SIGNIFICANT character
+    // instead (for the `.from` test), and whitespace never updates it — so the
+    // boundary test has to read the source directly.
+    if (isIdent(char) && (i === 0 || !isIdent(source[i - 1]))) {
+      // Read the whole word so `fromage` never looks like `from`.
+      let end = i
+      while (end < length && isIdent(source[end])) end++
+      const word = source.slice(i, end)
+
+      if (word === 'require' && previous !== '.') {
+        // `require('x')` — a CommonJS dependency edge.
+        const next = skipTrivia(end)
+        if (next !== -1 && source[next] === '(') {
+          const literalAt = skipTrivia(next + 1)
+          const consumed = claim(literalAt, requires)
+          if (consumed !== undefined) {
+            i = consumed
+            regexAllowed = false
+            previous = "'"
             continue
           }
-          if (inner === '/' && source[cursor + 1] === '*') {
-            const end = source.indexOf('*/', cursor + 2)
-            cursor = end === -1 ? length : end + 2
-            continue
-          }
-          if (inner === '{') depth++
-          if (inner === '}') depth--
-          if (inner === '"' || inner === "'") {
-            const save = i
-            i = cursor
-            const literal = readString(inner)
-            i = save
-            if (literal !== undefined) {
-              sites.push({ start: literal.start, end: literal.end, value: literal.value })
-              cursor = literal.end + 1
-            } else {
-              cursor++
-            }
-            break
-          }
-          // A statement terminator before any literal: a local declaration
-          // (`export const x = 1`) or a bare `import.meta`.
-          if (depth === 0 && (inner === ';' || inner === '\n')) {
-            const rest = source.slice(cursor).trimStart()
-            if (!rest.startsWith('from') && !rest.startsWith('"') && !rest.startsWith("'")) break
-          }
-          cursor++
         }
-        i = Math.max(cursor, i + keyword.length)
-        regexAllowed = true
-        continue
+      } else if (word === 'export' && previous !== '.') {
+        hasEsmSyntax = true
+      } else if (word === 'from' && previous !== '.') {
+        const consumed = claim(skipTrivia(end))
+        if (consumed !== undefined) {
+          hasEsmSyntax = true
+          i = consumed
+          regexAllowed = true
+          previous = "'"
+          continue
+        }
+      } else if (word === 'import' && previous !== '.') {
+        const next = skipTrivia(end)
+        // `import.meta.url` and friends: a blob module's own URL is opaque, so
+        // relative resolution against it throws. The loader rewrites these to
+        // the module's virtual-filesystem location instead.
+        if (next !== -1 && source[next] === '.') {
+          const metaStart = skipTrivia(next + 1)
+          if (metaStart !== -1 && source.startsWith('meta', metaStart) && !isIdent(source[metaStart + 4] ?? '')) {
+            const dot = skipTrivia(metaStart + 4)
+            if (dot !== -1 && source[dot] === '.') {
+              const memberStart = skipTrivia(dot + 1)
+              let memberEnd = memberStart
+              while (memberEnd < length && isIdent(source[memberEnd])) memberEnd++
+              const member = source.slice(memberStart, memberEnd)
+              if (member === 'url' || member === 'filename' || member === 'dirname') {
+                meta.push({ start: i, end: memberEnd, member })
+                i = memberEnd
+                regexAllowed = false
+                previous = 'l'
+                continue
+              }
+            }
+          }
+        }
+        if (next !== -1 && source[next] === '(') {
+          const consumed = claim(skipTrivia(next + 1))
+          if (consumed !== undefined) {
+            i = consumed
+            regexAllowed = false
+            previous = "'"
+            continue
+          }
+        } else {
+          const consumed = claim(next)
+          if (consumed !== undefined) {
+            i = consumed
+            regexAllowed = true
+            previous = "'"
+            continue
+          }
+        }
       }
+
+      i = end
+      regexAllowed = false
+      previous = source[end - 1]
+      continue
     }
 
-    if (!/\s/.test(char)) regexAllowed = /[([{,;:=!&|?+\-*%<>~^]/.test(char)
+    if (!/\s/.test(char)) {
+      regexAllowed = /[([{,;:=!&|?+\-*%<>~^]/.test(char)
+      previous = char
+    }
     i++
   }
-  return sites
+  return { specifiers: sites, meta, requires, hasEsmSyntax }
 }
 
-/** Rewrite every specifier through `map`. */
-function rewrite(source: string, map: (specifier: string) => string | undefined): string {
-  const sites = findSpecifiers(source)
-  if (sites.length === 0) return source
+/**
+ * Decide whether a module is ESM or CommonJS, the way Node does: the file
+ * extension wins, otherwise the nearest `package.json` `type` field, otherwise
+ * CommonJS — with the module's own syntax as the final tie-breaker for a
+ * package that declares nothing.
+ * @param path - the module's virtual-filesystem path.
+ * @param hasEsmSyntax - whether the source used `import`/`export` syntax.
+ * @returns the module kind.
+ */
+function moduleKind(path: string, hasEsmSyntax: boolean): ModuleKind {
+  if (path.endsWith('.mjs')) return 'esm'
+  if (path.endsWith('.cjs')) return 'cjs'
+  let directory = dirname(path)
+  for (let depth = 0; depth < 12; depth++) {
+    const manifest = `${directory}/package.json`
+    if (volume.exists(manifest)) {
+      try {
+        const parsed = JSON.parse(toText(volume.readFile(manifest))) as { type?: string }
+        if (parsed.type === 'module') return 'esm'
+        if (parsed.type === 'commonjs') return 'cjs'
+      } catch {
+        // A malformed manifest decides nothing; fall through to the syntax test.
+      }
+      break
+    }
+    if (directory === '/' || directory === PLUGIN_MODULES_ROOT) break
+    directory = dirname(directory)
+  }
+  return hasEsmSyntax ? 'esm' : 'cjs'
+}
+
+/**
+ * Apply the rewrites a module needs to run from a blob URL.
+ * @param source - the module text.
+ * @param resolutions - specifier → blob URL for its dependencies.
+ * @param filePath - the module's absolute path in the virtual filesystem.
+ * @returns the rewritten source.
+ */
+function rewriteModule(source: string, resolutions: Map<string, string>, filePath: string): string {
+  const { specifiers, meta } = scanModule(source)
+  const fileUrl = `file://${filePath}`
+  const edits: { start: number, end: number, text: string }[] = [
+    ...specifiers.map(site => ({
+      start: site.start,
+      end: site.end,
+      // The literal's quotes stay in place; only its contents are replaced.
+      text: JSON.stringify(resolutions.get(site.value) ?? site.value).slice(1, -1),
+    })),
+    ...meta.map(site => ({
+      start: site.start,
+      end: site.end,
+      text: JSON.stringify(
+        site.member === 'url' ? fileUrl
+          : site.member === 'filename' ? filePath
+            : dirname(filePath),
+      ),
+    })),
+  ].sort((a, b) => a.start - b.start)
+
+  if (edits.length === 0) return source
   let out = ''
   let cursor = 0
-  for (const site of sites) {
-    const replacement = map(site.value)
-    if (replacement === undefined) continue
-    out += source.slice(cursor, site.start) + replacement
-    cursor = site.end
+  for (const edit of edits) {
+    out += source.slice(cursor, edit.start) + edit.text
+    cursor = edit.end
   }
   return out + source.slice(cursor)
 }
@@ -285,6 +439,55 @@ export function resolveInstalled(specifier: string): string | undefined {
   return resolveFile(resolvePath(`${PLUGIN_MODULES_ROOT}/${packageName}`, entry))
 }
 
+/** Materialized CommonJS exports, keyed by module path. */
+const cjsExports = new Map<string, unknown>()
+
+/**
+ * Build a blob ES module that re-exports a CommonJS module's exports.
+ *
+ * An ESM importer can only reach a blob URL, so a CJS dependency needs a facade
+ * whose named exports mirror the CJS object — which is what Node's own
+ * cjs-named-exports interop provides.
+ * @param path - the CJS module's virtual-filesystem path.
+ * @param exported - its `module.exports` value.
+ * @returns the facade's blob URL.
+ */
+function cjsFacade(path: string, exported: unknown): string {
+  const registry = (globalThis as { __DSH_CJS__?: Map<string, unknown> }).__DSH_CJS__ ?? new Map<string, unknown>()
+  ;(globalThis as { __DSH_CJS__?: Map<string, unknown> }).__DSH_CJS__ = registry
+  registry.set(path, exported)
+  const names = typeof exported === 'object' && exported !== null
+    ? Object.keys(exported as Record<string, unknown>).filter(key => key !== 'default' && /^[A-Za-z_$][\w$]*$/.test(key))
+    : []
+  const body = [
+    `const ns = globalThis.__DSH_CJS__.get(${JSON.stringify(path)});`,
+    ...names.map(key => `export const ${key} = ns[${JSON.stringify(key)}];`),
+    'export default ns;',
+  ].join('\n')
+  return URL.createObjectURL(new Blob([body], { type: 'text/javascript' }))
+}
+
+/**
+ * Evaluate a CommonJS module.
+ * @param path - its virtual-filesystem path.
+ * @param source - its text.
+ * @param required - specifier → already-materialized exports.
+ * @returns the module's exports.
+ */
+function evaluateCjs(path: string, source: string, required: Map<string, unknown>): unknown {
+  const module = { exports: {} as unknown }
+  const require = (specifier: string): unknown => {
+    if (required.has(specifier)) return required.get(specifier)
+    throw new Error(`plugin-loader: ${path} required "${specifier}" at runtime, which the loader did not resolve statically`)
+  }
+  // eslint-disable-next-line no-new-func
+  const factory = new Function('exports', 'require', 'module', '__filename', '__dirname', `${source}\n//# sourceURL=${path}`) as (
+    exports: unknown, require: (specifier: string) => unknown, module: { exports: unknown }, filename: string, directory: string,
+  ) => void
+  factory(module.exports, require, module, path, dirname(path))
+  return module.exports
+}
+
 /**
  * Load one module from the virtual filesystem, resolving its dependency graph.
  * @param path - absolute VFS path of the module.
@@ -299,37 +502,58 @@ export async function importVfsModule(path: string): Promise<unknown> {
   const task = (async () => {
     const source = toText(volume.readFile(path))
     const directory = dirname(path)
-    /** Dependencies discovered in this module, resolved before the blob is built. */
-    const resolutions = new Map<string, string>()
+    const scan = scanModule(source)
+    const kind = moduleKind(path, scan.hasEsmSyntax)
 
-    for (const site of findSpecifiers(source)) {
-      if (resolutions.has(site.value)) continue
-      const specifier = site.value
+    /** Resolve one dependency specifier to its module path or bridge namespace. */
+    const resolveDependency = async (specifier: string): Promise<{ blob: string, exports: unknown }> => {
       if (specifier.startsWith('.') || specifier.startsWith('/')) {
         const target = resolveFile(specifier.startsWith('/') ? specifier : resolvePath(directory, specifier))
         if (target === undefined) {
           throw new Error(`plugin-loader: ${path} imports "${specifier}", which does not exist in the virtual filesystem`)
         }
-        await importVfsModule(target)
-        resolutions.set(specifier, blobUrls.get(target)!)
-        continue
+        const namespace = await importVfsModule(target)
+        return { blob: blobUrls.get(target)!, exports: cjsExports.get(target) ?? namespace }
       }
       // A bare specifier: prefer the app's own copy, then an installed package.
-      if (resolveBuiltin(specifier) !== undefined) {
-        resolutions.set(specifier, await bridgeFor(specifier))
-        continue
-      }
+      const builtin = resolveBuiltin(specifier)
+      if (builtin !== undefined) return { blob: await bridgeFor(specifier), exports: builtin }
       const installed = resolveInstalled(specifier)
       if (installed !== undefined) {
-        await importVfsModule(installed)
-        resolutions.set(specifier, blobUrls.get(installed)!)
-        continue
+        const namespace = await importVfsModule(installed)
+        return { blob: blobUrls.get(installed)!, exports: cjsExports.get(installed) ?? namespace }
       }
       // Falls back to the host module system (every dsh package this app bundles).
-      resolutions.set(specifier, await bridgeFor(specifier))
+      const blob = await bridgeFor(specifier)
+      return { blob, exports: await hostModuleSystem.import(specifier) }
     }
 
-    const rewritten = rewrite(source, specifier => JSON.stringify(resolutions.get(specifier) ?? specifier).slice(1, -1))
+    if (kind === 'cjs') {
+      const required = new Map<string, unknown>()
+      for (const site of [...scan.requires, ...scan.specifiers]) {
+        if (required.has(site.value)) continue
+        required.set(site.value, (await resolveDependency(site.value)).exports)
+      }
+      const exported = evaluateCjs(path, source, required)
+      cjsExports.set(path, exported)
+      blobUrls.set(path, cjsFacade(path, exported))
+      // An ESM importer sees Node's cjs interop shape; a CJS importer gets the
+      // raw exports through `cjsExports`.
+      const namespace = typeof exported === 'object' && exported !== null
+        ? { ...(exported as Record<string, unknown>), default: exported }
+        : { default: exported }
+      namespaces.set(path, namespace)
+      return namespace
+    }
+
+    /** Dependencies discovered in this module, resolved before the blob is built. */
+    const resolutions = new Map<string, string>()
+    for (const site of scan.specifiers) {
+      if (resolutions.has(site.value)) continue
+      resolutions.set(site.value, (await resolveDependency(site.value)).blob)
+    }
+
+    const rewritten = rewriteModule(source, resolutions, path)
     const url = URL.createObjectURL(new Blob([rewritten], { type: 'text/javascript' }))
     blobUrls.set(path, url)
     const namespace = await import(/* @vite-ignore */ url) as unknown

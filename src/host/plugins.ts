@@ -14,6 +14,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-shell-env'
 import { SandboxProvider, type ConfinedArgv, type SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import * as TypertLoaderBrowser from './typert-loader-browser.ts'
+import * as PluginCommand from './plugin-command.ts'
 
 // ---- browser:web-startup ----------------------------------------------------
 
@@ -160,6 +161,7 @@ export const BROWSER_PLUGINS: Record<string, unknown> = {
   'browser:web-runtime': webRuntimePlugin,
   'browser:sandbox': { default: browserSandboxPlugin, name: 'browser-sandbox' },
   'browser:typert-loader': TypertLoaderBrowser,
+  'browser:plugin-command': PluginCommand,
 }
 
 /** Re-exported so `boot.ts` can register the client-module table under the same scheme. */
