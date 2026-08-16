@@ -23,12 +23,24 @@ import { setHostRequire } from '../node/misc.ts'
  * Installing a second `zod` would fork every `instanceof` check the API gateway
  * makes. Sharing them also keeps large, deeply cyclic packages out of the
  * runtime module loader entirely.
+ *
+ * The same table covers the native packages this build replaces, so a plugin
+ * that imports `node-pty` reaches the browser terminal rather than a binary
+ * loader that cannot succeed.
  */
 const SHARED_MODULES: Record<string, () => Promise<unknown>> = {
   zod: () => import('zod'),
   schemastery: () => import('@deepseek-ai/schemastery'),
   cordis: () => import('@deepseek-ai/cordis'),
   cosmokit: () => import('@deepseek-ai/cosmokit'),
+  // Native packages this build replaces. A plugin asking for a PTY or an image
+  // decoder must get the browser implementation the harness itself uses —
+  // installing the real package only fetches a native binary that cannot load.
+  'node-pty': () => import('../node/node-pty.ts'),
+  sharp: () => import('../node/sharp.ts'),
+  // `ws`'s own browser entry throws on import; the platform WebSocket is what a
+  // client-side consumer actually wants.
+  ws: () => import('../node/ws.ts'),
 }
 
 /** Whether a bare specifier resolves to a library the app already provides. */

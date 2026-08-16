@@ -16,6 +16,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { dispatchVirtualRequest } from '../node/http.ts'
 import { installRequestHostPreservation } from './request-host.ts'
+import { openVirtualWebSocket } from './virtual-websocket.ts'
 
 /** Paths the interceptors claim. */
 const API_PREFIX = '/api'
@@ -182,6 +183,12 @@ export function installWebSocketInterceptor(): void {
     }
     if (parsed?.pathname === MUX_PATH) return new HostEventSocket(href, 'mux') as unknown as WebSocket
     if (parsed?.pathname === HOST_PATH) return new HostEventSocket(href, 'host') as unknown as WebSocket
+    // Any other same-origin socket is offered to the host's upgrade routes,
+    // which is how a plugin's own live channel connects.
+    if (parsed !== undefined && parsed.host === location.host) {
+      const virtual = openVirtualWebSocket(href)
+      if (virtual !== undefined) return virtual as unknown as WebSocket
+    }
     return new Original(url, protocols)
   } as unknown as typeof WebSocket
 

@@ -293,6 +293,22 @@ export function hasVirtualServer(): boolean {
   return servers.size > 0
 }
 
+/**
+ * Offer an upgrade to the virtual server's routes.
+ *
+ * `dsh-host-webserver` owns the route table and destroys the socket when
+ * nothing matches, so the caller reads `socket.destroyed` to learn whether a
+ * route claimed the connection.
+ * @param request - the synthetic upgrade request.
+ * @param socket - the synthetic socket carrying the connection's two ends.
+ * @returns whether a server was listening at all.
+ */
+export function upgradeVirtualRequest(request: IncomingMessageShim, socket: SocketShim): boolean {
+  const server = [...servers][0]
+  if (server === undefined) return false
+  return server.emit('upgrade', request, socket, new Uint8Array(0))
+}
+
 /** `http.request`/`http.get` are unreachable: browsers cannot open raw sockets. */
 export function request(): never {
   throw Object.assign(new Error('http.request is unavailable in the browser host; use fetch'), { code: 'ENOSYS' })
