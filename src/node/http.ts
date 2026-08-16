@@ -275,7 +275,7 @@ export async function dispatchVirtualRequest(request: Request): Promise<Response
 
   return new Promise<Response>((resolve) => {
     const res = new ServerResponseShim(socket, (result) => {
-      resolve(new Response(result.body.length === 0 ? null : result.body, {
+      resolve(new Response(result.body.length === 0 ? null : (result.body as BlobPart), {
         status: result.status,
         headers: result.headers,
       }))

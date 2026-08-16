@@ -10,27 +10,7 @@
  * message that says exactly that.
  */
 
-type SqlJsStatic = {
-  Database: new (data?: Uint8Array) => SqlJsDatabase
-}
-
-interface SqlJsDatabase {
-  run(sql: string, params?: unknown[]): void
-  exec(sql: string, params?: unknown[]): { columns: string[], values: unknown[][] }[]
-  prepare(sql: string): SqlJsStatement
-  export(): Uint8Array
-  close(): void
-  getRowsModified(): number
-}
-
-interface SqlJsStatement {
-  bind(params?: unknown[] | Record<string, unknown>): boolean
-  step(): boolean
-  getAsObject(): Record<string, unknown>
-  get(): unknown[]
-  free(): void
-  reset(): void
-}
+import type { SqlJsDatabase, SqlJsStatement, SqlJsStatic } from 'sql.js'
 
 let engine: SqlJsStatic | undefined
 let warming: Promise<SqlJsStatic> | undefined
@@ -41,7 +21,7 @@ let warming: Promise<SqlJsStatic> | undefined
  */
 export async function prepareSqlite(): Promise<SqlJsStatic> {
   warming ??= (async () => {
-    const factory = (await import('sql.js')).default as unknown as (config?: { locateFile?: (file: string) => string }) => Promise<SqlJsStatic>
+    const factory = (await import('sql.js')).default
     engine = await factory({
       locateFile: (file: string) => new URL(`sql-wasm/${file}`, document.baseURI).href,
     })

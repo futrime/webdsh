@@ -49,12 +49,9 @@ export interface WebBootGraph {
   entries: WebBootEntry[]
 }
 
-declare module '@deepseek-ai/cordis' {
-  interface Context {
-    /** The browser plugin table (provided by this plugin, mirroring upstream's key). */
-    clientModules: BrowserClientModules
-  }
-}
+// The `clientModules` context key is declared by `@deepseek-ai/dsh-client-modules`
+// (whose types this build still consumes), so this plugin provides that key
+// rather than redeclaring it with a different class.
 
 /** Short content hash, matching upstream's revision scheme. */
 function shortHash(input: Uint8Array | string): string {

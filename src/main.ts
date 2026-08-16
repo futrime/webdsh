@@ -10,6 +10,7 @@
 // Must be first: several dsh modules read `process` while their bodies evaluate.
 import './node/install-globals.ts'
 import { attachHost, installVirtualNetwork } from './net/virtual-network.ts'
+import { installRequestRouter } from './net/service-worker.ts'
 import { bootHost } from './host/boot.ts'
 import { installPluginManager } from './plugins/manager.ts'
 import { installWindowApi } from './api.ts'
@@ -49,6 +50,12 @@ async function main(): Promise<void> {
     ;(globalThis as { __DSH_BOOT__?: unknown }).__DSH_BOOT__ = clientModules.graph()
 
     installPluginManager(ctx)
+
+    // Plugin-registered HTTP routes (a plugin serving its own assets) are only
+    // reachable through a Service Worker, because an `<img src>` never passes
+    // through a patched `fetch`. Its absence costs those assets and nothing else.
+    progress.step('Routing plugin assets')
+    await installRequestRouter()
 
     progress.step('Loading the web client')
     injectStyles()

@@ -91,7 +91,7 @@ async function waitForShell(page: Page): Promise<void> {
 async function inspect(page: Page): Promise<{ rows: { id: string, name: string, state: string }[], client: string[], warnings: string[] }> {
   return page.evaluate(() => {
     const labels: Record<number, string> = { 0: 'pending', 1: 'loading', 2: 'active', 3: 'failed', 4: 'disposed', 5: 'unloading' }
-    const ctx = (globalThis as { dsh?: { ctx?: { loader?: { entries(): Iterable<Record<string, unknown>> } } } }).dsh?.ctx
+    const ctx = globalThis.dsh?.ctx
     const rows: { id: string, name: string, state: string }[] = []
     for (const entry of ctx?.loader?.entries() ?? []) {
       const options = entry.options as { id?: string, name?: string }
@@ -137,8 +137,7 @@ async function test(browser: Browser, candidate: Candidate): Promise<Outcome> {
 
     const install = await page.evaluate(async (spec: string) => {
       try {
-        const api = (globalThis as { dsh: { plugins: { install(s: string): Promise<{ version: string }> } } }).dsh.plugins
-        const entry = await api.install(spec)
+        const entry = await globalThis.dsh.plugins.install(spec)
         return { ok: true, version: entry.version, error: '' }
       } catch (error) {
         return { ok: false, version: '', error: error instanceof Error ? error.message : String(error) }
@@ -152,7 +151,7 @@ async function test(browser: Browser, candidate: Candidate): Promise<Outcome> {
     outcome.installed = true
     outcome.version = install.version
 
-    await page.evaluate(async () => { await (globalThis as { dsh: { flush(): Promise<void> } }).dsh.flush() })
+    await page.evaluate(async () => { await globalThis.dsh.flush() })
     // A reload is what makes the new bundle patch part of the composition, and
     // its browser half part of the boot graph — the same restart `dsh plugin
     // add` asks for.

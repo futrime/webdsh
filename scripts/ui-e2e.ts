@@ -154,8 +154,7 @@ async function main(): Promise<void> {
     // stdout really reached the model.
     const marker = `dsh-web-${Math.floor(Date.now() % 1e9).toString(36)}${Math.floor(performance.now()).toString(36)}`
     await page.evaluate((value: string) => {
-      (globalThis as { dsh: { writeFile(path: string, contents: string): void } })
-        .dsh.writeFile('/home/dsh/workspace/marker.txt', `${value}\n`)
+      globalThis.dsh.writeFile('/home/dsh/workspace/marker.txt', `${value}\n`)
     }, marker)
     const toolReply = await sendPrompt(
       page,
@@ -171,8 +170,7 @@ async function main(): Promise<void> {
     )
     await page.screenshot({ path: `${shots}-6-edit.png` })
     const onDisk = await page.evaluate(async () => {
-      const result = await (globalThis as { dsh: { shell(s: string): Promise<{ stdout: string }> } })
-        .dsh.shell('cat /home/dsh/workspace/hello.txt 2>&1')
+      const result = await globalThis.dsh.shell('cat /home/dsh/workspace/hello.txt 2>&1')
       return result.stdout
     })
     expect(/from-the-browser/.test(onDisk), `the agent's file edit did not land: ${onDisk}\n${editReply.slice(-1500)}`)

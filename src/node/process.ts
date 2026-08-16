@@ -94,6 +94,21 @@ const stdin = {
 }
 
 /**
+ * The listener surface `process` exposes. Naming it breaks the self-reference
+ * that would otherwise make the object's type unresolvable.
+ */
+interface ProcessEmitter {
+  on(event: string, listener: (...args: unknown[]) => void): ProcessEmitter
+  once(event: string, listener: (...args: unknown[]) => void): ProcessEmitter
+  off(event: string, listener: (...args: unknown[]) => void): ProcessEmitter
+  prependListener(event: string, listener: (...args: unknown[]) => void): ProcessEmitter
+  prependOnceListener(event: string, listener: (...args: unknown[]) => void): ProcessEmitter
+  removeListener(event: string, listener: (...args: unknown[]) => void): ProcessEmitter
+  removeAllListeners(event?: string): ProcessEmitter
+  setMaxListeners(): ProcessEmitter
+}
+
+/**
  * The process object.
  *
  * `index.html` installs a minimal placeholder on `globalThis` before any module
@@ -182,7 +197,7 @@ const built = {
     queueMicrotask(() => { callback(...args) })
   },
 
-  on(event: string, listener: (...args: unknown[]) => void): typeof built {
+  on(event: string, listener: (...args: unknown[]) => void): ProcessEmitter {
     let set = listeners.get(event)
     if (set === undefined) {
       set = new Set()
@@ -192,14 +207,14 @@ const built = {
     return built
   },
 
-  prependListener(event: string, listener: (...args: unknown[]) => void): typeof built {
+  prependListener(event: string, listener: (...args: unknown[]) => void): ProcessEmitter {
     // Ordering within a set is insertion order; rebuild it with this listener first.
     const existing = [...(listeners.get(event) ?? [])]
     listeners.set(event, new Set([listener, ...existing]))
     return built
   },
 
-  prependOnceListener(event: string, listener: (...args: unknown[]) => void): typeof built {
+  prependOnceListener(event: string, listener: (...args: unknown[]) => void): ProcessEmitter {
     const wrapper = (...args: unknown[]): void => {
       built.off(event, wrapper)
       listener(...args)
@@ -215,7 +230,7 @@ const built = {
     return [...listeners.keys()]
   },
 
-  setMaxListeners(): typeof built {
+  setMaxListeners(): ProcessEmitter {
     return built
   },
 
@@ -223,7 +238,7 @@ const built = {
     return 0
   },
 
-  once(event: string, listener: (...args: unknown[]) => void): typeof built {
+  once(event: string, listener: (...args: unknown[]) => void): ProcessEmitter {
     const wrapper = (...args: unknown[]): void => {
       built.off(event, wrapper)
       listener(...args)
@@ -231,16 +246,16 @@ const built = {
     return built.on(event, wrapper)
   },
 
-  off(event: string, listener: (...args: unknown[]) => void): typeof built {
+  off(event: string, listener: (...args: unknown[]) => void): ProcessEmitter {
     listeners.get(event)?.delete(listener)
     return built
   },
 
-  removeListener(event: string, listener: (...args: unknown[]) => void): typeof built {
+  removeListener(event: string, listener: (...args: unknown[]) => void): ProcessEmitter {
     return built.off(event, listener)
   },
 
-  removeAllListeners(event?: string): typeof built {
+  removeAllListeners(event?: string): ProcessEmitter {
     if (event === undefined) listeners.clear()
     else listeners.delete(event)
     return built
@@ -341,7 +356,7 @@ export function setBuiltinLookup(lookup: (specifier: string) => unknown): void {
 }
 
 /** Adopt the page's bootstrap placeholder so `process` has one identity. */
-const adopted = (globalThis as { process?: Record<string, unknown> }).process
+const adopted = (globalThis as unknown as { process?: Record<string, unknown> }).process
 export const process = (adopted === undefined ? built : Object.assign(adopted, built)) as typeof built
 
 // Keep the bootstrap's environment values (they seed nothing today, but a

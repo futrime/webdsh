@@ -236,6 +236,60 @@ for (const name of specifiersIn(readFileSync(join(root, 'src', 'host', 'browser.
   specifiers.add(name)
 }
 
+/**
+ * Every subpath a package exports, expanded.
+ *
+ * Plugins import dsh subpaths directly (`@deepseek-ai/dsh-host-apiproxy/api/rpc`),
+ * and a wildcard export like `"./api/*"` cannot be resolved at runtime by a
+ * bundler — so each concrete file behind it becomes its own map entry here.
+ * @param packageName - the package.
+ * @param exportsField - its `exports` map.
+ * @returns the specifiers to expose.
+ */
+function subpathSpecifiers(packageName: string, exportsField: unknown): string[] {
+  if (typeof exportsField !== 'object' || exportsField === null) return []
+  const out: string[] = []
+  for (const [key, value] of Object.entries(exportsField as Record<string, unknown>)) {
+    if (!key.startsWith('./') || key === './package.json') continue
+    const target = firstStringTarget(value)
+    if (target === undefined) continue
+    // Only JavaScript modules belong in the host module map. Packages also
+    // export raw assets (`"./cordis.patch.yml"`, `"./dist/*"`) and TypeScript
+    // sources, none of which the loader can import.
+    if (!/\.(?:js|mjs|cjs)$/.test(target)) continue
+    if (!key.includes('*')) {
+      out.push(`${packageName}/${key.slice(2)}`)
+      continue
+    }
+    if (!target.includes('*')) continue
+    const [prefix, suffix] = target.split('*')
+    // `dirname('./a/b/')` drops `b`, so a prefix that already ends at a
+    // directory boundary is used as-is.
+    const relativeDirectory = prefix.endsWith('/') ? prefix : dirname(prefix)
+    const directory = join(scope, packageName.split('/')[1], relativeDirectory)
+    if (!existsSync(directory)) continue
+    for (const file of readdirSync(directory)) {
+      if (!file.endsWith(suffix)) continue
+      if (statSync(join(directory, file)).isDirectory()) continue
+      const stem = file.slice(0, -suffix.length)
+      if (stem.length === 0 || stem.endsWith('.d')) continue
+      out.push(`${packageName}/${key.slice(2).replace('*', stem)}`)
+    }
+  }
+  return out
+}
+
+/** First string target in a (possibly conditional) exports value. */
+function firstStringTarget(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (typeof value !== 'object' || value === null) return undefined
+  for (const condition of ['default', 'import', 'module', 'browser', 'require', 'node']) {
+    const resolved = firstStringTarget((value as Record<string, unknown>)[condition])
+    if (resolved !== undefined) return resolved
+  }
+  return undefined
+}
+
 // Every installed dsh package, whether or not a composition file names it.
 //
 // Compositions are not the only source of loader rows: a host plugin can create
@@ -250,6 +304,7 @@ for (const name of readdirSync(scope)) {
   const hasEntry = typeof pkg.main === 'string' || typeof pkg.module === 'string'
     || (typeof pkg.exports === 'object' && pkg.exports !== null && '.' in (pkg.exports as Record<string, unknown>))
   if (hasEntry) specifiers.add(String(pkg.name))
+  for (const subpath of subpathSpecifiers(String(pkg.name), pkg.exports)) specifiers.add(subpath)
 }
 
 // Only specifiers that actually resolve become map entries; a composition may
@@ -258,6 +313,9 @@ const resolvable: string[] = []
 for (const specifier of [...specifiers].sort()) {
   const [scopeName, packageName] = specifier.startsWith('@') ? specifier.split('/') : [undefined, specifier.split('/')[0]]
   const packageRoot = scopeName === undefined ? join(modules, packageName) : join(modules, scopeName, packageName)
+  // `./src/*` exports point at TypeScript sources, which the browser build has
+  // no business importing; skip them rather than emit a chunk that cannot load.
+  if (specifier.includes('/src/')) continue
   if (existsSync(join(packageRoot, 'package.json'))) resolvable.push(specifier)
   else console.warn(`[assemble] composition names ${specifier}, which is not installed; it will fail to load if enabled`)
 }

@@ -130,30 +130,55 @@ export const gitCommand: CommandImpl = async (context) => {
       case 'status': {
         if (findRoot(context) === undefined) return notARepository(context)
         const branch = await git.currentBranch({ ...common }) ?? 'main'
-        const matrix = await git.statusMatrix({ ...common })
         const staged: string[] = []
         const modified: string[] = []
+        const deleted: string[] = []
         const untracked: string[] = []
-        for (const [filepath, head, worktree, stage] of matrix) {
+        // isomorphic-git's status matrix, per its documented vocabulary:
+        //   head    0 absent, 1 present
+        //   workdir 0 absent, 1 same as head, 2 different from head
+        //   stage   0 absent, 1 same as head, 2 same as workdir, 3 different
+        for (const row of await git.statusMatrix({ ...common })) {
+          const [filepath] = row
+          const head = row[1] as number
+          const workdir = row[2] as number
+          const stage = row[3] as number
+          if (head === 0 && workdir === 0 && stage === 0) continue
           if (head === 0 && stage === 0) untracked.push(filepath)
-          else if (stage !== head || (stage === 2 && worktree !== 2)) {
-            if (stage === head) modified.push(filepath)
-            else staged.push(filepath)
-          }
-          if (head === 1 && worktree === 2 && stage === 1) modified.push(filepath)
+          else if (head === 0) staged.push(filepath)
+          else if (workdir === 0) deleted.push(filepath)
+          else if (stage === 3) {
+            // Staged, then edited again in the working tree.
+            staged.push(filepath)
+            modified.push(filepath)
+          } else if (stage === 2) staged.push(filepath)
+          else if (workdir === 2) modified.push(filepath)
         }
         const short = flags.has('s') || context.argv.includes('--short')
         if (short) {
           for (const file of staged) context.stdout.write(`A  ${file}\n`)
           for (const file of modified) context.stdout.write(` M ${file}\n`)
+          for (const file of deleted) context.stdout.write(` D ${file}\n`)
           for (const file of untracked) context.stdout.write(`?? ${file}\n`)
           return 0
         }
         context.stdout.write(`On branch ${branch}\n`)
-        if (staged.length > 0) context.stdout.write(`\nChanges to be committed:\n${staged.map(file => `\tnew file:   ${file}`).join('\n')}\n`)
-        if (modified.length > 0) context.stdout.write(`\nChanges not staged for commit:\n${modified.map(file => `\tmodified:   ${file}`).join('\n')}\n`)
-        if (untracked.length > 0) context.stdout.write(`\nUntracked files:\n${untracked.map(file => `\t${file}`).join('\n')}\n`)
-        if (staged.length + modified.length + untracked.length === 0) context.stdout.write('nothing to commit, working tree clean\n')
+        if (staged.length > 0) {
+          context.stdout.write(`\nChanges to be committed:\n${staged.map(file => `\tnew file:   ${file}`).join('\n')}\n`)
+        }
+        if (modified.length + deleted.length > 0) {
+          const lines = [
+            ...modified.map(file => `\tmodified:   ${file}`),
+            ...deleted.map(file => `\tdeleted:    ${file}`),
+          ]
+          context.stdout.write(`\nChanges not staged for commit:\n${lines.join('\n')}\n`)
+        }
+        if (untracked.length > 0) {
+          context.stdout.write(`\nUntracked files:\n${untracked.map(file => `\t${file}`).join('\n')}\n`)
+        }
+        if (staged.length + modified.length + deleted.length + untracked.length === 0) {
+          context.stdout.write('nothing to commit, working tree clean\n')
+        }
         return 0
       }
 

@@ -236,7 +236,7 @@ export const core = {
   },
 
   /** `fs.accessSync`; the VFS has no ACLs, so only existence is checked. */
-  access(path: string, mode = constants.F_OK): void {
+  access(path: string, mode: number = constants.F_OK): void {
     const node = volume.lookup(path)
     if (node === undefined) throw fsError('ENOENT', 'access', resolve(path))
     if ((mode & constants.X_OK) !== 0 && node.kind === 'file' && (node.mode & 0o111) === 0) {

@@ -44,11 +44,7 @@ async function waitForShell(page: Page): Promise<void> {
 
 /** Evaluate a shell command through the page's exposed harness API. */
 async function shell(page: Page, script: string): Promise<{ status: number, stdout: string, stderr: string }> {
-  return page.evaluate(async (source: string) => {
-    const api = (globalThis as { dsh?: { shell?: (input: string) => Promise<unknown> } }).dsh
-    if (api?.shell === undefined) throw new Error('window.dsh.shell is not exposed')
-    return api.shell(source) as Promise<{ status: number, stdout: string, stderr: string }>
-  }, script)
+  return page.evaluate(async (source: string) => globalThis.dsh.shell(source), script)
 }
 
 /** Assert a condition, failing the scenario with a readable message. */
@@ -114,10 +110,7 @@ const scenarios: Scenario[] = [
     async run(page) {
       await waitForShell(page)
       await shell(page, 'mkdir -p /workspace/persist && echo durable > /workspace/persist/mark.txt')
-      await page.evaluate(async () => {
-        const api = (globalThis as { dsh?: { flush?: () => Promise<void> } }).dsh
-        await api?.flush?.()
-      })
+      await page.evaluate(async () => { await globalThis.dsh.flush() })
       await page.reload({ waitUntil: 'domcontentloaded' })
       await waitForShell(page)
       const result = await shell(page, 'cat /workspace/persist/mark.txt')
@@ -132,11 +125,10 @@ const scenarios: Scenario[] = [
         return
       }
       await waitForShell(page)
-      const reply = await page.evaluate(async (key: string) => {
-        const api = (globalThis as { dsh?: { promptOnce?: (key: string, text: string) => Promise<string> } }).dsh
-        if (api?.promptOnce === undefined) throw new Error('window.dsh.promptOnce is not exposed')
-        return api.promptOnce(key, 'Reply with exactly the word: pong')
-      }, apiKey)
+      const reply = await page.evaluate(
+        async (key: string) => globalThis.dsh.promptOnce(key, 'Reply with exactly the word: pong'),
+        apiKey,
+      )
       expect(/pong/i.test(reply), `unexpected model reply: ${reply}`)
       void log
     },

@@ -16,7 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
 import { extractTarball } from './tar.ts'
 import { importInstalledPackage, PLUGIN_MODULES_ROOT, resolveInstalled } from './esm-loader.ts'
-import { registerRuntimeLoader } from '../host/module-system.ts'
+import { isSharedModule, registerRuntimeLoader } from '../host/module-system.ts'
 import { volume } from '../vfs/volume.ts'
 import { toBytes, toText } from '../node/binary.ts'
 import { dirname } from '../vfs/path.ts'
@@ -158,6 +158,51 @@ export interface PluginManager {
   reload(): Promise<void>
 }
 
+/**
+ * Every package present under the plugin module root, direct or transitive.
+ *
+ * A meta-package's dependencies are loader rows too — `@linxin666/dsh-web-ui-all`
+ * mounts thirteen of them — so resolution has to cover the whole installed tree,
+ * not just the roster's top-level entries.
+ * @returns package names, including scoped ones.
+ */
+function installedPackageNames(): string[] {
+  if (!volume.exists(PLUGIN_MODULES_ROOT)) return []
+  const names: string[] = []
+  for (const entry of volume.readdir(PLUGIN_MODULES_ROOT)) {
+    if (entry.startsWith('@')) {
+      const scoped = `${PLUGIN_MODULES_ROOT}/${entry}`
+      for (const inner of volume.readdir(scoped)) {
+        if (volume.exists(`${scoped}/${inner}/package.json`)) names.push(`${entry}/${inner}`)
+      }
+      continue
+    }
+    if (volume.exists(`${PLUGIN_MODULES_ROOT}/${entry}/package.json`)) names.push(entry)
+  }
+  return names
+}
+
+/**
+ * Register host module loaders for one installed package and its subpath
+ * exports, so a composition can mount `pkg` or `pkg/startup`.
+ * @param name - the package name.
+ */
+function registerPackageLoaders(name: string): void {
+  const manifestPath = `${PLUGIN_MODULES_ROOT}/${name}/package.json`
+  if (!volume.exists(manifestPath)) return
+  registerRuntimeLoader(name, () => importInstalledPackage(name))
+  try {
+    const manifest = JSON.parse(toText(volume.readFile(manifestPath))) as { exports?: Record<string, unknown> }
+    for (const key of Object.keys(manifest.exports ?? {})) {
+      if (!key.startsWith('./') || key === './package.json' || key.includes('*')) continue
+      const specifier = `${name}/${key.slice(2)}`
+      registerRuntimeLoader(specifier, () => importInstalledPackage(specifier))
+    }
+  } catch {
+    // A malformed manifest is reported when the package is actually imported.
+  }
+}
+
 /** Recursively install the dependencies this app does not already provide. */
 async function installDependencies(
   manifest: Record<string, unknown>,
@@ -170,6 +215,9 @@ async function installDependencies(
   for (const [name, range] of Object.entries(dependencies)) {
     if (seen.has(name)) continue
     if (PROVIDED_PREFIXES.some(prefix => name.startsWith(prefix))) continue
+    // A shared library (zod, schemastery, cordis) must stay the app's single
+    // instance; installing a second copy forks schema and service identity.
+    if (isSharedModule(name)) continue
     if (resolveInstalled(name) !== undefined) continue
     seen.add(name)
     try {
@@ -194,20 +242,9 @@ async function installDependencies(
 export function installPluginManager(ctx: Context): PluginManager {
   const registry = DEFAULT_REGISTRY
 
-  /** Register lazily-loaded host modules for every enabled installed package. */
+  /** Register lazily-loaded host modules for every package in the module root. */
   const registerLoaders = (): void => {
-    for (const plugin of readRoster().plugins) {
-      const manifestPath = `${PLUGIN_MODULES_ROOT}/${plugin.name}/package.json`
-      if (!volume.exists(manifestPath)) continue
-      registerRuntimeLoader(plugin.name, () => importInstalledPackage(plugin.name))
-      // Subpath rows (`pkg/startup`) are common in bundle patches.
-      const manifest = JSON.parse(toText(volume.readFile(manifestPath))) as { exports?: Record<string, unknown> }
-      for (const key of Object.keys(manifest.exports ?? {})) {
-        if (!key.startsWith('./') || key === './package.json' || key.includes('*')) continue
-        const specifier = `${plugin.name}/${key.slice(2)}`
-        registerRuntimeLoader(specifier, () => importInstalledPackage(specifier))
-      }
-    }
+    for (const name of installedPackageNames()) registerPackageLoaders(name)
   }
 
   /** Recompose the root include with the current layer set. */
@@ -327,19 +364,5 @@ export function installedPatchFiles(): { label: string, path: string }[] {
 
 /** Register host module loaders for installed packages before the tree boots. */
 export function registerInstalledModules(): void {
-  for (const plugin of readRoster().plugins) {
-    const manifestPath = `${PLUGIN_MODULES_ROOT}/${plugin.name}/package.json`
-    if (!volume.exists(manifestPath)) continue
-    registerRuntimeLoader(plugin.name, () => importInstalledPackage(plugin.name))
-    try {
-      const manifest = JSON.parse(toText(volume.readFile(manifestPath))) as { exports?: Record<string, unknown> }
-      for (const key of Object.keys(manifest.exports ?? {})) {
-        if (!key.startsWith('./') || key === './package.json' || key.includes('*')) continue
-        const specifier = `${plugin.name}/${key.slice(2)}`
-        registerRuntimeLoader(specifier, () => importInstalledPackage(specifier))
-      }
-    } catch {
-      // A malformed manifest is reported when the package is actually imported.
-    }
-  }
+  for (const name of installedPackageNames()) registerPackageLoaders(name)
 }

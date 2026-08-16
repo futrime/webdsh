@@ -421,7 +421,7 @@ class Parser {
   /** `NAME=value` before the first word. */
   private tryParseAssignment(): { name: string, value: Word } | undefined {
     const match = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(this.source.slice(this.index))
-    if (match === null) return null ?? undefined
+    if (match === null) return undefined
     this.index += match[0].length
     const value = this.peek() === ' ' || this.peek() === '\n' || this.eof() ? [] : this.parseWord()
     return { name: match[1], value }

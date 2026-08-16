@@ -215,7 +215,7 @@ export class Volume {
 
   /** Append bytes to a file, creating it when absent. */
   appendFile(path: string, data: Uint8Array, mode = DEFAULT_FILE_MODE): void {
-    let base = EMPTY
+    let base: Uint8Array = EMPTY
     if (this.exists(path)) base = this.readFile(path)
     const merged = new Uint8Array(base.length + data.length)
     merged.set(base, 0)
@@ -225,7 +225,7 @@ export class Volume {
 
   /** Overwrite a byte range, growing the file with NUL padding when needed. */
   writeAt(path: string, position: number, data: Uint8Array): void {
-    const base = this.exists(path) ? this.readFile(path) : EMPTY
+    const base: Uint8Array = this.exists(path) ? this.readFile(path) : EMPTY
     const end = Math.max(base.length, position + data.length)
     const merged = new Uint8Array(end)
     merged.set(base, 0)
@@ -235,7 +235,7 @@ export class Volume {
 
   /** Shrink or grow a file to `size` bytes. */
   truncate(path: string, size: number): void {
-    const base = this.exists(path) ? this.readFile(path) : EMPTY
+    const base: Uint8Array = this.exists(path) ? this.readFile(path) : EMPTY
     const next = new Uint8Array(size)
     next.set(base.subarray(0, Math.min(size, base.length)), 0)
     this.writeFile(path, next)

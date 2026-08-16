@@ -165,7 +165,7 @@ export async function* watch(path: unknown, options?: { signal?: AbortSignal }):
       while (queue.length > 0) yield queue.shift()!
       await new Promise<void>((resolveWake) => {
         wake = resolveWake
-        options?.signal?.addEventListener('abort', resolveWake, { once: true })
+        options?.signal?.addEventListener('abort', () => { resolveWake() }, { once: true })
       })
     }
   } finally {

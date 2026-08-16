@@ -254,7 +254,8 @@ export function styleText(_format: unknown, text: string): string {
 
 /** `util.toUSVString`. */
 export function toUSVString(input: string): string {
-  return input.toWellFormed?.() ?? input
+  const wellFormed = (input as { toWellFormed?: () => string }).toWellFormed
+  return typeof wellFormed === 'function' ? wellFormed.call(input) : input
 }
 
 export const utilModule = {

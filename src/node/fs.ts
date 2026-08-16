@@ -253,15 +253,16 @@ export const watchFile = (path: unknown, ...rest: unknown[]): void => {
   let poller = pollers.get(absolute)
   if (poller === undefined) {
     const state = { timer: 0 as unknown as ReturnType<typeof setInterval>, listeners: new Set<(current: Stats, previous: Stats) => void>(), last: undefined as Stats | undefined }
+    const sample = (): Stats | undefined => statSync(absolute, { throwIfNoEntry: false }) as Stats | undefined
     state.timer = setInterval(() => {
-      const current = statSync(absolute, { throwIfNoEntry: false })
+      const current = sample()
       const previous = state.last
       state.last = current
       if (current === undefined || previous === undefined) return
       if (current.mtimeMs === previous.mtimeMs && current.size === previous.size) return
       for (const each of state.listeners) each(current, previous)
     }, options.interval ?? 1000)
-    state.last = statSync(absolute, { throwIfNoEntry: false })
+    state.last = sample()
     poller = state
     pollers.set(absolute, state)
   }

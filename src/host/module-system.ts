@@ -14,6 +14,28 @@ import { HOST_MODULES } from '../generated/host-modules.ts'
 import { resolveBuiltin } from '../node/registry.ts'
 import { setHostRequire } from '../node/misc.ts'
 
+/**
+ * Libraries a plugin must share with the harness rather than install a second
+ * copy of.
+ *
+ * These carry identity: a schema built with one `schemastery` is not accepted by
+ * another, and dsh rescoped the package precisely so its copy is canonical.
+ * Installing a second `zod` would fork every `instanceof` check the API gateway
+ * makes. Sharing them also keeps large, deeply cyclic packages out of the
+ * runtime module loader entirely.
+ */
+const SHARED_MODULES: Record<string, () => Promise<unknown>> = {
+  zod: () => import('zod'),
+  schemastery: () => import('@deepseek-ai/schemastery'),
+  cordis: () => import('@deepseek-ai/cordis'),
+  cosmokit: () => import('@deepseek-ai/cosmokit'),
+}
+
+/** Whether a bare specifier resolves to a library the app already provides. */
+export function isSharedModule(specifier: string): boolean {
+  return specifier in SHARED_MODULES
+}
+
 /** Modules registered at runtime (installed plugins), keyed by specifier. */
 const runtimeModules = new Map<string, unknown>()
 
@@ -40,7 +62,12 @@ export function registerRuntimeLoader(specifier: string, load: () => Promise<unk
 
 /** Every specifier the host can currently resolve (used by diagnostics and the plugin UI). */
 export function knownSpecifiers(): string[] {
-  return [...new Set([...Object.keys(HOST_MODULES), ...runtimeModules.keys(), ...runtimeLoaders.keys()])].sort()
+  return [...new Set([
+    ...Object.keys(HOST_MODULES),
+    ...Object.keys(SHARED_MODULES),
+    ...runtimeModules.keys(),
+    ...runtimeLoaders.keys(),
+  ])].sort()
 }
 
 /** Synchronous resolution, for `createRequire()` handed to plugin code. */
@@ -83,6 +110,13 @@ export const hostModuleSystem = {
     if (lazy !== undefined) {
       const namespace = await lazy()
       runtimeModules.set(specifier, namespace)
+      this.loadCache.set(specifier, namespace)
+      return namespace
+    }
+
+    const shared = SHARED_MODULES[specifier]
+    if (shared !== undefined) {
+      const namespace = await shared()
       this.loadCache.set(specifier, namespace)
       return namespace
     }

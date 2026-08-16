@@ -15,6 +15,7 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Group from '@deepseek-ai/cordis-plugin-group'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import { loadOptionalPatches, loadOverlayPatches, mountRootInclude } from '@deepseek-ai/dsh-app-boot'
+import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { hostModuleSystem, registerRuntimeModule } from './module-system.ts'
 import { BROWSER_PLUGINS } from './plugins.ts'
@@ -100,8 +101,10 @@ export async function bootHost(): Promise<HostBoot> {
     ...(loadOptionalPatches('dsh-web', dshHomePath('cordis.patch.yml')) ?? []),
   ]
 
-  await mountRootInclude(ctx, ROOT_CONFIG, patches)
-  await ctx.get('loader')?.await()
+  // The watchdog covers entry CREATION as well as the settle: mounting the
+  // root include awaits every child entry's init, so a row that never returns
+  // from its module import hangs here, before `loader.await()` is ever reached.
+  await withWatchdog(ctx, warnings, () => mountTolerantly(ctx, patches, warnings))
 
   for (const entry of loader.entries()) {
     if (entry.disabled === true) continue
@@ -117,6 +120,113 @@ export async function bootHost(): Promise<HostBoot> {
   }
 
   return { ctx, persistence, warnings }
+}
+
+/**
+ * How long the tree may take to settle before the boot gives up on it.
+ *
+ * `loader.await()` has no timeout by design — on a machine, a slow row is
+ * still making progress. In a page a wedged row is indistinguishable from a
+ * blank tab, so the boot bounds the wait and reports which rows were still
+ * loading instead of hanging forever. A plugin that never settles then costs
+ * its own surface, not the whole app.
+ */
+const SETTLE_TIMEOUT_MS = 30_000
+
+/**
+ * Mount the composition, disabling rows that cannot load.
+ *
+ * Upstream fails the whole boot when a row fails, which is right on a machine:
+ * every row it composes is known to work there, so a failure is a
+ * misconfiguration to fix. In a browser the composition can contain a plugin
+ * that is *inherently* incompatible — one whose contract is a local server, a
+ * native binary, or a spawned toolchain — and a blank page is a worse answer
+ * than starting without it.
+ *
+ * So a failed mount is retried with the offending rows disabled, and each one
+ * is reported. The retry is bounded and only ever removes rows the loader
+ * itself named, so a composition that is broken for some other reason still
+ * fails loudly.
+ * @param ctx - the booting context.
+ * @param patches - the composed patch layers.
+ * @param warnings - sink for the per-row diagnostics.
+ */
+async function mountTolerantly(ctx: Context, patches: PatchOptions[], warnings: string[]): Promise<void> {
+  const disabled = new Set<string>()
+  for (let attempt = 0; attempt <= MAX_MOUNT_RETRIES; attempt++) {
+    const layered = disabled.size === 0
+      ? patches
+      : [...patches, ...[...disabled].map(id => ({ id, disabled: true }))]
+    try {
+      await mountRootInclude(ctx, ROOT_CONFIG, layered)
+      await ctx.get('loader')?.await()
+      return
+    } catch (error) {
+      const failing = [...failingEntryIds(error)].filter(([id]) => id !== 'include' && !disabled.has(id))
+      if (failing.length === 0 || attempt === MAX_MOUNT_RETRIES) throw error
+      for (const [id, reason] of failing) {
+        disabled.add(id)
+        warnings.push(`${id}: disabled — ${reason}`)
+      }
+      // Drop the failed include so the retry mounts a clean tree.
+      const loader = ctx.get('loader')
+      const stale = loader === undefined ? undefined : [...loader.entries()].find(entry => entry.options.name === 'cordis:include')
+      if (stale !== undefined && loader !== undefined) {
+        await loader.remove(stale.options.id as string).catch(() => undefined)
+      }
+    }
+  }
+}
+
+/**
+ * Entry ids the loader named in a failed mount, each with the reason it gave.
+ * @param error - the rejection from the mount.
+ * @returns id → reason, deduplicated.
+ */
+function failingEntryIds(error: unknown): Map<string, string> {
+  const found = new Map<string, string>()
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 8 || !(value instanceof Error)) return
+    for (const match of value.message.matchAll(/loader entry (\S+) \(([^)]*)\): ([^\n]*)/g)) {
+      if (!found.has(match[1])) found.set(match[1], `${match[2]}: ${match[3]}`.slice(0, 300))
+    }
+    if (value instanceof AggregateError) for (const member of value.errors) visit(member, depth + 1)
+    visit((value as { cause?: unknown }).cause, depth + 1)
+  }
+  visit(error, 0)
+  return found
+}
+
+/** How many times a failed mount is retried with the offending rows disabled. */
+const MAX_MOUNT_RETRIES = 4
+
+/**
+ * Run the composition under a deadline.
+ * @param ctx - the booting context.
+ * @param warnings - sink for the timeout diagnostic.
+ * @param body - mount and settle the tree.
+ */
+async function withWatchdog(ctx: Context, warnings: string[], body: () => Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => { resolve('timeout') }, SETTLE_TIMEOUT_MS)
+  })
+  try {
+    const outcome = await Promise.race([body().then(() => 'settled' as const), timeout])
+    if (outcome !== 'timeout') return
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+  const loader = ctx.get('loader')
+  const stuck = loader === undefined
+    ? []
+    : [...loader.entries()]
+      .filter(entry => entry.disabled !== true && entry.fiber?.state !== 2)
+      .map(entry => `${entry.options.id ?? entry.options.name} (${entry.options.name})`)
+  warnings.push(
+    `the plugin tree did not settle within ${String(SETTLE_TIMEOUT_MS / 1000)}s`
+    + (stuck.length > 0 ? `; still loading: ${stuck.join(', ')}` : '; no entry reported a state'),
+  )
 }
 
 /** The browser overlay patch text, exposed so the seed can write it into the VFS. */

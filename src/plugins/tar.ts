@@ -80,7 +80,12 @@ export function extractTarball(tgz: Uint8Array): TarEntry[] {
     pendingName = undefined
     if (type !== '0' && type !== '' && type !== '7') continue
 
-    const name = full.replace(/^package\//, '')
+    // Strip the archive's single root directory, the way `npm` and
+    // `tar --strip-components=1` do. It is usually `package/`, but a tarball
+    // built from a git host uses `<owner>-<repo>-<sha>/` instead — `ssh2`
+    // publishes exactly that — so the segment is removed by position, not name.
+    const slash = full.indexOf('/')
+    const name = slash === -1 ? full : full.slice(slash + 1)
     if (name.length === 0 || name.endsWith('/')) continue
     entries.push({ name, data: data.slice(), mode: mode === 0 ? 0o644 : mode & 0o777 })
   }

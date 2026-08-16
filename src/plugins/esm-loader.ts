@@ -19,7 +19,8 @@ import { volume } from '../vfs/volume.ts'
 import { toText } from '../node/binary.ts'
 import { dirname, resolve as resolvePath } from '../vfs/path.ts'
 import { resolveBuiltin } from '../node/registry.ts'
-import { hostModuleSystem } from '../host/module-system.ts'
+import { hostModuleSystem, isSharedModule } from '../host/module-system.ts'
+import { scanModule, type ModuleKind } from './module-scan.ts'
 
 /** Root the plugin installer writes packages under. */
 export const PLUGIN_MODULES_ROOT = '/opt/dsh/plugins/node_modules'
@@ -36,281 +37,8 @@ const pending = new Map<string, Promise<unknown>>()
 /** Blob URL per bundled specifier (`@deepseek-ai/cordis`, `node:fs`, …). */
 const bridgeUrls = new Map<string, string>()
 
-/** One import or export specifier found in a module. */
-interface SpecifierSite {
-  start: number
-  end: number
-  value: string
-}
-
-/** One `import.meta.url` / `.filename` / `.dirname` reference. */
-interface MetaSite {
-  /** Bounds of the whole `import.meta.<member>` expression. */
-  start: number
-  end: number
-  member: 'url' | 'filename' | 'dirname'
-}
-
-/** What a module's source says it is. */
-type ModuleKind = 'esm' | 'cjs'
-
-/**
- * Find every module specifier in `source`.
- *
- * A specifier is recognized only in the three positions the grammar allows it:
- * directly after the `from` keyword, directly after a bare `import`, and
- * directly inside `import(`. Anything else — including a string that happens to
- * sit inside an exported function body — is left alone. An earlier version
- * scanned forward from `import`/`export` for the next string literal, which
- * turned `export function f() { throw new Error('…') }` into a bogus import.
- * @param source - the module text.
- * @returns each specifier's literal bounds and value.
- */
-export function findSpecifiers(source: string): SpecifierSite[] {
-  return scanModule(source).specifiers
-}
-
-/**
- * Walk a module once, collecting both the import specifiers and the
- * `import.meta` references that need rewriting.
- * @param source - the module text.
- * @returns the specifier and `import.meta` sites, in source order.
- */
-export function scanModule(source: string): { specifiers: SpecifierSite[], meta: MetaSite[], requires: SpecifierSite[], hasEsmSyntax: boolean } {
-  const sites: SpecifierSite[] = []
-  const meta: MetaSite[] = []
-  const requires: SpecifierSite[] = []
-  let hasEsmSyntax = false
-  const length = source.length
-  let i = 0
-  /** Whether a `/` here would start a regex literal rather than division. */
-  let regexAllowed = true
-  /** The previous significant (non-space, non-comment) character. */
-  let previous = ''
-
-  const isIdent = (char: string): boolean => /[\w$]/.test(char)
-
-  /** Index of the next significant character at or after `from`, or -1. */
-  const skipTrivia = (from: number): number => {
-    let cursor = from
-    while (cursor < length) {
-      const char = source[cursor]
-      if (char === ' ' || char === '\t' || char === '\n' || char === '\r') {
-        cursor++
-        continue
-      }
-      if (char === '/' && source[cursor + 1] === '/') {
-        const end = source.indexOf('\n', cursor)
-        cursor = end === -1 ? length : end
-        continue
-      }
-      if (char === '/' && source[cursor + 1] === '*') {
-        const end = source.indexOf('*/', cursor + 2)
-        cursor = end === -1 ? length : end + 2
-        continue
-      }
-      return cursor
-    }
-    return -1
-  }
-
-  /** Read a quoted string starting at `at`; returns its inner bounds. */
-  const readString = (at: number): { start: number, end: number, value: string } | undefined => {
-    const quote = source[at]
-    const start = at + 1
-    let cursor = start
-    while (cursor < length) {
-      const char = source[cursor]
-      if (char === '\\') {
-        cursor += 2
-        continue
-      }
-      if (char === quote) return { start, end: cursor, value: source.slice(start, cursor) }
-      if (quote !== '`' && char === '\n') return undefined
-      cursor++
-    }
-    return undefined
-  }
-
-  /** Record the specifier literal at `at`, if there is one. */
-  const claim = (at: number, into: SpecifierSite[] = sites): number | undefined => {
-    if (at === -1) return undefined
-    const quote = source[at]
-    if (quote !== '"' && quote !== "'") return undefined
-    const literal = readString(at)
-    if (literal === undefined) return undefined
-    into.push(literal)
-    return literal.end + 1
-  }
-
-  while (i < length) {
-    const char = source[i]
-
-    if (char === '/' && source[i + 1] === '/') {
-      const end = source.indexOf('\n', i)
-      i = end === -1 ? length : end
-      continue
-    }
-    if (char === '/' && source[i + 1] === '*') {
-      const end = source.indexOf('*/', i + 2)
-      i = end === -1 ? length : end + 2
-      continue
-    }
-    if (char === '/' && regexAllowed) {
-      let cursor = i + 1
-      let inClass = false
-      let closed = false
-      while (cursor < length) {
-        const inner = source[cursor]
-        if (inner === '\\') {
-          cursor += 2
-          continue
-        }
-        if (inner === '[') inClass = true
-        else if (inner === ']') inClass = false
-        else if (inner === '/' && !inClass) {
-          closed = true
-          break
-        } else if (inner === '\n') break
-        cursor++
-      }
-      if (closed) {
-        i = cursor + 1
-        regexAllowed = false
-        previous = '/'
-        continue
-      }
-    }
-    if (char === '"' || char === "'" || char === '`') {
-      const literal = readString(i)
-      i = literal === undefined ? i + 1 : literal.end + 1
-      regexAllowed = false
-      previous = char
-      continue
-    }
-
-    // A word starts where the *immediately* preceding character is not an
-    // identifier character. `previous` tracks the last SIGNIFICANT character
-    // instead (for the `.from` test), and whitespace never updates it — so the
-    // boundary test has to read the source directly.
-    if (isIdent(char) && (i === 0 || !isIdent(source[i - 1]))) {
-      // Read the whole word so `fromage` never looks like `from`.
-      let end = i
-      while (end < length && isIdent(source[end])) end++
-      const word = source.slice(i, end)
-
-      if (word === 'require' && previous !== '.') {
-        // `require('x')` — a CommonJS dependency edge.
-        const next = skipTrivia(end)
-        if (next !== -1 && source[next] === '(') {
-          const literalAt = skipTrivia(next + 1)
-          const consumed = claim(literalAt, requires)
-          if (consumed !== undefined) {
-            i = consumed
-            regexAllowed = false
-            previous = "'"
-            continue
-          }
-        }
-      } else if (word === 'export' && previous !== '.') {
-        hasEsmSyntax = true
-      } else if (word === 'from' && previous !== '.') {
-        const consumed = claim(skipTrivia(end))
-        if (consumed !== undefined) {
-          hasEsmSyntax = true
-          i = consumed
-          regexAllowed = true
-          previous = "'"
-          continue
-        }
-      } else if (word === 'import' && previous !== '.') {
-        const next = skipTrivia(end)
-        // `import.meta.url` and friends: a blob module's own URL is opaque, so
-        // relative resolution against it throws. The loader rewrites these to
-        // the module's virtual-filesystem location instead.
-        if (next !== -1 && source[next] === '.') {
-          const metaStart = skipTrivia(next + 1)
-          if (metaStart !== -1 && source.startsWith('meta', metaStart) && !isIdent(source[metaStart + 4] ?? '')) {
-            const dot = skipTrivia(metaStart + 4)
-            if (dot !== -1 && source[dot] === '.') {
-              const memberStart = skipTrivia(dot + 1)
-              let memberEnd = memberStart
-              while (memberEnd < length && isIdent(source[memberEnd])) memberEnd++
-              const member = source.slice(memberStart, memberEnd)
-              if (member === 'url' || member === 'filename' || member === 'dirname') {
-                meta.push({ start: i, end: memberEnd, member })
-                i = memberEnd
-                regexAllowed = false
-                previous = 'l'
-                continue
-              }
-            }
-          }
-        }
-        if (next !== -1 && source[next] === '(') {
-          const consumed = claim(skipTrivia(next + 1))
-          if (consumed !== undefined) {
-            i = consumed
-            regexAllowed = false
-            previous = "'"
-            continue
-          }
-        } else {
-          const consumed = claim(next)
-          if (consumed !== undefined) {
-            i = consumed
-            regexAllowed = true
-            previous = "'"
-            continue
-          }
-        }
-      }
-
-      i = end
-      regexAllowed = false
-      previous = source[end - 1]
-      continue
-    }
-
-    if (!/\s/.test(char)) {
-      regexAllowed = /[([{,;:=!&|?+\-*%<>~^]/.test(char)
-      previous = char
-    }
-    i++
-  }
-  return { specifiers: sites, meta, requires, hasEsmSyntax }
-}
-
-/**
- * Decide whether a module is ESM or CommonJS, the way Node does: the file
- * extension wins, otherwise the nearest `package.json` `type` field, otherwise
- * CommonJS — with the module's own syntax as the final tie-breaker for a
- * package that declares nothing.
- * @param path - the module's virtual-filesystem path.
- * @param hasEsmSyntax - whether the source used `import`/`export` syntax.
- * @returns the module kind.
- */
-function moduleKind(path: string, hasEsmSyntax: boolean): ModuleKind {
-  if (path.endsWith('.mjs')) return 'esm'
-  if (path.endsWith('.cjs')) return 'cjs'
-  let directory = dirname(path)
-  for (let depth = 0; depth < 12; depth++) {
-    const manifest = `${directory}/package.json`
-    if (volume.exists(manifest)) {
-      try {
-        const parsed = JSON.parse(toText(volume.readFile(manifest))) as { type?: string }
-        if (parsed.type === 'module') return 'esm'
-        if (parsed.type === 'commonjs') return 'cjs'
-      } catch {
-        // A malformed manifest decides nothing; fall through to the syntax test.
-      }
-      break
-    }
-    if (directory === '/' || directory === PLUGIN_MODULES_ROOT) break
-    directory = dirname(directory)
-  }
-  return hasEsmSyntax ? 'esm' : 'cjs'
-}
+/** How long one module body may take to evaluate before it is called hung. */
+const EVALUATION_TIMEOUT_MS = 15_000
 
 /**
  * Apply the rewrites a module needs to run from a blob URL.
@@ -351,6 +79,29 @@ function rewriteModule(source: string, resolutions: Map<string, string>, filePat
 }
 
 /**
+ * Render a re-export facade over a namespace held in a global registry.
+ *
+ * Each name is bound to a generated local and re-exported under an alias, never
+ * as `export const <name>`: an export name may be a reserved word (zod exports
+ * `catch`), and `export const catch = …` is a syntax error while
+ * `export { _0 as catch }` is not. Names that are not valid identifiers at all
+ * use the string form.
+ * @param accessor - JavaScript expression yielding the namespace object.
+ * @param names - export names to forward.
+ * @returns the module source.
+ */
+function renderFacade(accessor: string, names: readonly string[]): string {
+  const lines = [`const ns = ${accessor};`]
+  names.forEach((name, index) => {
+    const local = `_dsh${String(index)}`
+    const exported = /^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name)
+    lines.push(`const ${local} = ns[${JSON.stringify(name)}];`, `export { ${local} as ${exported} };`)
+  })
+  lines.push('export default ns.default ?? ns;')
+  return lines.join('\n')
+}
+
+/**
  * Build (once) a blob module that re-exports an already-loaded namespace, so a
  * plugin importing `@deepseek-ai/cordis` binds to this app's single instance.
  */
@@ -363,12 +114,8 @@ async function bridgeFor(specifier: string): Promise<string> {
   ;(globalThis as { __DSH_HOST_BRIDGE__?: Map<string, unknown> }).__DSH_HOST_BRIDGE__ = registry
   registry.set(specifier, namespace)
 
-  const names = Object.keys(namespace).filter(key => key !== 'default' && /^[A-Za-z_$][\w$]*$/.test(key))
-  const body = [
-    `const ns = globalThis.__DSH_HOST_BRIDGE__.get(${JSON.stringify(specifier)});`,
-    ...names.map(key => `export const ${key} = ns[${JSON.stringify(key)}];`),
-    `export default ns.default ?? ns;`,
-  ].join('\n')
+  const names = Object.keys(namespace).filter(key => key !== 'default')
+  const body = renderFacade(`globalThis.__DSH_HOST_BRIDGE__.get(${JSON.stringify(specifier)})`, names)
   const url = URL.createObjectURL(new Blob([body], { type: 'text/javascript' }))
   bridgeUrls.set(specifier, url)
   return url
@@ -439,8 +186,42 @@ export function resolveInstalled(specifier: string): string | undefined {
   return resolveFile(resolvePath(`${PLUGIN_MODULES_ROOT}/${packageName}`, entry))
 }
 
-/** Materialized CommonJS exports, keyed by module path. */
-const cjsExports = new Map<string, unknown>()
+/**
+ * Decide whether a module is ESM or CommonJS, the way Node does: the file
+ * extension wins, otherwise the nearest `package.json` `type` field, otherwise
+ * CommonJS — with the module's own syntax as the final tie-breaker for a
+ * package that declares nothing.
+ * @param path - the module's virtual-filesystem path.
+ * @param hasEsmSyntax - whether the source used `import`/`export` syntax.
+ * @returns the module kind.
+ */
+function moduleKind(path: string, hasEsmSyntax: boolean): ModuleKind {
+  if (path.endsWith('.mjs')) return 'esm'
+  if (path.endsWith('.cjs')) return 'cjs'
+  let directory = dirname(path)
+  for (let depth = 0; depth < 12; depth++) {
+    const manifest = `${directory}/package.json`
+    if (volume.exists(manifest)) {
+      try {
+        const parsed = JSON.parse(toText(volume.readFile(manifest))) as { type?: string }
+        if (parsed.type === 'module') return 'esm'
+        if (parsed.type === 'commonjs') return 'cjs'
+      } catch {
+        // A malformed manifest decides nothing; fall through to the syntax test.
+      }
+      break
+    }
+    if (directory === '/' || directory === PLUGIN_MODULES_ROOT) break
+    directory = dirname(directory)
+  }
+  return hasEsmSyntax ? 'esm' : 'cjs'
+}
+
+/** Live CommonJS module records, keyed by module path. */
+const cjsRecords = new Map<string, { exports: unknown }>()
+
+/** Modules whose load is in progress, for cycle detection. */
+const loading = new Set<string>()
 
 /**
  * Build a blob ES module that re-exports a CommonJS module's exports.
@@ -457,13 +238,9 @@ function cjsFacade(path: string, exported: unknown): string {
   ;(globalThis as { __DSH_CJS__?: Map<string, unknown> }).__DSH_CJS__ = registry
   registry.set(path, exported)
   const names = typeof exported === 'object' && exported !== null
-    ? Object.keys(exported as Record<string, unknown>).filter(key => key !== 'default' && /^[A-Za-z_$][\w$]*$/.test(key))
+    ? Object.keys(exported as Record<string, unknown>).filter(key => key !== 'default')
     : []
-  const body = [
-    `const ns = globalThis.__DSH_CJS__.get(${JSON.stringify(path)});`,
-    ...names.map(key => `export const ${key} = ns[${JSON.stringify(key)}];`),
-    'export default ns;',
-  ].join('\n')
+  const body = renderFacade(`globalThis.__DSH_CJS__.get(${JSON.stringify(path)})`, names)
   return URL.createObjectURL(new Blob([body], { type: 'text/javascript' }))
 }
 
@@ -472,13 +249,29 @@ function cjsFacade(path: string, exported: unknown): string {
  * @param path - its virtual-filesystem path.
  * @param source - its text.
  * @param required - specifier → already-materialized exports.
+ * @param unresolved - specifier → why it could not be resolved; `require` throws
+ *   `MODULE_NOT_FOUND` for these, which is what an optional-dependency probe expects.
  * @returns the module's exports.
  */
-function evaluateCjs(path: string, source: string, required: Map<string, unknown>): unknown {
-  const module = { exports: {} as unknown }
+function evaluateCjs(
+  path: string,
+  source: string,
+  required: Map<string, unknown>,
+  unresolved: Map<string, string>,
+  record: { exports: unknown },
+): unknown {
+  const module = record
   const require = (specifier: string): unknown => {
     if (required.has(specifier)) return required.get(specifier)
-    throw new Error(`plugin-loader: ${path} required "${specifier}" at runtime, which the loader did not resolve statically`)
+    const reason = unresolved.get(specifier)
+    const error = new Error(
+      reason === undefined
+        ? `plugin-loader: ${path} required "${specifier}" at runtime, which the loader did not resolve statically`
+        : `Cannot find module '${specifier}' — ${reason}`,
+    ) as Error & { code: string }
+    // The Node code an optional-dependency probe checks for.
+    error.code = 'MODULE_NOT_FOUND'
+    throw error
   }
   // eslint-disable-next-line no-new-func
   const factory = new Function('exports', 'require', 'module', '__filename', '__dirname', `${source}\n//# sourceURL=${path}`) as (
@@ -499,6 +292,7 @@ export async function importVfsModule(path: string): Promise<unknown> {
   const inFlight = pending.get(path)
   if (inFlight !== undefined) return inFlight
 
+  loading.add(path)
   const task = (async () => {
     const source = toText(volume.readFile(path))
     const directory = dirname(path)
@@ -512,16 +306,33 @@ export async function importVfsModule(path: string): Promise<unknown> {
         if (target === undefined) {
           throw new Error(`plugin-loader: ${path} imports "${specifier}", which does not exist in the virtual filesystem`)
         }
+        // A CommonJS cycle resolves to the partially-filled exports object, the
+        // way Node's own loader does: the module that closes the cycle sees
+        // whatever its dependency had assigned so far. Awaiting instead would
+        // deadlock, which is what a cyclic package like `ssh2` produces.
+        const cyclic = loading.has(target) ? cjsRecords.get(target) : undefined
+        if (cyclic !== undefined) return { blob: blobUrls.get(target) ?? '', exports: cyclic.exports }
+        if (loading.has(target)) {
+          throw new Error(
+            `plugin-loader: circular ES module import between ${path} and ${target};`
+            + ' a cycle across ES modules cannot be linked one module at a time in a page',
+          )
+        }
         const namespace = await importVfsModule(target)
-        return { blob: blobUrls.get(target)!, exports: cjsExports.get(target) ?? namespace }
+        return { blob: blobUrls.get(target)!, exports: cjsRecords.get(target)?.exports ?? namespace }
       }
       // A bare specifier: prefer the app's own copy, then an installed package.
       const builtin = resolveBuiltin(specifier)
       if (builtin !== undefined) return { blob: await bridgeFor(specifier), exports: builtin }
+      if (isSharedModule(specifier)) {
+        return { blob: await bridgeFor(specifier), exports: await hostModuleSystem.import(specifier) }
+      }
       const installed = resolveInstalled(specifier)
       if (installed !== undefined) {
+        const cyclic = loading.has(installed) ? cjsRecords.get(installed) : undefined
+        if (cyclic !== undefined) return { blob: blobUrls.get(installed) ?? '', exports: cyclic.exports }
         const namespace = await importVfsModule(installed)
-        return { blob: blobUrls.get(installed)!, exports: cjsExports.get(installed) ?? namespace }
+        return { blob: blobUrls.get(installed)!, exports: cjsRecords.get(installed)?.exports ?? namespace }
       }
       // Falls back to the host module system (every dsh package this app bundles).
       const blob = await bridgeFor(specifier)
@@ -529,16 +340,29 @@ export async function importVfsModule(path: string): Promise<unknown> {
     }
 
     if (kind === 'cjs') {
+      // The record exists before dependencies are resolved so a cycle back into
+      // this module finds a live (empty, then filling) exports object.
+      const record: { exports: unknown } = { exports: {} }
+      cjsRecords.set(path, record)
       const required = new Map<string, unknown>()
+      const unresolved = new Map<string, string>()
       for (const site of [...scan.requires, ...scan.specifiers]) {
-        if (required.has(site.value)) continue
-        required.set(site.value, (await resolveDependency(site.value)).exports)
+        if (required.has(site.value) || unresolved.has(site.value)) continue
+        try {
+          required.set(site.value, (await resolveDependency(site.value)).exports)
+        } catch (error) {
+          // An unresolvable `require` is not fatal in CommonJS: libraries probe
+          // for optional native addons inside try/catch (`ssh2` does exactly
+          // this with `cpu-features`). Deferring the failure to the call keeps
+          // that fallback working, and still fails loudly for a real dependency.
+          unresolved.set(site.value, error instanceof Error ? error.message : String(error))
+        }
       }
-      const exported = evaluateCjs(path, source, required)
-      cjsExports.set(path, exported)
+      const exported = evaluateCjs(path, source, required, unresolved, record)
+      record.exports = exported
       blobUrls.set(path, cjsFacade(path, exported))
       // An ESM importer sees Node's cjs interop shape; a CJS importer gets the
-      // raw exports through `cjsExports`.
+      // raw exports through the module record.
       const namespace = typeof exported === 'object' && exported !== null
         ? { ...(exported as Record<string, unknown>), default: exported }
         : { default: exported }
@@ -556,10 +380,24 @@ export async function importVfsModule(path: string): Promise<unknown> {
     const rewritten = rewriteModule(source, resolutions, path)
     const url = URL.createObjectURL(new Blob([rewritten], { type: 'text/javascript' }))
     blobUrls.set(path, url)
-    const namespace = await import(/* @vite-ignore */ url) as unknown
+    // A module body that never settles — a top-level `await` on something a
+    // page can never provide — would otherwise hang the whole boot behind one
+    // plugin. Bounding it turns that into a named failure for that row.
+    const namespace = await Promise.race([
+      import(/* @vite-ignore */ url) as Promise<unknown>,
+      new Promise<never>((_, reject) => {
+        setTimeout(
+          () => { reject(new Error(`plugin-loader: ${path} did not finish evaluating within ${String(EVALUATION_TIMEOUT_MS / 1000)}s`)) },
+          EVALUATION_TIMEOUT_MS,
+        )
+      }),
+    ])
     namespaces.set(path, namespace)
     return namespace
-  })().finally(() => { pending.delete(path) })
+  })().finally(() => {
+    pending.delete(path)
+    loading.delete(path)
+  })
 
   pending.set(path, task)
   return task

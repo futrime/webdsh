@@ -116,6 +116,9 @@ export const webRuntimePlugin = {
 
 // ---- browser:sandbox --------------------------------------------------------
 
+/** The shell guard this backend wraps every confined command in. */
+const DSH_CONFINE = 'dsh-confine'
+
 /**
  * The process-confinement backend for the browser.
  *
@@ -134,16 +137,23 @@ export class BrowserSandbox extends SandboxProvider {
    * @returns the guarded argv and the enforcement it achieves.
    */
   confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv {
-    if (policy.mode === 'danger-full-access') {
-      return { argv: [...argv], enforcement: 'full' }
-    }
     return {
-      argv: ['dsh-confine', policy.mode, policy.workspaceRoot, '--', ...argv],
-      // Full for file effects, which is the vocabulary this seam governs:
-      // no command can write outside the permitted roots of the virtual
-      // filesystem. Network reachability is the browser's own origin policy
-      // and is outside this seam either way.
+      argv: [DSH_CONFINE, policy.mode, policy.workspaceRoot, '--', ...argv],
+      // Full for file effects, which is the vocabulary this seam governs: no
+      // command can write outside the permitted roots of the virtual
+      // filesystem. Network reachability is the browser's own origin policy and
+      // is outside this seam either way.
       enforcement: 'full',
+      // The exact stderr this backend emits when it refuses a write. A consumer
+      // that infers denials from stderr matches these and nothing else.
+      denialSignatures: ['denied by the read-only sandbox policy', 'denied by the workspace-write sandbox policy'],
+      // The guard itself can fail before the wrapped command runs: an
+      // unrecognized mode. That is runner failure, not denial.
+      runnerFailureRules: [{
+        fatalSignatures: [`${DSH_CONFINE}: unknown mode`],
+        allowedExitCodes: [2],
+        informationalLines: [],
+      }],
     }
   }
 }
