@@ -165,6 +165,11 @@ async function main(): Promise<void> {
     )
     await page.screenshot({ path: `${shots}-5-tool.png` })
     expect(toolReply.includes(marker), `the tool call did not return the file contents (${marker}):\n${toolReply.slice(-2500)}`)
+    // The contents alone do not prove the shell ran: a model that cannot use
+    // Bash will read the file with another tool and answer correctly, which is
+    // exactly what hid a completely broken Bash tool behind a green test. The
+    // transcript names the tool it used.
+    expect(/\bBash\b/.test(toolReply), `the reply never shows a Bash tool call:\n${toolReply.slice(-1500)}`)
 
     console.log('▶ file edit')
     const editReply = await sendPrompt(

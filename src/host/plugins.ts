@@ -115,44 +115,42 @@ export const webRuntimePlugin = {
 
 // ---- browser:sandbox --------------------------------------------------------
 
-/** The shell guard this backend wraps every confined command in. */
-const DSH_CONFINE = 'dsh-confine'
-
 /**
  * The process-confinement backend for the browser.
  *
- * A page has no Landlock, Seatbelt, or restricted token, but it does have a
- * boundary the OS backends do not: every file effect a command can produce
- * lands in the virtual filesystem. Rather than pass argv through unconfined —
- * which the seam forbids — this backend prefixes it with the shell's own
- * `dsh-confine` guard, which enforces the mode's writable roots for the
- * duration of that command.
+ * A page has no Landlock, Seatbelt, or restricted token — and it does not need
+ * one, because the boundary is already there: every command runs inside the
+ * runtime, which is a sandbox with no host filesystem, no host process table,
+ * and no network beyond what the page itself can reach. A command cannot escape
+ * it by any argv this backend could write.
+ *
+ * So argv passes through unchanged, and the enforcement reported is what is
+ * actually true rather than what would be convenient. That distinction is the
+ * whole point of this seam: a backend claiming `full` while enforcing nothing
+ * tells the permission layer — and the user reading a tool card — that a
+ * dangerous command was contained when it was not.
  */
 export class BrowserSandbox extends SandboxProvider {
   /**
-   * Wrap argv under the shell's confinement guard.
+   * Report the confinement the runtime provides.
    * @param argv - the exact argv about to be spawned.
    * @param policy - the file-effect policy for this execution.
-   * @returns the guarded argv and the enforcement it achieves.
+   * @returns the argv and the enforcement it achieves.
    */
   confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv {
+    void policy
     return {
-      argv: [DSH_CONFINE, policy.mode, policy.workspaceRoot, '--', ...argv],
-      // Full for file effects, which is the vocabulary this seam governs: no
-      // command can write outside the permitted roots of the virtual
-      // filesystem. Network reachability is the browser's own origin policy and
-      // is outside this seam either way.
-      enforcement: 'full',
-      // The exact stderr this backend emits when it refuses a write. A consumer
-      // that infers denials from stderr matches these and nothing else.
-      denialSignatures: ['denied by the read-only sandbox policy', 'denied by the workspace-write sandbox policy'],
-      // The guard itself can fail before the wrapped command runs: an
-      // unrecognized mode. That is runner failure, not denial.
-      runnerFailureRules: [{
-        fatalSignatures: [`${DSH_CONFINE}: unknown mode`],
-        allowedExitCodes: [2],
-        informationalLines: [],
-      }],
+      argv: [...argv],
+      // The runtime confines the process; this backend adds nothing on top of
+      // it. The seam's vocabulary is `full` or `partial`, and this is `partial`:
+      // a command cannot reach anything outside the runtime, and within it
+      // `read-only` is not enforced — a command that writes will succeed. `full`
+      // would tell the permission layer a dangerous command had been contained
+      // when it had only been contained to the whole workspace.
+      enforcement: 'partial',
+      // Nothing here refuses a write, so there is no denial to recognise.
+      denialSignatures: [],
+      runnerFailureRules: [],
     }
   }
 }
