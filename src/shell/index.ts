@@ -14,6 +14,8 @@ import { gitCommand } from './git.ts'
 import { ripgrep } from './ripgrep.ts'
 import { nodeCommand } from './node-runtime.ts'
 import { npmCommand } from './npm.ts'
+import { busybox } from './busybox.ts'
+import { awk } from './awk.ts'
 import { BufferSink, CallbackSink, type CommandImpl, type ShellState, type Sink } from './runtime.ts'
 import { volume } from '../vfs/volume.ts'
 import { env as processEnv, process as processShim } from '../node/process.ts'
@@ -50,6 +52,10 @@ function buildRegistry(): Map<string, CommandImpl> {
   const registry = new Map<string, CommandImpl>()
   for (const [name, impl] of Object.entries(coreutils)) registry.set(name, impl)
   for (const [name, impl] of Object.entries(tools)) registry.set(name, impl)
+  // The wider applet set. Registered after coreutils so a name defined in both
+  // keeps the implementation the agent's tool calls already depend on.
+  for (const [name, impl] of Object.entries(busybox)) if (!registry.has(name)) registry.set(name, impl)
+  for (const name of ['awk', 'gawk', 'mawk', 'nawk']) registry.set(name, awk)
   registry.set('git', gitCommand)
   // `rg` is not a convenience alias here: it is the backend the `grep` and
   // `glob` tools spawn, so it has to speak ripgrep's own argument vector and

@@ -172,6 +172,55 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    name: 'awk',
+    async run(page) {
+      await waitForShell(page)
+      // Nearly every non-trivial shell pipeline contains an awk, and a missing
+      // one does not degrade the pipeline — it stops it at that line.
+      const cases: [string, RegExp][] = [
+        [`printf 'a b c\\nd e f\\n' | awk '{print $2}'`, /^b\ne$/m],
+        [`printf '1 2\\n3 4\\n' | awk '{s += $1} END {print "sum", s}'`, /sum 4/],
+        [`printf 'x:1\\ny:2\\n' | awk -F: '$2 > 1 {print $1}'`, /^y$/m],
+        [`printf 'a\\nb\\na\\n' | awk '{c[$0]++} END {for (k in c) print k, c[k]}' | sort`, /a 2[\s\S]*b 1/],
+        [`awk 'BEGIN {printf "%05.2f|%-4s|%d\\n", 3.14159, "hi", 42}'`, /03\.14\|hi {2}\|42/],
+        [`awk 'BEGIN {n = split("a,b,c", parts, ","); print n, parts[3]}'`, /3 c/],
+        [`awk 'function double(x) {return x * 2} BEGIN {print double(21)}'`, /^42$/m],
+        [`printf 'foo\\n' | awk '{gsub(/o/, "0"); print}'`, /^f00$/m],
+        [`awk 'BEGIN {print toupper(substr("hello world", 7))}'`, /^WORLD$/m],
+      ]
+      for (const [script, matcher] of cases) {
+        const result = await shell(page, script)
+        expect(matcher.test(result.stdout), `\`${script}\` → ${result.stdout}${result.stderr}`)
+      }
+    },
+  },
+  {
+    name: 'busybox-applets',
+    async run(page) {
+      await waitForShell(page)
+      const cases: [string, RegExp][] = [
+        [`printf 'one\\ntwo\\n' | tac`, /^two\none$/m],
+        [`printf 'a\\tb\\n' | expand -t 4`, /^a {3}b$/m],
+        [`printf 'hello\\n' | xxd | head -1`, /68 ?65 ?6c ?6c ?6f/],
+        [`printf 'abc\\n' | md5sum`, /^[0-9a-f]{32} {2}-$/m],
+        [`printf 'hello world\\n' | strings -n 5`, /hello world/],
+        [`printf 'aaa\\nbbb\\n' | fold -w 2`, /^aa\na\nbb\nb$/m],
+        ['sleep 0.1 && echo slept', /slept/],
+        ['timeout 1 sleep 5; echo "status=$?"', /status=124/],
+        ['busybox | head -1', /BusyBox/],
+        ['nproc', /^\d+$/m],
+      ]
+      for (const [script, matcher] of cases) {
+        const result = await shell(page, script)
+        expect(matcher.test(result.stdout), `\`${script}\` → ${result.stdout}${result.stderr}`)
+      }
+      // `timeout` reports its deadline through the exit status; the command it
+      // cut short must not also report itself as an error.
+      const quiet = await shell(page, 'timeout 1 sleep 5')
+      expect(!/interrupted/.test(quiet.stderr), `timeout leaked an interrupt notice: ${quiet.stderr}`)
+    },
+  },
+  {
     name: 'node-runtime',
     async run(page) {
       await waitForShell(page)
