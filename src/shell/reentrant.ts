@@ -1,0 +1,87 @@
+/**
+ * Commands that run other commands.
+ *
+ * `xargs` and `timeout` are ordinary applets everywhere except in one respect:
+ * they have to execute a command line, which means re-entering the interpreter
+ * that is already running them. A table of applets built once at module scope
+ * cannot hold them — it has no interpreter to call — so they are registered per
+ * run, against the live one.
+ *
+ * Keeping them here rather than in each host's setup is what stops `timeout`
+ * from reaching for the page's `runShell`: doing that pulled the entire
+ * application into any bundle that contained the shell, including the one meant
+ * to be a small program inside the container.
+ */
+
+import type { Interpreter } from './interpreter.ts'
+import { parseArgs } from './coreutils.ts'
+import type { CommandImpl, ShellState } from './runtime.ts'
+
+/** Quote a token so re-entering the parser cannot reinterpret it. */
+function quote(token: string): string {
+  return `'${token.replaceAll("'", `'\\''`)}'`
+}
+
+/**
+ * Register the commands that need to call the interpreter back.
+ * @param interpreter - the running interpreter.
+ * @param state - its state, whose command table receives the registrations.
+ */
+export function registerReentrant(interpreter: Interpreter, state: ShellState): void {
+  const xargs: CommandImpl = async (context) => {
+    const { flags, operands, values } = parseArgs(context.argv, 'In')
+    const items = context.stdin.split(flags.has('0') ? '\0' : /\s+/).filter(item => item.length > 0)
+    if (items.length === 0) return 0
+    const base = operands.length > 0 ? operands : ['echo']
+    const placeholder = values.get('I')
+    const batchSize = values.has('n') ? Number(values.get('n')) : (placeholder === undefined ? items.length : 1)
+    let status = 0
+    for (let index = 0; index < items.length; index += batchSize) {
+      const batch = items.slice(index, index + batchSize)
+      const argv = placeholder === undefined
+        ? [...base, ...batch]
+        : base.map(token => token.replaceAll(placeholder, batch[0]))
+      const result = await interpreter.run(argv.map(quote).join(' '), {
+        stdin: '', stdout: context.stdout, stderr: context.stderr,
+      })
+      if (result !== 0) status = result
+    }
+    return status
+  }
+
+  const timeout: CommandImpl = async (context) => {
+    const args = context.argv.slice(1).filter(argument => !argument.startsWith('-'))
+    const seconds = Number(args[0])
+    if (!Number.isFinite(seconds) || args.length < 2) {
+      context.stderr.write('timeout: usage: timeout DURATION COMMAND [ARG]...\n')
+      return 125
+    }
+    const controller = new AbortController()
+    const timer = setTimeout(() => { controller.abort() }, seconds * 1000)
+    // A command cut short says so on stderr, which is right when a person
+    // pressed Ctrl+C and wrong here: the deadline was the point, and `timeout`
+    // reports it through status 124 rather than as an error.
+    const held: string[] = []
+    const previous = state.signal
+    state.signal = controller.signal
+    try {
+      const status = await interpreter.run(args.slice(1).map(quote).join(' '), {
+        stdin: context.stdin,
+        stdout: context.stdout,
+        stderr: { write: (text: string) => { held.push(text) } },
+      })
+      const noise = /^\s*(?:\w[\w.-]*: )?interrupted\s*$/
+      for (const chunk of held) {
+        if (controller.signal.aborted && noise.test(chunk)) continue
+        context.stderr.write(chunk)
+      }
+      return controller.signal.aborted ? 124 : status
+    } finally {
+      clearTimeout(timer)
+      state.signal = previous
+    }
+  }
+
+  state.commands.set('xargs', xargs)
+  state.commands.set('timeout', timeout)
+}

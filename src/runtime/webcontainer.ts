@@ -23,6 +23,7 @@
 
 import type { WebContainer, WebContainerProcess } from '@webcontainer/api'
 import { persistWorkspace, restoreWorkspace, type RuntimePersistence } from './persist.ts'
+import { CONTAINER_SHELL } from '../generated/container-shell.ts'
 
 /**
  * Where a session starts.
@@ -32,7 +33,46 @@ import { persistWorkspace, restoreWorkspace, type RuntimePersistence } from './p
  * directory, so a workspace named anywhere else is created *inside* it and
  * `export` cannot address it by the same absolute path `fs` accepted.
  */
-export const WORKSPACE = '/home/workspace'
+export const WORKDIR = '/home/dsh'
+
+/**
+ * Where a session starts: the user's files, and nothing else.
+ *
+ * A directory *inside* the container's working directory rather than being it,
+ * because the harness needs somewhere to keep the shell and the script files it
+ * runs. Those cannot live in the workspace: a page can only write beneath the
+ * working directory, so anything the harness writes there would show up in the
+ * user's `ls -la`, in `git status` as untracked, and in the snapshot their work
+ * is restored from.
+ */
+export const WORKSPACE = `${WORKDIR}/workspace`
+
+/** Where the harness keeps its own files, relative to the working directory. */
+const PRIVATE_DIR = '.dsh'
+
+/** Where the shell program lives, as the container itself addresses it. */
+const SHELL_PATH = `${WORKDIR}/${PRIVATE_DIR}/sh.cjs`
+
+/** Distinguishes one command's script file from another's while both run. */
+let runCounter = 0
+
+/**
+ * Install the shell the agent's commands run in.
+ *
+ * The container ships `jsh`, which is not a shell in the sense a harness needs:
+ * no `for`, `if`, `while`, `case`, functions, heredocs or `<` redirection, and
+ * command substitution that expands to the empty string while reporting
+ * success — so `n=$(ls | wc -l)` yields a confident wrong answer rather than an
+ * error. `dsh` on a machine gets a real bash; this writes in the interpreter
+ * from `src/shell/`, which is a real shell, and runs it on the container's own
+ * files through `node:fs`.
+ * @param runtime - the booted container.
+ */
+async function installShell(runtime: WebContainer): Promise<void> {
+  await runtime.fs.mkdir(PRIVATE_DIR, { recursive: true })
+  await runtime.fs.mkdir(toContainerPath(WORKSPACE), { recursive: true })
+  await runtime.fs.writeFile(`${PRIVATE_DIR}/sh.cjs`, CONTAINER_SHELL)
+}
 
 /**
  * Translate an absolute path into what the container will accept.
@@ -46,8 +86,8 @@ export const WORKSPACE = '/home/workspace'
  * @returns the path as the container names it.
  */
 export function toContainerPath(absolute: string): string {
-  if (absolute === WORKSPACE) return '.'
-  if (absolute.startsWith(`${WORKSPACE}/`)) return absolute.slice(WORKSPACE.length + 1) || '.'
+  if (absolute === WORKDIR) return '.'
+  if (absolute.startsWith(`${WORKDIR}/`)) return absolute.slice(WORKDIR.length + 1) || '.'
   return absolute.replace(/^\/+/, '')
 }
 
@@ -87,7 +127,10 @@ export async function bootRuntime(onProgress?: (step: string) => void): Promise<
     const { WebContainer: Runtime } = await import('@webcontainer/api')
 
     onProgress?.('Starting Node')
-    const booted = await Runtime.boot({ workdirName: 'workspace' })
+    const booted = await Runtime.boot({ workdirName: 'dsh' })
+
+    onProgress?.('Installing the shell')
+    await installShell(booted)
 
     onProgress?.('Preparing the workspace')
     // The runtime's filesystem is in memory, so without this a reload loses the
@@ -131,8 +174,8 @@ export function runtimeAvailable(): boolean {
 /**
  * Run a shell command in the runtime.
  *
- * `jsh` merges the two output streams, so what a caller gets back is what a
- * terminal would have shown; `stderr` is reported separately only when the
+ * The runtime merges the two output streams, so what a caller gets back is what
+ * a terminal would have shown; `stderr` is reported separately only when the
  * command is run in a way that keeps them apart, which nothing here does.
  * Reporting the merged text as stdout is truer than inventing a split.
  * @param script - shell source to run.
@@ -146,7 +189,13 @@ export async function execute(script: string, options: RunOptions = {}): Promise
     if (value !== undefined) env[name] = value
   }
 
-  const process = await runtime.spawn('jsh', ['-c', script], {
+  // Not `-c <script>`: the runtime unescapes backslashes in argv, so a script
+  // passed as an argument arrives subtly different from the one the agent wrote
+  // — `sed 's/a/\n/'` loses its escape and the command quietly does the wrong
+  // thing. A file's bytes survive intact.
+  const scriptFile = `${PRIVATE_DIR}/run-${String(runCounter++)}.sh`
+  await runtime.fs.writeFile(scriptFile, script)
+  const process = await runtime.spawn('node', [SHELL_PATH, `${WORKDIR}/${scriptFile}`], {
     cwd: toContainerPath(options.cwd ?? WORKSPACE),
     ...(Object.keys(env).length === 0 ? {} : { env }),
   })
@@ -159,11 +208,11 @@ export async function execute(script: string, options: RunOptions = {}): Promise
     },
   })).catch(() => undefined)
 
-  if (options.stdin !== undefined && options.stdin !== '') {
-    const writer = process.input.getWriter()
-    await writer.write(options.stdin)
-    await writer.close().catch(() => undefined)
-  }
+  // Closed either way: the shell reads standard input to the end before it
+  // runs, so an input that is never closed is a command that never starts.
+  const writer = process.input.getWriter()
+  if (options.stdin !== undefined && options.stdin !== '') await writer.write(options.stdin)
+  await writer.close().catch(() => undefined)
 
   const abort = options.signal
   if (abort !== undefined) {
@@ -171,6 +220,7 @@ export async function execute(script: string, options: RunOptions = {}): Promise
   }
 
   const status = await process.exit
+  await runtime.fs.rm(scriptFile).catch(() => undefined)
   // A command is the coarsest thing that can change the workspace, and the
   // cheapest place to notice: the snapshot itself is debounced.
   durability?.touch()

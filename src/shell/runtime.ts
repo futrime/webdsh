@@ -102,6 +102,15 @@ export interface ShellState {
   functions: Map<string, unknown>
   /** External command registry. */
   commands: Map<string, CommandImpl>
+  /**
+   * Last resort for a name the registry does not hold.
+   *
+   * In the page there is nothing else to try and the shell reports
+   * `command not found`. Running inside the container there is: a real `$PATH`
+   * with `node`, `npm`, and `python3` on it, which this shell must not shadow
+   * with an emulation. Left unset, dispatch is unchanged.
+   */
+  external?: CommandImpl
   /** `set -e` / `set -x` / `set -u`. */
   options: { errexit: boolean, xtrace: boolean, nounset: boolean, pipefail: boolean }
   /** Cancellation for the whole script. */

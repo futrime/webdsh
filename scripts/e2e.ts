@@ -103,10 +103,12 @@ const scenarios: Scenario[] = [
     name: 'shell',
     async run(page) {
       await waitForShell(page)
-      // These run in the runtime's `jsh`, which is a JavaScript shell rather
-      // than a POSIX one: it has pipelines, redirects, and the common commands,
-      // and it does not have the whole of coreutils. What is tested here is what
-      // it actually provides.
+      // A tool call runs in the shell this build installs in the container, not
+      // in the container's own `jsh` — which has no `for`, `if`, `while`, `case`,
+      // functions, heredocs or `<`, and whose command substitution expands to
+      // the empty string while reporting success. Every construct below is one
+      // an agent writes without thinking about it, and several of them used to
+      // return a confident wrong answer rather than an error.
       const cases: [string, RegExp][] = [
         ['echo hello', /hello/],
         ['mkdir -p t && cd t && echo one > a.txt && cat a.txt', /one/],
@@ -119,6 +121,26 @@ const scenarios: Scenario[] = [
         ['cd t && cat a.txt | head -n 1', /one/],
         ['ls /', /home/],
         ['node -e "console.log(6*7)"', /42/],
+        // The shell language itself.
+        ['echo "sub=$(echo inner)"', /sub=inner/],
+        ['echo "arith=$((6*7))"', /arith=42/],
+        ['for i in a b; do echo "item-$i"; done', /item-a[\s\S]*item-b/],
+        ['if [ -d / ]; then echo branch-taken; fi', /branch-taken/],
+        ['i=0; while [ $i -lt 2 ]; do echo "n=$i"; i=$((i+1)); done', /n=0[\s\S]*n=1/],
+        ['case abc in a*) echo pattern-matched;; esac', /pattern-matched/],
+        ['greet() { echo "fn-$1"; }; greet ok', /fn-ok/],
+        ["cat <<'HERE'\nheredoc-body\nHERE", /heredoc-body/],
+        ['printf "one\\ntwo\\n" > lines.txt && wc -l < lines.txt', /\b2\b/],
+        // Backslashes survive the trip into the container: they are unescaped
+        // out of argv, so a script that travels as an argument arrives changed
+        // and `sed 's/x/\\n/'` quietly stops meaning what it says.
+        ['printf "a\\tb\\n"', /a\tb/],
+        ["echo hello | sed 's/hello/replaced/'", /replaced/],
+        ["printf '3 4\\n' | awk '{print $1+$2}'", /\b7\b/],
+        ['grep -c . lines.txt', /\b2\b/],
+        // The real toolchain, not an emulation of it.
+        ['python3 -c "print(6*7)"', /42/],
+        ['npm --version', /\d+\.\d+\.\d+/],
       ]
       for (const [script, matcher] of cases) {
         const result = await shell(page, script)

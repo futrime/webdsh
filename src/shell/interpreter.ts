@@ -282,6 +282,19 @@ export class Interpreter {
     const script = this.resolveExecutable(name)
     if (script !== undefined) return this.runScriptFile(script, args, streams)
 
+    // Only reached when nothing this shell implements answers to the name, so a
+    // host that has real executables gets the last word before the refusal.
+    const external = this.state.external
+    if (external !== undefined) {
+      try {
+        return await external({ argv: words, shell: this.state, ...streams, signal: this.state.signal })
+      } catch (error) {
+        if (error instanceof ExitSignal || error instanceof ReturnSignal || error instanceof LoopSignal) throw error
+        streams.stderr.write(`${name}: ${error instanceof Error ? error.message : String(error)}\n`)
+        return 1
+      }
+    }
+
     streams.stderr.write(`sh: ${name}: command not found\n`)
     return 127
   }
@@ -313,9 +326,41 @@ export class Interpreter {
       : (this.state.vars.get('PATH') ?? '').split(':').filter(Boolean).map(dir => `${dir}/${name}`)
     for (const candidate of candidates) {
       const node = this.state.volume.lookup(candidate)
-      if (node?.kind === 'file' && (node.mode & 0o111) !== 0) return candidate
+      if (node?.kind === 'file' && (node.mode & 0o111) !== 0 && this.isShellScript(candidate)) return candidate
     }
     return undefined
+  }
+
+  /**
+   * Whether an executable file is something this interpreter can run as source.
+   *
+   * Being executable and on `$PATH` is not enough. A native binary read as shell
+   * source parses into garbage, and the first "word" of that garbage is what the
+   * error then names — which is how `node -v` came back as
+   * `sh: ????: command not found`. A `#!/usr/bin/env node` script is just as
+   * wrong to interpret here, and far more likely: `npm` is one.
+   *
+   * So a file qualifies only if it is text and either carries no shebang — POSIX
+   * says the current shell runs those — or names a shell in the one it has.
+   * Everything else belongs to whatever can actually execute it.
+   */
+  private isShellScript(path: string): boolean {
+    let head: Uint8Array
+    try {
+      head = this.state.volume.readFile(path).subarray(0, 256)
+    } catch {
+      return false
+    }
+    const text = toText(head)
+    // The container marks an executable it provides itself with a placeholder
+    // file — `/usr/local/bin/node` is four U+FFFD characters — so "no NUL byte"
+    // is not enough to call something text. A replacement character means the
+    // bytes were never text, and a control character means they are not source.
+    if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\uFFFD]/.test(text)) return false
+    if (!text.startsWith('#!')) return true
+    const newline = text.indexOf('\n')
+    const interpreter = newline === -1 ? text : text.slice(0, newline)
+    return /(?:^|\/|\s)(?:ba|da|k|z)?sh(?:\s|$)/.test(interpreter)
   }
 
   /** Run a shebang script from the VFS in a nested interpreter. */

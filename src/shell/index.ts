@@ -8,7 +8,8 @@
  */
 
 import { Interpreter } from './interpreter.ts'
-import { coreutils, parseArgs } from './coreutils.ts'
+import { coreutils } from './coreutils.ts'
+import { registerReentrant } from './reentrant.ts'
 import { tools } from './tools.ts'
 import { gitCommand } from './git.ts'
 import { ripgrep } from './ripgrep.ts'
@@ -176,26 +177,7 @@ async function execute(interpreter: Interpreter, state: ShellState, script: stri
  */
 function prepare(state: ShellState): Interpreter {
   const interpreter = new Interpreter(state)
-  // `xargs` needs to re-enter the interpreter, so it is registered per run.
-  state.commands.set('xargs', async (context) => {
-    const { flags, operands, values } = parseArgs(context.argv, 'In')
-    const items = context.stdin.split(flags.has('0') ? '\0' : /\s+/).filter(item => item.length > 0)
-    if (items.length === 0) return 0
-    const base = operands.length > 0 ? operands : ['echo']
-    const placeholder = values.get('I')
-    const batchSize = values.has('n') ? Number(values.get('n')) : (placeholder === undefined ? items.length : 1)
-    let status = 0
-    for (let i = 0; i < items.length; i += batchSize) {
-      const batch = items.slice(i, i + batchSize)
-      const argv = placeholder === undefined
-        ? [...base, ...batch]
-        : base.map(token => token.replaceAll(placeholder, batch[0]))
-      const quoted = argv.map(token => `'${token.replaceAll("'", `'\\''`)}'`).join(' ')
-      const result = await interpreter.run(quoted, { stdin: '', stdout: context.stdout, stderr: context.stderr })
-      if (result !== 0) status = result
-    }
-    return status
-  })
+  registerReentrant(interpreter, state)
 
   // `bash`/`sh` as first-class commands.
   //

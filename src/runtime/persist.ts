@@ -84,7 +84,7 @@ export async function restoreWorkspace(runtime: WebContainer): Promise<boolean> 
   const snapshot = await load()
   if (snapshot === undefined || snapshot.byteLength === 0) return false
   try {
-    await runtime.mount(snapshot)
+    await runtime.mount(snapshot, { mountPoint: toContainerPath(WORKSPACE) })
     return true
   } catch (error) {
     // A snapshot from an incompatible version is worth discarding rather than

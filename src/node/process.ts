@@ -17,12 +17,12 @@ export const env: Record<string, string | undefined> = {
   // workspace`, and the directory picker opens at home: a home that did not
   // contain the workspace would offer everything except the one directory the
   // user wants.
-  HOME: '/home',
+  HOME: '/home/dsh',
   // The workspace the runtime opens on. It is the container's own working
   // directory, and the host has to agree: a session's cwd comes from here, and
   // a tool searching a path the runtime cannot resolve finds nothing at all
   // rather than failing loudly.
-  PWD: '/home/workspace',
+  PWD: '/home/dsh/workspace',
   TMPDIR: '/tmp',
   PATH: '/usr/local/bin:/usr/bin:/bin',
   SHELL: '/bin/sh',
@@ -35,7 +35,7 @@ export const env: Record<string, string | undefined> = {
   DSH_RUNTIME: 'browser',
 }
 
-let workingDirectory = '/home/workspace'
+let workingDirectory = '/home/dsh/workspace'
 
 /** Simple event registry for `process.on('exit' | 'uncaughtException' | ...)`. */
 const listeners = new Map<string, Set<(...args: unknown[]) => void>>()

@@ -389,37 +389,6 @@ export const busybox: Record<string, CommandImpl> = {
 
   sync(context) { void context; return 0 },
 
-  /** `timeout DURATION COMMAND …` — the deadline a page can actually enforce. */
-  async timeout(context) {
-    const args = context.argv.slice(1).filter(argument => !argument.startsWith('-'))
-    const seconds = Number(args[0])
-    if (!Number.isFinite(seconds) || args.length < 2) return fail(context, 'usage: timeout DURATION COMMAND [ARG]...', 125)
-    const { runShell } = await import('./index.ts')
-    const controller = new AbortController()
-    const timer = setTimeout(() => { controller.abort() }, seconds * 1000)
-    // A command cut short says so on stderr, which is right when a person
-    // pressed Ctrl+C and wrong here: the deadline was the point, and `timeout`
-    // reports it through status 124 rather than as an error.
-    const held: string[] = []
-    try {
-      const result = await runShell(args.slice(1).map(token => `'${token.replaceAll("'", `'\\''`)}'`).join(' '), {
-        cwd: context.shell.cwd,
-        env: Object.fromEntries(context.shell.vars),
-        stdin: context.stdin,
-        signal: controller.signal,
-        onStdout: chunk => { context.stdout.write(chunk) },
-        onStderr: chunk => { held.push(chunk) },
-      })
-      const noise = /^\s*(?:\w[\w.-]*: )?interrupted\s*$/
-      for (const chunk of held) {
-        if (controller.signal.aborted && noise.test(chunk)) continue
-        context.stderr.write(chunk)
-      }
-      return controller.signal.aborted ? 124 : result.status
-    } finally {
-      clearTimeout(timer)
-    }
-  },
 
   /** `curl` — a page's own fetch, with the flags that map onto it. */
   async curl(context) {

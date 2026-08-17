@@ -43,12 +43,12 @@ export const DEPLOY_ROOT = '/opt/dsh'
  * directly under the home the picker opens at, so a first-time visitor sees it
  * without navigating anywhere.
  */
-export const WORKSPACE_ROOT = '/home/workspace'
+export const WORKSPACE_ROOT = '/home/dsh/workspace'
 
 /** Directories a POSIX-shaped world is expected to have. */
 const SKELETON = [
   '/bin', '/usr/bin', '/usr/local/bin', '/etc', '/tmp', '/var', '/var/log',
-  '/home', WORKSPACE_ROOT, '/opt', DEPLOY_ROOT,
+  '/home', '/home/dsh', WORKSPACE_ROOT, '/opt', DEPLOY_ROOT,
 ]
 
 
