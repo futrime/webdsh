@@ -5,6 +5,10 @@
 
 import { BigIntStats, constants, core, Dirent, Stats, toPath } from './fs-core.ts'
 import { asBuffer, readOptions, toBytes, toText, type BinaryLike } from './binary.ts'
+import {
+  routedToRuntime, runtimeMkdir, runtimeReaddirTyped, runtimeReadFile, runtimeRename, runtimeRm, runtimeStat,
+  runtimeWriteFile, type RuntimeStat,
+} from '../runtime/fs-bridge.ts'
 import { volume } from '../vfs/volume.ts'
 import { fsError } from '../vfs/errors.ts'
 
@@ -125,18 +129,76 @@ export class Dir {
   }
 }
 
-export const stat = async (path: unknown, options?: { bigint?: boolean }): Promise<Stats | BigIntStats> =>
-  core.stat(toPath(path), options?.bigint === true)
-export const lstat = async (path: unknown, options?: { bigint?: boolean }): Promise<Stats | BigIntStats> =>
-  core.lstat(toPath(path), options?.bigint === true)
-export const access = async (path: unknown, mode?: number): Promise<void> => { core.access(toPath(path), mode) }
+/**
+ * Build a `Stats` from what the machine reported.
+ *
+ * The shim's `Stats` is constructed from an inode, so the machine's answer is
+ * shaped into one rather than a second stat type being introduced.
+ */
+function statsFromRuntime(entry: RuntimeStat, bigint: boolean): Stats | BigIntStats {
+  const node = {
+    kind: entry.kind,
+    mode: entry.mode,
+    mtime: entry.mtimeMs,
+    ctime: entry.mtimeMs,
+    atime: entry.mtimeMs,
+    birthtime: entry.mtimeMs,
+    ino: 1,
+    content: entry.kind === 'file' ? new Uint8Array(entry.size) : undefined,
+  }
+  return bigint ? new BigIntStats(node as never) : new Stats(node as never)
+}
+
+/** `ENOENT` for a path the machine does not have. */
+function missing(path: string, syscall: string): Error {
+  return Object.assign(new Error(`ENOENT: no such file or directory, ${syscall} '${path}'`), { code: 'ENOENT', path })
+}
+
+export const stat = async (path: unknown, options?: { bigint?: boolean }): Promise<Stats | BigIntStats> => {
+  const target = toPath(path)
+  if (routedToRuntime(target)) {
+    const entry = await runtimeStat(target)
+    if (entry === undefined) throw missing(target, 'stat')
+    return statsFromRuntime(entry, options?.bigint === true)
+  }
+  return core.stat(target, options?.bigint === true)
+}
+export const lstat = async (path: unknown, options?: { bigint?: boolean }): Promise<Stats | BigIntStats> => {
+  const target = toPath(path)
+  if (routedToRuntime(target)) {
+    const entry = await runtimeStat(target)
+    if (entry === undefined) throw missing(target, 'lstat')
+    return statsFromRuntime(entry, options?.bigint === true)
+  }
+  return core.lstat(target, options?.bigint === true)
+}
+export const access = async (path: unknown, mode?: number): Promise<void> => {
+  const target = toPath(path)
+  if (routedToRuntime(target)) {
+    if (await runtimeStat(target) === undefined) throw missing(target, 'access')
+    return
+  }
+  core.access(target, mode)
+}
 export const readFile = async (path: unknown, options?: unknown): Promise<Buffer | string> => {
   if (path instanceof FileHandle) return path.readFile(options)
-  return core.readFile(toPath(path), readOptions(options).encoding)
+  const target = toPath(path)
+  if (routedToRuntime(target)) {
+    const bytes = await runtimeReadFile(target)
+    const encoding = readOptions(options).encoding
+    return encoding === undefined || encoding === null ? asBuffer(bytes) : toText(bytes, encoding)
+  }
+  return core.readFile(target, readOptions(options).encoding)
 }
 export const writeFile = async (path: unknown, data: BinaryLike, options?: unknown): Promise<void> => {
   if (path instanceof FileHandle) return path.writeFile(data, options)
-  core.writeFile(toPath(path), data, readOptions(options))
+  const target = toPath(path)
+  const opts = readOptions(options)
+  if (routedToRuntime(target)) {
+    await runtimeWriteFile(target, toBytes(data, opts.encoding ?? 'utf8'))
+    return
+  }
+  core.writeFile(target, data, opts)
 }
 export const appendFile = async (path: unknown, data: BinaryLike, options?: unknown): Promise<void> => {
   if (path instanceof FileHandle) return path.writeFile(data, options)
@@ -144,20 +206,73 @@ export const appendFile = async (path: unknown, data: BinaryLike, options?: unkn
 }
 export const mkdir = async (path: unknown, options?: unknown): Promise<string | undefined> => {
   const opts = typeof options === 'number' ? { mode: options } : readOptions(options)
-  return core.mkdir(toPath(path), opts)
+  const target = toPath(path)
+  if (routedToRuntime(target)) {
+    await runtimeMkdir(target, opts.recursive === true)
+    return opts.recursive === true ? target : undefined
+  }
+  return core.mkdir(target, opts)
 }
-export const readdir = async (path: unknown, options?: unknown): Promise<string[] | Dirent[]> => core.readdir(toPath(path), readOptions(options))
-export const rm = async (path: unknown, options?: unknown): Promise<void> => { core.rm(toPath(path), readOptions(options)) }
+export const readdir = async (path: unknown, options?: unknown): Promise<string[] | Dirent[]> => {
+  const target = toPath(path)
+  const opts = readOptions(options)
+  if (routedToRuntime(target)) {
+    const entries = await runtimeReaddirTyped(target)
+    if (opts.withFileTypes !== true) return entries.map(entry => entry.name)
+    return entries.map(entry => new Dirent(entry.name, target, entry.kind))
+  }
+  return core.readdir(target, opts)
+}
+export const rm = async (path: unknown, options?: unknown): Promise<void> => {
+  const target = toPath(path)
+  const opts = readOptions(options)
+  if (routedToRuntime(target)) return runtimeRm(target, opts)
+  core.rm(target, opts)
+}
 export const rmdir = async (path: unknown, options?: unknown): Promise<void> => { core.rmdir(toPath(path), readOptions(options)) }
-export const unlink = async (path: unknown): Promise<void> => { core.unlink(toPath(path)) }
-export const rename = async (from: unknown, to: unknown): Promise<void> => { core.rename(toPath(from), toPath(to)) }
+export const unlink = async (path: unknown): Promise<void> => {
+  const target = toPath(path)
+  if (routedToRuntime(target)) return runtimeRm(target, { force: false })
+  core.unlink(target)
+}
+export const rename = async (from: unknown, to: unknown): Promise<void> => {
+  const source = toPath(from)
+  const destination = toPath(to)
+  if (routedToRuntime(source) || routedToRuntime(destination)) return runtimeRename(source, destination)
+  core.rename(source, destination)
+}
 export const copyFile = async (from: unknown, to: unknown, mode?: number): Promise<void> => { core.copyFile(toPath(from), toPath(to), mode) }
 export const cp = async (from: unknown, to: unknown, options?: unknown): Promise<void> => { core.cp(toPath(from), toPath(to), readOptions(options)) }
 export const symlink = async (target: unknown, path: unknown): Promise<void> => { core.symlink(toPath(target), toPath(path)) }
-export const link = async (from: unknown, to: unknown): Promise<void> => { core.link(toPath(from), toPath(to)) }
+export const link = async (from: unknown, to: unknown): Promise<void> => {
+  const source = toPath(from)
+  const destination = toPath(to)
+  // The runtime has no hard links; a copy is the closest honest equivalent, and
+  // dsh uses `link` only to publish a finished file under a second name.
+  if (routedToRuntime(source) || routedToRuntime(destination)) {
+    await runtimeWriteFile(destination, await runtimeReadFile(source))
+    return
+  }
+  core.link(source, destination)
+}
 export const readlink = async (path: unknown): Promise<string> => core.readlink(toPath(path))
-export const realpath = async (path: unknown): Promise<string> => core.realpath(toPath(path))
-export const chmod = async (path: unknown, mode: number): Promise<void> => { core.chmod(toPath(path), mode) }
+export const realpath = async (path: unknown): Promise<string> => {
+  const target = toPath(path)
+  // Nothing in the runtime's filesystem is a symlink, so a path resolves to
+  // itself once it exists.
+  if (routedToRuntime(target)) {
+    if (await runtimeStat(target) === undefined) throw missing(target, 'realpath')
+    return target
+  }
+  return core.realpath(target)
+}
+export const chmod = async (path: unknown, mode: number): Promise<void> => {
+  const target = toPath(path)
+  // Modes are not modelled by the runtime; accepting the call is what a
+  // single-user filesystem would do.
+  if (routedToRuntime(target)) return
+  core.chmod(target, mode)
+}
 export const chown = async (): Promise<void> => {}
 export const lchown = async (): Promise<void> => {}
 export const utimes = async (path: unknown, atime: number | Date, mtime: number | Date): Promise<void> => { core.utimes(toPath(path), atime, mtime) }

@@ -27,9 +27,6 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
-      - name: Build the VM disk
-        run: npm run vm:build
-
       - name: Build
         run: npm run build
 
@@ -42,13 +39,13 @@ jobs:
           sleep 3
           npx tsx scripts/e2e.ts
 
-      - name: Virtual machine workloads
-        # Compiles C, runs Python and Node, commits to a git repository, and
-        # checks the machine's filesystem survives a reload.
+      - name: Runtime workloads
+        # Runs Node, installs a package from the registry and imports it, runs a
+        # package script, and checks the agent and the terminal are one machine.
         run: |
           node scripts/serve.mjs 4175 &
           sleep 3
-          npx tsx scripts/vm-e2e.ts --url http://127.0.0.1:4175/
+          npx tsx scripts/runtime-e2e.ts --url http://127.0.0.1:4175/
 
       - name: Plugin compatibility
         # Installs real community plugins from npm into the built app. Runs only

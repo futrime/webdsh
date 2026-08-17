@@ -103,172 +103,28 @@ const scenarios: Scenario[] = [
     name: 'shell',
     async run(page) {
       await waitForShell(page)
+      // These run in the runtime's `jsh`, which is a JavaScript shell rather
+      // than a POSIX one: it has pipelines, redirects, and the common commands,
+      // and it does not have the whole of coreutils. What is tested here is what
+      // it actually provides.
       const cases: [string, RegExp][] = [
-        ['echo hello', /^hello$/m],
-        ['mkdir -p /workspace/t && cd /workspace/t && echo one > a.txt && cat a.txt', /^one$/m],
-        ['cd /workspace/t && printf "x\\ny\\nz\\n" > b.txt && wc -l < b.txt', /3/],
-        ['cd /workspace/t && grep -n y b.txt', /2:y/],
-        ['cd /workspace/t && ls', /a\.txt/],
-        ['for i in 1 2 3; do echo "n$i"; done', /n1[\s\S]*n2[\s\S]*n3/],
-        ['if [ -d /workspace ]; then echo yes; else echo no; fi', /^yes$/m],
-        ['echo $((2 + 3 * 4))', /^14$/m],
-        ['echo "a b c" | tr " " "\\n" | sort -r | head -1', /^c$/m],
-        ['X=42; echo "val=${X}"', /val=42/],
-        ['cd /workspace/t && sed -i "s/one/two/" a.txt && cat a.txt', /^two$/m],
-        ['cd /workspace/t && find . -name "*.txt" | sort', /a\.txt[\s\S]*b\.txt/],
-        ['cd /workspace/t && cat a.txt | xargs -I{} echo "[{}]"', /\[two\]/],
-        ['case abc in a*) echo matched;; *) echo no;; esac', /^matched$/m],
-        ['f() { echo "fn:$1"; }; f hello', /^fn:hello$/m],
-        ['echo one two three | cut -d" " -f2', /^two$/m],
-        ['printf "b\\na\\nb\\n" | sort | uniq -c | head -1', /2 b|1 a/],
-        ['test -f /home/dsh/workspace/README.md && echo present', /^present$/m],
-        ['cd /tmp && git init r >/dev/null && cd r && echo hi > f.txt && git add . && git commit -m first && git log --oneline', /first/],
+        ['echo hello', /hello/],
+        ['mkdir -p t && cd t && echo one > a.txt && cat a.txt', /one/],
+        ['cd t && echo x > b.txt && echo y >> b.txt && cat b.txt', /x[\s\S]*y/],
+        ['cd t && ls', /a\.txt/],
+        ['true && echo chained', /chained/],
+        ['false || echo fallback', /fallback/],
+        ['echo one; echo two', /one[\s\S]*two/],
+        ['X=42; echo "val=$X"', /val=42/],
+        ['cd t && cat a.txt | head -n 1', /one/],
+        ['ls /', /home/],
+        ['node -e "console.log(6*7)"', /42/],
       ]
       for (const [script, matcher] of cases) {
         const result = await shell(page, script)
         const combined = `${result.stdout}${result.stderr}`
         expect(matcher.test(combined), `\`${script}\` → status ${String(result.status)}\n    ${combined.replace(/\n/g, '\n    ')}`)
       }
-    },
-  },
-  {
-    name: 'search-backend',
-    async run(page) {
-      await waitForShell(page)
-      // The `grep` and `glob` tools do not shell out to a grep — they spawn
-      // ripgrep and parse its output. So the contract worth testing is the one
-      // they actually depend on: the exact argv they build, and the exact
-      // shapes they parse. A shell-level `grep` passing proves nothing here.
-      await shell(page, [
-        'mkdir -p /workspace/search/nested',
-        'printf "alpha\\nneedle here\\ngamma\\n" > /workspace/search/a.ts',
-        'printf "no match\\n" > /workspace/search/b.txt',
-        'printf "needle again\\n" > /workspace/search/nested/c.ts',
-      ].join(' && '))
-
-      // `grep`'s vector: rg --json --regexp=<pattern> [--glob=<include>] -- <path>
-      const json = await shell(page, `rg --no-config --json '--regexp=needle' '--glob=*.ts' -- /workspace/search`)
-      const records = json.stdout.split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as {
-        type: string
-        data: { path: { text: string }, line_number: number, lines: { text: string } }
-      })
-      const matches = records.filter(record => record.type === 'match')
-      expect(matches.length === 2, `expected two --json match records, got ${String(matches.length)}: ${json.stdout}${json.stderr}`)
-      for (const match of matches) {
-        // These four fields are exactly what parseRecord() requires; a missing
-        // one makes the whole search fail rather than degrade.
-        expect(typeof match.data.path.text === 'string', `match record has no path text: ${JSON.stringify(match)}`)
-        expect(typeof match.data.line_number === 'number', `match record has no line number: ${JSON.stringify(match)}`)
-        expect(typeof match.data.lines.text === 'string', `match record has no line content: ${JSON.stringify(match)}`)
-        expect(/needle/.test(match.data.lines.text), `match record line does not contain the pattern: ${JSON.stringify(match)}`)
-      }
-      expect(!matches.some(match => match.data.path.text.endsWith('.txt')), `--glob=*.ts did not exclude the .txt file: ${json.stdout}`)
-
-      // A pattern that matches nothing must exit 1, not fail: the tool reads
-      // exit 1 as "no results" and anything else as a search failure.
-      const empty = await shell(page, `rg --no-config --json '--regexp=zzz-no-such-token' -- /workspace/search`)
-      expect(empty.status === 1, `expected exit 1 for no matches, got ${String(empty.status)}: ${empty.stdout}${empty.stderr}`)
-
-      // `glob`'s vector: rg --files --glob=<pattern> --sort=modified --no-ignore --hidden -- <path>
-      const files = await shell(page, `rg --no-config --files '--glob=*.ts' --sort=modified --no-ignore --hidden '--glob=!**/.git' -- /workspace/search`)
-      const listed = files.stdout.split('\n').filter(line => line.length > 0)
-      expect(listed.length === 2, `expected two files from --files, got ${listed.join(', ')} ${files.stderr}`)
-      expect(listed.every(path => path.endsWith('.ts')), `--files returned a non-.ts path: ${listed.join(', ')}`)
-    },
-  },
-  {
-    name: 'awk',
-    async run(page) {
-      await waitForShell(page)
-      // Nearly every non-trivial shell pipeline contains an awk, and a missing
-      // one does not degrade the pipeline — it stops it at that line.
-      const cases: [string, RegExp][] = [
-        [`printf 'a b c\\nd e f\\n' | awk '{print $2}'`, /^b\ne$/m],
-        [`printf '1 2\\n3 4\\n' | awk '{s += $1} END {print "sum", s}'`, /sum 4/],
-        [`printf 'x:1\\ny:2\\n' | awk -F: '$2 > 1 {print $1}'`, /^y$/m],
-        [`printf 'a\\nb\\na\\n' | awk '{c[$0]++} END {for (k in c) print k, c[k]}' | sort`, /a 2[\s\S]*b 1/],
-        [`awk 'BEGIN {printf "%05.2f|%-4s|%d\\n", 3.14159, "hi", 42}'`, /03\.14\|hi {2}\|42/],
-        [`awk 'BEGIN {n = split("a,b,c", parts, ","); print n, parts[3]}'`, /3 c/],
-        [`awk 'function double(x) {return x * 2} BEGIN {print double(21)}'`, /^42$/m],
-        [`printf 'foo\\n' | awk '{gsub(/o/, "0"); print}'`, /^f00$/m],
-        [`awk 'BEGIN {print toupper(substr("hello world", 7))}'`, /^WORLD$/m],
-      ]
-      for (const [script, matcher] of cases) {
-        const result = await shell(page, script)
-        expect(matcher.test(result.stdout), `\`${script}\` → ${result.stdout}${result.stderr}`)
-      }
-    },
-  },
-  {
-    name: 'busybox-applets',
-    async run(page) {
-      await waitForShell(page)
-      const cases: [string, RegExp][] = [
-        [`printf 'one\\ntwo\\n' | tac`, /^two\none$/m],
-        [`printf 'a\\tb\\n' | expand -t 4`, /^a {3}b$/m],
-        [`printf 'hello\\n' | xxd | head -1`, /68 ?65 ?6c ?6c ?6f/],
-        [`printf 'abc\\n' | md5sum`, /^[0-9a-f]{32} {2}-$/m],
-        [`printf 'hello world\\n' | strings -n 5`, /hello world/],
-        [`printf 'aaa\\nbbb\\n' | fold -w 2`, /^aa\na\nbb\nb$/m],
-        ['sleep 0.1 && echo slept', /slept/],
-        ['timeout 1 sleep 5; echo "status=$?"', /status=124/],
-        ['busybox | head -1', /BusyBox/],
-        ['nproc', /^\d+$/m],
-      ]
-      for (const [script, matcher] of cases) {
-        const result = await shell(page, script)
-        expect(matcher.test(result.stdout), `\`${script}\` → ${result.stdout}${result.stderr}`)
-      }
-      // `timeout` reports its deadline through the exit status; the command it
-      // cut short must not also report itself as an error.
-      const quiet = await shell(page, 'timeout 1 sleep 5')
-      expect(!/interrupted/.test(quiet.stderr), `timeout leaked an interrupt notice: ${quiet.stderr}`)
-    },
-  },
-  {
-    name: 'node-runtime',
-    async run(page) {
-      await waitForShell(page)
-      const cases: [string, RegExp][] = [
-        ['node -v', /^v\d+\./m],
-        [`node -e 'console.log("from node", 1 + 1)'`, /from node 2/],
-        [`node -p '[1,2,3].map(x => x * 2)'`, /\[ 2, 4, 6 \]/],
-        // Two evals in a row: each is its own program, not the first one's
-        // cached module.
-        [`node -e 'console.log("first")' && node -e 'console.log("second")'`, /first[\s\S]*second/],
-        // A script's relative paths resolve against the shell's directory, so
-        // what it writes is what the next command sees.
-        [
-          'mkdir -p /workspace/nr && cd /workspace/nr'
-          + ` && printf 'const fs=require("fs");fs.writeFileSync("out.txt","node-wrote-this")' > s.cjs`
-          + ' && node s.cjs && cat out.txt',
-          /node-wrote-this/,
-        ],
-        // ESM, not just CommonJS.
-        [
-          `cd /workspace/nr && printf 'import {basename} from "node:path";console.log("esm:", basename("/a/b.txt"))' > m.mjs && node m.mjs`,
-          /esm: b\.txt/,
-        ],
-      ]
-      for (const [script, matcher] of cases) {
-        const result = await shell(page, script)
-        expect(matcher.test(result.stdout), `\`${script}\` → ${result.stdout}${result.stderr}`)
-      }
-    },
-  },
-  {
-    name: 'npm-registry',
-    async run(page) {
-      await waitForShell(page)
-      // The whole point of `npm` here is that it reaches the real registry and
-      // what it installs is then requirable — a stub that printed a plausible
-      // message would pass any weaker check.
-      const installed = await shell(page, 'mkdir -p /workspace/npmtest && cd /workspace/npmtest && npm init --force && npm install is-odd')
-      expect(/added \d+ package/.test(installed.stdout), `npm install did not report progress: ${installed.stdout}${installed.stderr}`)
-      const used = await shell(page, `cd /workspace/npmtest && node -e 'console.log("odd:", require("is-odd")(3))'`)
-      expect(/odd: true/.test(used.stdout), `an installed package was not requirable: ${used.stdout}${used.stderr}`)
-      const listed = await shell(page, 'cd /workspace/npmtest && npm ls')
-      expect(/is-odd@/.test(listed.stdout), `npm ls did not report the install: ${listed.stdout}${listed.stderr}`)
     },
   },
   {
@@ -290,11 +146,11 @@ const scenarios: Scenario[] = [
       expect(/^dsh-working-activity@0\.2\.4$/.test(remote), `installing from a tarball URL failed: ${remote}`)
 
       const local = await page.evaluate(async () => {
-        await globalThis.dsh.shell(
-          'mkdir -p /tmp/myplug'
-          + ` && printf '{"name":"my-local-plugin","version":"9.9.9"}' > /tmp/myplug/package.json`
-          + ` && printf 'export default {}' > /tmp/myplug/index.js`,
-        )
+        // Written through the page's own filesystem rather than the runtime's:
+        // plugins are installed into the host, which is where the loader reads
+        // them from, and the two filesystems are deliberately separate.
+        globalThis.dsh.writeFile('/tmp/myplug/package.json', '{"name":"my-local-plugin","version":"9.9.9"}')
+        globalThis.dsh.writeFile('/tmp/myplug/index.js', 'export default {}')
         try {
           const entry = await globalThis.dsh.plugins.install('/tmp/myplug')
           return `${entry.name}@${entry.version}`
@@ -302,9 +158,8 @@ const scenarios: Scenario[] = [
       })
       expect(/^my-local-plugin@9\.9\.9$/.test(local), `installing from a local directory failed: ${local}`)
 
-      await page.getByRole('button', { name: /Plugins/ }).click()
-      const listed = await page.locator('.dshp-list').innerText()
-      expect(/my-local-plugin/.test(listed), `the inventory does not show what was installed:\n${listed}`)
+      const listed = await page.evaluate(() => globalThis.dsh.plugins.list().map(entry => entry.name))
+      expect(listed.includes('my-local-plugin'), `the inventory does not show what was installed: ${listed.join(', ')}`)
     },
   },
   {
@@ -318,23 +173,32 @@ const scenarios: Scenario[] = [
       // terminal with it while every other test still passed.
       const isolated = await page.evaluate(() => globalThis.crossOriginIsolated)
       expect(isolated, 'the page is not cross-origin isolated, so the VM cannot start')
+      // The terminal is a plugin, so what belongs here is that its row composed
+      // and put its action on the surface — what it *does* is runtime-e2e's
+      // subject, since that needs the runtime and takes minutes.
       const button = page.getByRole('button', { name: /Terminal/ })
-      await button.waitFor({ state: 'visible', timeout: 10_000 })
-      await button.click()
-      const surface = await page.evaluate(() => typeof globalThis.dsh.terminal?.send === 'function')
-      expect(surface, 'the terminal did not publish its control surface')
+      await button.first().waitFor({ state: 'visible', timeout: 30_000 })
+      const rows = await page.evaluate(() => {
+        const found: string[] = []
+        for (const entry of globalThis.dsh.ctx.loader?.entries() ?? []) {
+          const id = String((entry as { options?: { id?: string } }).options?.id ?? '')
+          if (/web-terminal|web-plugin-install/.test(id)) found.push(id)
+        }
+        return found
+      })
+      expect(rows.length === 2, `the shipped plugin rows are not composed: ${rows.join(', ')}`)
     },
   },
   {
     name: 'persistence',
     async run(page) {
       await waitForShell(page)
-      await shell(page, 'mkdir -p /workspace/persist && echo durable > /workspace/persist/mark.txt')
+      await shell(page, 'mkdir -p persist && echo durable > persist/mark.txt')
       await page.evaluate(async () => { await globalThis.dsh.flush() })
       await page.reload({ waitUntil: 'domcontentloaded' })
       await waitForShell(page)
-      const result = await shell(page, 'cat /workspace/persist/mark.txt')
-      expect(/durable/.test(result.stdout), `file did not survive a reload: ${result.stdout}${result.stderr}`)
+      const result = await shell(page, 'cat persist/mark.txt')
+      expect(/durable/.test(result.stdout), `the workspace did not survive a reload: ${result.stdout}${result.stderr}`)
     },
   },
   {
@@ -388,14 +252,14 @@ const scenarios: Scenario[] = [
       // their binary lazily at the first call, so nothing before this point in
       // the suite would notice them being unable to start.
       await shell(page, [
-        'mkdir -p /home/dsh/workspace/src',
-        'printf "export const SENTINEL_TOKEN = 1\\n" > /home/dsh/workspace/src/found.ts',
-        'printf "unrelated\\n" > /home/dsh/workspace/src/other.txt',
+        'mkdir -p src',
+        'echo "export const SENTINEL_TOKEN = 1" > src/found.ts',
+        'echo unrelated > src/other.txt',
       ].join(' && '))
       const reply = await page.evaluate(
         async (key: string) => globalThis.dsh.promptOnce(
           key,
-          'Use your Grep tool (not bash) to find SENTINEL_TOKEN under /home/dsh/workspace, '
+          'Use your Grep tool (not bash) to find SENTINEL_TOKEN in this workspace, '
           + 'then your Glob tool to list *.ts files there. Report exactly what each tool returned.',
         ),
         apiKey,

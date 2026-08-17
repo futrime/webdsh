@@ -14,6 +14,8 @@
  */
 
 import { runShell } from '../shell/index.ts'
+import { execute as executeInRuntime, runtimeAvailable } from '../runtime/webcontainer.ts'
+import { isRipgrep, ripgrep } from '../runtime/ripgrep.ts'
 import { ReadableStreamShim, StreamEmitter, WritableStreamShim } from './streams.ts'
 import { Buffer, toText } from './binary.ts'
 import { process as processShim, setProcessTable } from './process.ts'
@@ -88,6 +90,22 @@ export class ChildProcessShim extends StreamEmitter {
   }
 
   private async execute(): Promise<void> {
+    // The search tools spawn ripgrep by path and parse its output. The runtime
+    // is Node rather than a distribution, so there is no such binary; the
+    // implementation over the runtime's own filesystem stands in for it, and
+    // has to be reached before the argv is turned into a shell command line.
+    if (runtimeAvailable() && isRipgrep(this.command)) {
+      try {
+        const result = await ripgrep(this.args, this.options.cwd)
+        if (result.stdout !== '') this.stdout?.push(result.stdout)
+        if (result.stderr !== '') this.stderr?.push(result.stderr)
+        this.settle(result.status, null)
+      } catch (error) {
+        this.stderr?.push(`${error instanceof Error ? error.message : String(error)}\n`)
+        this.settle(2, null)
+      }
+      return
+    }
     const script = buildScript(this.command, this.args)
     if (script === undefined) {
       livePids.delete(this.pid)
@@ -101,9 +119,27 @@ export class ChildProcessShim extends StreamEmitter {
       })
       return
     }
+    const cwd = this.options.cwd ?? processShim.cwd()
     try {
+      // The runtime is where the terminal runs, so it is where a tool call has
+      // to run too — otherwise the agent and the user are on different
+      // machines, and a file one of them creates does not exist for the other.
+      // The in-page shell remains the fallback for a browser that cannot host
+      // the runtime at all.
+      if (runtimeAvailable()) {
+        const result = await executeInRuntime(script.source, {
+          cwd,
+          env: (this.options.env ?? processShim.env) as Record<string, string | undefined>,
+          stdin: this.stdinClosed ? this.stdinBuffer : '',
+          signal: this.abort.signal,
+          onStdout: chunk => { this.stdout?.push(chunk) },
+          onStderr: chunk => { this.stderr?.push(chunk) },
+        })
+        this.settle(result.status, null)
+        return
+      }
       const result = await runShell(script.source, {
-        cwd: this.options.cwd ?? processShim.cwd(),
+        cwd,
         env: this.options.env ?? processShim.env,
         stdin: this.stdinClosed ? this.stdinBuffer : '',
         args: script.args,

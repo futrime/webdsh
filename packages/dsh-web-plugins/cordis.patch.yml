@@ -1,0 +1,10 @@
+# Installing plugins from the browser, as a profile bundle layer.
+#
+# `dsh web` lists plugins in Settings and has no way to add one, because on a
+# machine adding one is `dsh plugin add` in a shell. A browser has no such
+# shell, so the surface needs the affordance — and it belongs in the plugins
+# settings page the surface already owns, reached through its own tab slot,
+# rather than in a panel bolted onto the page.
+- insert:
+    - id: web-plugin-install
+      name: '@dsh-web/plugin-install'

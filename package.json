@@ -9,14 +9,13 @@
     "node": ">=22"
   },
   "scripts": {
-    "assemble": "tsx scripts/assemble.ts",
+    "assemble": "npm run build:plugins && tsx scripts/assemble.ts",
     "dev": "npm run assemble && vite",
-    "build": "npm run assemble && vite build && npm run vm:chunk",
+    "build": "npm run assemble && vite build",
     "preview": "vite preview --port 4173",
     "test": "tsx scripts/e2e.ts",
-    "vm:build": "bash scripts/vm/build.sh",
-    "vm:chunk": "node scripts/vm/chunk.mjs build/vm/dsh.ext2 dist/vm/disk",
-    "test:vm": "tsx scripts/vm-e2e.ts"
+    "test:runtime": "tsx scripts/runtime-e2e.ts",
+    "build:plugins": "node scripts/build-plugins.mjs"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.1",
@@ -203,6 +202,7 @@
     "@deepseek-ai/node-addon-landlock-run": "0.1.1",
     "@deepseek-ai/node-addon-landlock-run-linux-x64": "0.1.1",
     "@deepseek-ai/schemastery": "3.18.1",
+    "@webcontainer/api": "^1.6.4",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "buffer": "^6.0.3",
@@ -212,6 +212,7 @@
     "sql.js": "^1.12.0"
   },
   "devDependencies": {
+    "esbuild": "^0.28.2",
     "playwright": "^1.49.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",

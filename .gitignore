@@ -10,7 +10,7 @@ src/generated/
 *.log
 .DS_Store
 
-# The VM disk image and its chunks are built, not authored.
+# Built, not authored.
 build/
-public/vm/
 dist/
+packages/*/lib/

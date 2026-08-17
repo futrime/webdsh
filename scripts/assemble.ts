@@ -60,11 +60,22 @@ interface ClientPackage {
   source: string
 }
 
-/** Scan the installed `@deepseek-ai` scope for packages declaring a web client half. */
+/**
+ * Scan for packages declaring a web client half.
+ *
+ * Two roots, for the same reason a machine has two: the installed
+ * `@deepseek-ai` scope is the surface's own roster, and `packages/` is where
+ * this repository keeps the plugins it ships. A plugin it wrote is not a
+ * different kind of thing from one it installed, so it is discovered the same
+ * way and emitted into the same roster.
+ * @returns every client half found, in a stable order.
+ */
 function scanClientPackages(): ClientPackage[] {
   const found: ClientPackage[] = []
-  for (const name of readdirSync(scope)) {
-    const manifest = join(scope, name, 'package.json')
+  const roots = [scope, join(root, 'packages')].filter(directory => existsSync(directory))
+  for (const container of roots) {
+  for (const name of readdirSync(container)) {
+    const manifest = join(container, name, 'package.json')
     if (!existsSync(manifest)) continue
     const pkg = readJson(manifest)
     const dsh = pkg.dsh
@@ -78,7 +89,7 @@ function scanClientPackages(): ClientPackage[] {
       console.warn(`[assemble] ${String(pkg.name)} declares dsh.client but exports no "./client"; skipping`)
       continue
     }
-    const source = join(scope, name, relativeClient)
+    const source = join(container, name, relativeClient)
     if (!existsSync(source)) {
       console.warn(`[assemble] ${String(pkg.name)} client bundle missing at ${source}; skipping`)
       continue
@@ -89,6 +100,7 @@ function scanClientPackages(): ClientPackage[] {
       immediately: spec.immediately === true,
       source,
     })
+  }
   }
   return found.sort((a, b) => a.id.localeCompare(b.id))
 }

@@ -13,7 +13,11 @@ import { Buffer } from './binary.ts'
 /** Environment variables. Seeded at boot from persisted settings. */
 export const env: Record<string, string | undefined> = {
   HOME: '/home/dsh',
-  PWD: '/home/dsh/workspace',
+  // The workspace the runtime opens on. It is the container's own working
+  // directory, and the host has to agree: a session's cwd comes from here, and
+  // a tool searching a path the runtime cannot resolve finds nothing at all
+  // rather than failing loudly.
+  PWD: '/home/workspace',
   TMPDIR: '/tmp',
   PATH: '/usr/local/bin:/usr/bin:/bin',
   SHELL: '/bin/sh',
@@ -26,7 +30,7 @@ export const env: Record<string, string | undefined> = {
   DSH_RUNTIME: 'browser',
 }
 
-let workingDirectory = '/home/dsh/workspace'
+let workingDirectory = '/home/workspace'
 
 /** Simple event registry for `process.on('exit' | 'uncaughtException' | ...)`. */
 const listeners = new Map<string, Set<(...args: unknown[]) => void>>()

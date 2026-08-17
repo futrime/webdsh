@@ -32,24 +32,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build the VM disk
-        # An i386 Debian root filesystem, built with Docker (i386 containers run
-        # natively on an x86-64 runner) and turned into an ext2 image. The disk
-        # is not in the repository: it is 800 MB of Debian, and it is derived
-        # from scripts/vm/Dockerfile rather than authored.
-        run: npm run vm:build
-
       - name: Build
         # `npm run build` runs scripts/assemble.ts first, which derives the
         # plugin roster, the client bundles, and the host module map from the
-        # installed @deepseek-ai packages, then chunks the disk into dist/.
+        # installed @deepseek-ai packages and builds the plugins this repository
+        # ships.
         run: npm run build
 
       - name: Report the artifact size
-        # GitHub Pages publishes up to 1 GB; the disk chunks are most of it, so
-        # a build that quietly grows past the limit should be visible here
-        # rather than at deploy time.
-        run: du -sh dist dist/vm/disk 2>/dev/null || du -sh dist
+        run: du -sh dist
 
       - name: Verify the build actually boots
         # A static build can be produced from a broken tree, so the artifact is

@@ -13,6 +13,23 @@ import { volume } from '../vfs/volume.ts'
 import { toBytes } from '../node/binary.ts'
 import { env } from '../node/process.ts'
 import browserPatchSource from './browser.patch.yml?raw'
+import terminalPatchSource from '../../packages/dsh-web-terminal/cordis.patch.yml?raw'
+import installPatchSource from '../../packages/dsh-web-plugins/cordis.patch.yml?raw'
+
+/**
+ * Bundle layers for the plugins this repository ships.
+ *
+ * They are layers rather than edits to the overlay for the same reason a
+ * plugin carries its own `cordis.patch.yml` on a machine: the surface should
+ * not have to know they exist, and removing one should be removing one file.
+ */
+const SHIPPED_PLUGIN_PATCHES: Record<string, string> = {
+  'web-terminal': terminalPatchSource,
+  'web-plugin-install': installPatchSource,
+}
+
+/** The bundle layers this build lays down, in application order. */
+export const SHIPPED_BUNDLES = ['browser', ...Object.keys(SHIPPED_PLUGIN_PATCHES)]
 
 /** Root the build's own files live under. */
 export const DEPLOY_ROOT = '/opt/dsh'
@@ -22,7 +39,14 @@ export const DEPLOY_ROOT = '/opt/dsh'
  * where the directory picker opens, so a first-time visitor sees a workspace
  * they can select without navigating anywhere.
  */
-export const WORKSPACE_ROOT = '/home/dsh/workspace'
+/**
+ * Where the user's files live.
+ *
+ * This is the runtime's own working directory, not a path invented for it: the
+ * container roots every path at that directory, so a workspace anywhere else
+ * ends up nested inside it and its snapshot cannot be addressed.
+ */
+export const WORKSPACE_ROOT = '/home/workspace'
 
 /** Directories a POSIX-shaped world is expected to have. */
 const SKELETON = [
@@ -48,6 +72,13 @@ function writeDeploymentFiles(): void {
   // This deployment's own overlay layer, alongside the upstream bundle patches.
   volume.mkdirp(`${DEPLOY_ROOT}/bundles/browser`)
   volume.writeFile(`${DEPLOY_ROOT}/bundles/browser/cordis.patch.yml`, toBytes(browserPatchSource))
+  // The plugins this build ships are laid down as ordinary bundle layers, one
+  // directory each, so the composition reads them exactly as it reads a plugin
+  // someone installed.
+  for (const [name, source] of Object.entries(SHIPPED_PLUGIN_PATCHES)) {
+    volume.mkdirp(`${DEPLOY_ROOT}/bundles/${name}`)
+    volume.writeFile(`${DEPLOY_ROOT}/bundles/${name}/cordis.patch.yml`, toBytes(source))
+  }
   // The empty root the include composes the patch layers over.
   volume.writeFile(`${DEPLOY_ROOT}/cordis.yml`, toBytes('[]\n'))
 }

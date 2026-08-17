@@ -1,0 +1,12 @@
+# The terminal, as a profile bundle layer.
+#
+# `dsh web` has no terminal: on a machine the user already has one, so the web
+# surface never needed to carry it. In a browser there is no outside, which is
+# what makes this worth adding — and adding it the way any other plugin would,
+# rather than by editing the surface, is what keeps the composition honest.
+#
+# The node half is a plain host row; the `dsh.client` declaration in
+# package.json is what puts the browser half in the client roster.
+- insert:
+    - id: web-terminal
+      name: '@dsh-web/terminal'

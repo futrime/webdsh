@@ -10,6 +10,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { runShell, type RunResult } from './shell/index.ts'
+import { execute as executeInRuntime, runtimeAvailable, runtimePersistence } from './runtime/webcontainer.ts'
 import { volume } from './vfs/volume.ts'
 import { toBytes, toText } from './node/binary.ts'
 import type { PersistenceHandle } from './vfs/persist.ts'
@@ -53,11 +54,18 @@ export function installWindowApi(ctx: Context, persistence: PersistenceHandle): 
     ctx,
 
     async shell(script, options) {
+      // The same routing a tool call takes, so what this surface reports is
+      // what the agent would actually see — running it against the in-page
+      // shell while tool calls ran in the runtime would make it a liar.
+      if (runtimeAvailable()) {
+        const result = await executeInRuntime(script, { cwd: options?.cwd ?? WORKSPACE_ROOT })
+        return { status: result.status, stdout: result.stdout, stderr: result.stderr, truncated: false }
+      }
       return runShell(script, { cwd: options?.cwd ?? WORKSPACE_ROOT })
     },
 
     async flush() {
-      await persistence.flush()
+      await Promise.all([persistence.flush(), runtimePersistence()?.flush()])
     },
 
     readFile(path) {
@@ -94,7 +102,7 @@ export function installWindowApi(ctx: Context, persistence: PersistenceHandle): 
     },
 
     async reset() {
-      await persistence.clear()
+      await Promise.all([persistence.clear(), runtimePersistence()?.clear()])
       localStorage.clear()
       location.reload()
     },

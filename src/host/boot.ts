@@ -20,7 +20,7 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { hostModuleSystem, loadWorkerEntry, registerRuntimeModule } from './module-system.ts'
 import { BROWSER_PLUGINS } from './plugins.ts'
 import BrowserClientModules from './client-modules-browser.ts'
-import { seedFilesystem, DEPLOY_ROOT } from './seed.ts'
+import { seedFilesystem, DEPLOY_ROOT, SHIPPED_BUNDLES } from './seed.ts'
 import { installNodeGlobals } from '../node/registry.ts'
 import { setWorkerEntryLoader } from '../node/worker_threads.ts'
 import { installedPatchFiles, registerInstalledModules } from '../plugins/manager.ts'
@@ -29,6 +29,8 @@ import { volume } from '../vfs/volume.ts'
 import { toText } from '../node/binary.ts'
 import { pathToFileURL } from '../node/misc.ts'
 import browserPatchSource from './browser.patch.yml?raw'
+import * as terminalPlugin from '../../packages/dsh-web-terminal/src/index.ts'
+import * as installPlugin from '../../packages/dsh-web-plugins/src/index.ts'
 
 /** What the boot produced, for the page to wire the transport onto. */
 export interface HostBoot {
@@ -69,6 +71,10 @@ export async function bootHost(): Promise<HostBoot> {
     registerRuntimeModule(specifier, namespace)
   }
   registerRuntimeModule('browser:client-modules', { default: BrowserClientModules, name: 'client-modules-browser' })
+  // The shipped plugins' node halves, addressed by package name so their rows
+  // resolve the way any other plugin's would.
+  registerRuntimeModule('@dsh-web/terminal', terminalPlugin)
+  registerRuntimeModule('@dsh-web/plugin-install', installPlugin)
 
   const ctx = new Context()
   ctx.baseUrl = pathToFileURL(`${DEPLOY_ROOT}/`).href
@@ -92,6 +98,10 @@ export async function bootHost(): Promise<HostBoot> {
     ...loadOverlayPatches('dsh-web', `${DEPLOY_ROOT}/bundles/dsh-base/cordis.patch.yml`),
     ...loadOverlayPatches('dsh-web', `${DEPLOY_ROOT}/bundles/dsh-web-app/cordis.patch.yml`),
     ...loadOverlayPatches('dsh-web', `${DEPLOY_ROOT}/bundles/browser/cordis.patch.yml`),
+    // The plugins this build ships, each as its own layer.
+    ...SHIPPED_BUNDLES
+      .filter(name => name !== 'browser')
+      .flatMap(name => loadOverlayPatches(name, `${DEPLOY_ROOT}/bundles/${name}/cordis.patch.yml`)),
     // Installed plugin bundles, in the order they were added — the same place
     // `dsh.profile.bundles` puts them.
     ...installedPatchFiles().flatMap(({ label, path }) => {
