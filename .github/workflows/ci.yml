@@ -19,6 +19,11 @@ jobs:
 
       - run: npm ci
 
+      # `src/generated/` is derived from node_modules and deliberately not
+      # committed, so it has to exist before anything reads its types.
+      - name: Assemble generated sources
+        run: npm run assemble
+
       - name: Typecheck
         run: npx tsc --noEmit
 
