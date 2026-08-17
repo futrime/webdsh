@@ -88,6 +88,10 @@ export default defineConfig({
       // Image decoding for attachments. The browser's own decoder replaces the
       // native library, so image attachments keep working.
       { find: /^sharp$/, replacement: here('./src/node/sharp.ts') },
+      // The ripgrep binary the search tool spawns. Without this the real
+      // package throws while resolving a platform binary that cannot exist
+      // here, and the `grep` and `glob` tools fail on every call.
+      { find: /^@vscode\/ripgrep$/, replacement: here('./src/node/vscode-ripgrep.ts') },
     ],
     // Published dsh packages expose their runtime entry through `default`.
     conditions: ['import', 'module', 'browser', 'default'],

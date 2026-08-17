@@ -11,6 +11,7 @@ import { Interpreter } from './interpreter.ts'
 import { coreutils, parseArgs } from './coreutils.ts'
 import { tools } from './tools.ts'
 import { gitCommand } from './git.ts'
+import { ripgrep } from './ripgrep.ts'
 import { BufferSink, CallbackSink, type CommandImpl, type ShellState, type Sink } from './runtime.ts'
 import { volume } from '../vfs/volume.ts'
 import { env as processEnv, process as processShim } from '../node/process.ts'
@@ -48,19 +49,12 @@ function buildRegistry(): Map<string, CommandImpl> {
   for (const [name, impl] of Object.entries(coreutils)) registry.set(name, impl)
   for (const [name, impl] of Object.entries(tools)) registry.set(name, impl)
   registry.set('git', gitCommand)
-  // `rg` is what agents reach for; map it onto the recursive grep behavior with
-  // ripgrep's defaults (recursive, line numbers, skip .git).
-  registry.set('rg', (context) => {
-    const { operands, flags } = parseArgs(context.argv)
-    const argv = ['grep', '-r', '-n', '--exclude-dir=.git', '--exclude-dir=node_modules']
-    if (flags.has('i')) argv.push('-i')
-    if (flags.has('l')) argv.push('-l')
-    if (flags.has('c')) argv.push('-c')
-    if (flags.has('w')) argv.push('-w')
-    if (flags.has('F')) argv.push('-F')
-    argv.push(...operands)
-    return coreutils.grep({ ...context, argv })
-  })
+  // `rg` is not a convenience alias here: it is the backend the `grep` and
+  // `glob` tools spawn, so it has to speak ripgrep's own argument vector and
+  // JSON output rather than approximate it with the coreutils grep.
+  // The absolute spelling is what the search tool spawns, since that is the
+  // path `@vscode/ripgrep` reports; the bare name is what a person types.
+  for (const name of ['rg', '/usr/bin/rg']) registry.set(name, ripgrep)
   return registry
 }
 

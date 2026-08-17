@@ -127,6 +127,51 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    name: 'search-backend',
+    async run(page) {
+      await waitForShell(page)
+      // The `grep` and `glob` tools do not shell out to a grep — they spawn
+      // ripgrep and parse its output. So the contract worth testing is the one
+      // they actually depend on: the exact argv they build, and the exact
+      // shapes they parse. A shell-level `grep` passing proves nothing here.
+      await shell(page, [
+        'mkdir -p /workspace/search/nested',
+        'printf "alpha\\nneedle here\\ngamma\\n" > /workspace/search/a.ts',
+        'printf "no match\\n" > /workspace/search/b.txt',
+        'printf "needle again\\n" > /workspace/search/nested/c.ts',
+      ].join(' && '))
+
+      // `grep`'s vector: rg --json --regexp=<pattern> [--glob=<include>] -- <path>
+      const json = await shell(page, `rg --no-config --json '--regexp=needle' '--glob=*.ts' -- /workspace/search`)
+      const records = json.stdout.split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as {
+        type: string
+        data: { path: { text: string }, line_number: number, lines: { text: string } }
+      })
+      const matches = records.filter(record => record.type === 'match')
+      expect(matches.length === 2, `expected two --json match records, got ${String(matches.length)}: ${json.stdout}${json.stderr}`)
+      for (const match of matches) {
+        // These four fields are exactly what parseRecord() requires; a missing
+        // one makes the whole search fail rather than degrade.
+        expect(typeof match.data.path.text === 'string', `match record has no path text: ${JSON.stringify(match)}`)
+        expect(typeof match.data.line_number === 'number', `match record has no line number: ${JSON.stringify(match)}`)
+        expect(typeof match.data.lines.text === 'string', `match record has no line content: ${JSON.stringify(match)}`)
+        expect(/needle/.test(match.data.lines.text), `match record line does not contain the pattern: ${JSON.stringify(match)}`)
+      }
+      expect(!matches.some(match => match.data.path.text.endsWith('.txt')), `--glob=*.ts did not exclude the .txt file: ${json.stdout}`)
+
+      // A pattern that matches nothing must exit 1, not fail: the tool reads
+      // exit 1 as "no results" and anything else as a search failure.
+      const empty = await shell(page, `rg --no-config --json '--regexp=zzz-no-such-token' -- /workspace/search`)
+      expect(empty.status === 1, `expected exit 1 for no matches, got ${String(empty.status)}: ${empty.stdout}${empty.stderr}`)
+
+      // `glob`'s vector: rg --files --glob=<pattern> --sort=modified --no-ignore --hidden -- <path>
+      const files = await shell(page, `rg --no-config --files '--glob=*.ts' --sort=modified --no-ignore --hidden '--glob=!**/.git' -- /workspace/search`)
+      const listed = files.stdout.split('\n').filter(line => line.length > 0)
+      expect(listed.length === 2, `expected two files from --files, got ${listed.join(', ')} ${files.stderr}`)
+      expect(listed.every(path => path.endsWith('.ts')), `--files returned a non-.ts path: ${listed.join(', ')}`)
+    },
+  },
+  {
     name: 'persistence',
     async run(page) {
       await waitForShell(page)
@@ -173,6 +218,39 @@ const scenarios: Scenario[] = [
         apiKey,
       )
       expect(/pong/i.test(reply), `unexpected model reply: ${reply}`)
+      void log
+    },
+  },
+  {
+    name: 'search-tools',
+    async run(page, log) {
+      if (apiKey === '') {
+        console.log('  skipped: set DEEPSEEK_API_KEY to exercise the search tools')
+        return
+      }
+      await waitForShell(page)
+      // The backend contract is covered without a key by `search-backend`; this
+      // is the other half — that the tools themselves reach it. They resolve
+      // their binary lazily at the first call, so nothing before this point in
+      // the suite would notice them being unable to start.
+      await shell(page, [
+        'mkdir -p /home/dsh/workspace/src',
+        'printf "export const SENTINEL_TOKEN = 1\\n" > /home/dsh/workspace/src/found.ts',
+        'printf "unrelated\\n" > /home/dsh/workspace/src/other.txt',
+      ].join(' && '))
+      const reply = await page.evaluate(
+        async (key: string) => globalThis.dsh.promptOnce(
+          key,
+          'Use your Grep tool (not bash) to find SENTINEL_TOKEN under /home/dsh/workspace, '
+          + 'then your Glob tool to list *.ts files there. Report exactly what each tool returned.',
+        ),
+        apiKey,
+      )
+      expect(/found\.ts/.test(reply), `the search tools did not return the matching file:\n${reply.slice(0, 1200)}`)
+      expect(
+        !/could not start its search command|ripgrep launch failed|SEARCH_FAILED/i.test(reply),
+        `a search tool failed to launch:\n${reply.slice(0, 1200)}`,
+      )
       void log
     },
   },
