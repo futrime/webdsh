@@ -42,9 +42,46 @@ createServer((req, res) => {
     res.end('not found')
     return
   }
+  // The VM's disk is read by range request — it is streamed block by block
+  // rather than downloaded, so a 2 GB image costs only what is actually read.
+  const stats = statSync(file)
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '')
+  if (range !== null) {
+    const start = range[1] === '' ? stats.size - Number(range[2]) : Number(range[1])
+    const end = range[2] === '' || range[1] === '' ? stats.size - 1 : Math.min(Number(range[2]), stats.size - 1)
+    res.writeHead(206, {
+      'content-type': TYPES[extname(file)] ?? 'application/octet-stream',
+      'content-range': `bytes ${String(start)}-${String(end)}/${String(stats.size)}`,
+      'content-length': String(end - start + 1),
+      'accept-ranges': 'bytes',
+      'cache-control': 'no-store',
+      'cross-origin-embedder-policy': 'require-corp',
+      'cross-origin-opener-policy': 'same-origin',
+      'cross-origin-resource-policy': 'cross-origin',
+      'access-control-allow-origin': '*',
+      'access-control-expose-headers': 'content-range, content-length, accept-ranges, etag, last-modified',
+      'last-modified': stats.mtime.toUTCString(),
+      etag: `"${stats.size.toString(16)}-${stats.mtimeMs.toString(16)}"`,
+    })
+    createReadStream(file, { start, end }).pipe(res)
+    return
+  }
+  const immutable = pathname.startsWith('/vm/disk/') && pathname.endsWith('.gz')
   res.writeHead(200, {
     'content-type': TYPES[extname(file)] ?? 'application/octet-stream',
-    'cache-control': 'no-store',
+    'content-length': String(stats.size),
+    'accept-ranges': 'bytes',
+    'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-store',
+    // The VM needs SharedArrayBuffer, which needs a cross-origin-isolated
+    // page. GitHub Pages cannot send these, so the service worker adds them
+    // there; sending them here keeps local runs identical to a deployment.
+    'cross-origin-embedder-policy': 'require-corp',
+    'cross-origin-opener-policy': 'same-origin',
+    'cross-origin-resource-policy': 'cross-origin',
+    'access-control-allow-origin': '*',
+    'access-control-expose-headers': 'content-range, content-length, accept-ranges, etag, last-modified',
+    'last-modified': stats.mtime.toUTCString(),
+    etag: `"${stats.size.toString(16)}-${stats.mtimeMs.toString(16)}"`,
   })
   createReadStream(file).pipe(res)
 }).listen(port, '127.0.0.1', () => {

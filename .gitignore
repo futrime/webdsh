@@ -9,3 +9,8 @@ src/generated/
 # Local scratch
 *.log
 .DS_Store
+
+# The VM disk image and its chunks are built, not authored.
+build/
+public/vm/
+dist/

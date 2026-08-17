@@ -50,6 +50,29 @@ async function answer(message: HostRequestMessage): Promise<{ handled: boolean, 
 }
 
 /**
+ * Reload once if the page is not yet cross-origin isolated.
+ *
+ * The virtual machine needs `SharedArrayBuffer`, which a browser grants only a
+ * cross-origin isolated page — and isolation is requested through response
+ * headers that a static host cannot be told to send. The worker adds them, but
+ * it only sees requests once it controls the page, so the document that
+ * registered it was fetched without them. One reload through the worker fixes
+ * that; the flag makes sure it stays one.
+ */
+function reloadForIsolationOnce(): void {
+  if (globalThis.crossOriginIsolated) return
+  try {
+    if (sessionStorage.getItem('dsh:isolation-reload') === '1') return
+    sessionStorage.setItem('dsh:isolation-reload', '1')
+  } catch {
+    // Storage is unavailable, so a reload could loop; leaving the page
+    // un-isolated costs the VM and nothing else.
+    return
+  }
+  location.reload()
+}
+
+/**
  * Register the worker and start answering its requests.
  * @returns whether a worker is registered and controlling this page.
  */
@@ -69,7 +92,10 @@ export async function installRequestRouter(): Promise<boolean> {
     // claim the rest of the origin.
     const scope = new URL('./', document.baseURI).href
     await navigator.serviceWorker.register(new URL('sw.js', document.baseURI).href, { scope })
-    if (navigator.serviceWorker.controller !== null) return true
+    if (navigator.serviceWorker.controller !== null) {
+      reloadForIsolationOnce()
+      return true
+    }
     // A first visit is uncontrolled until the worker activates and claims it.
     await Promise.race([
       new Promise<void>((resolve) => {
@@ -77,7 +103,9 @@ export async function installRequestRouter(): Promise<boolean> {
       }),
       new Promise<void>((resolve) => { setTimeout(resolve, 3000) }),
     ])
-    return navigator.serviceWorker.controller !== null
+    const controlled = navigator.serviceWorker.controller !== null
+    if (controlled) reloadForIsolationOnce()
+    return controlled
   } catch (error) {
     // A denied or unavailable registration is not a boot failure.
     console.warn('[service-worker] not registered; plugin-served assets will not load:', error)

@@ -306,22 +306,18 @@ const scenarios: Scenario[] = [
     name: 'terminal',
     async run(page) {
       await waitForShell(page)
-      // The terminal is the user's only way into the filesystem the agent
-      // edits, and its value depends on being a session rather than a series of
-      // unrelated commands.
-      await page.getByRole('button', { name: /Terminal/ }).click()
-      const input = page.locator('.dsht-input')
-      await input.waitFor({ state: 'visible', timeout: 10_000 })
-      for (const line of ['mkdir -p /workspace/term && cd /workspace/term', 'export MARKER=kept', 'echo "$MARKER" > m.txt', 'cat m.txt']) {
-        await input.fill(line)
-        await input.press('Enter')
-        await page.waitForTimeout(600)
-      }
-      const screen = await page.locator('.dsht-screen').innerText()
-      expect(/kept/.test(screen), `the terminal did not keep its session state:\n${screen}`)
-      // And it is the *same* filesystem, not a copy of one.
-      const seen = await shell(page, 'cat /workspace/term/m.txt')
-      expect(/kept/.test(seen.stdout), `the terminal wrote somewhere the agent cannot see: ${seen.stdout}${seen.stderr}`)
+      // What the terminal *does* is `scripts/vm-e2e.ts`'s subject, since it
+      // needs the VM disk and takes minutes. What belongs here is that the page
+      // offers one and that the machine can start at all — cross-origin
+      // isolation is a property of the deployment, and losing it would take the
+      // terminal with it while every other test still passed.
+      const isolated = await page.evaluate(() => globalThis.crossOriginIsolated)
+      expect(isolated, 'the page is not cross-origin isolated, so the VM cannot start')
+      const button = page.getByRole('button', { name: /Terminal/ })
+      await button.waitFor({ state: 'visible', timeout: 10_000 })
+      await button.click()
+      const surface = await page.evaluate(() => typeof globalThis.dsh.terminal?.send === 'function')
+      expect(surface, 'the terminal did not publish its control surface')
     },
   },
   {
