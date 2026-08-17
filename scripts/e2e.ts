@@ -225,6 +225,31 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    name: 'plugin-routes',
+    async run(page) {
+      await waitForShell(page)
+      // A plugin can serve its own HTTP routes, and on a static host the only
+      // thing that can answer them is the page, reached through the service
+      // worker. `/plugins/events` is a real one — `dsh-client-hmr` registers it
+      // — and it is an event stream, which is the case that used to fail: the
+      // reply was assembled by reading the body to completion, so a stream that
+      // never ends was never answered, and the worker reported 404 after its
+      // timeout. Every plugin-served file went the same way.
+      const served = await page.evaluate(async () => {
+        const response = await fetch('plugins/events', { headers: { accept: 'text/event-stream' } })
+        return { status: response.status, type: response.headers.get('content-type') ?? '' }
+      })
+      expect(
+        served.status !== 404,
+        `a plugin-registered route is not reachable through the service worker: ${JSON.stringify(served)}`,
+      )
+      expect(
+        /event-stream/.test(served.type),
+        `the route answered, but not as the stream it registered: ${JSON.stringify(served)}`,
+      )
+    },
+  },
+  {
     name: 'persistence',
     async run(page) {
       await waitForShell(page)

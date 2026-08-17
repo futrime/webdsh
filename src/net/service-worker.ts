@@ -24,12 +24,25 @@ interface HostRequestMessage {
   body?: ArrayBuffer
 }
 
+/** What this half posts back, and what to hand over rather than copy. */
+interface HostReply {
+  reply: { handled: boolean, status?: number, headers?: Record<string, string>, body?: ArrayBuffer | ReadableStream }
+  transfer: Transferable[]
+}
+
 /**
  * Answer one request from the virtual server.
+ *
+ * The body is handed over as a stream wherever the browser allows it. Reading
+ * it into an `ArrayBuffer` first looks simpler and is wrong for the two cases
+ * that matter most: an event stream never ends, so buffering it waits forever
+ * and the worker eventually gives up and reports 404 — which is what happened
+ * to `/plugins/events` — and a large download is held whole in memory before a
+ * single byte reaches the caller.
  * @param message - the worker's request description.
- * @returns the reply to post back.
+ * @returns the reply to post back, and anything to transfer with it.
  */
-async function answer(message: HostRequestMessage): Promise<{ handled: boolean, status?: number, headers?: Record<string, string>, body?: ArrayBuffer }> {
+async function answer(message: HostRequestMessage): Promise<HostReply> {
   try {
     const request = new Request(message.url, {
       method: message.method,
@@ -39,14 +52,45 @@ async function answer(message: HostRequestMessage): Promise<{ handled: boolean, 
     const response = await dispatchVirtualRequest(request)
     // A 404 from the virtual server means no route claimed the path; letting the
     // worker fall through keeps its own 404 the single answer.
-    if (response === undefined || response.status === 404) return { handled: false }
+    if (response === undefined || response.status === 404) return { reply: { handled: false }, transfer: [] }
     const headers: Record<string, string> = {}
     response.headers.forEach((value, name) => { headers[name] = value })
-    return { handled: true, status: response.status, headers, body: await response.arrayBuffer() }
+    const base = { handled: true, status: response.status, headers }
+    const body = response.body
+    if (body !== null && supportsStreamTransfer()) {
+      return { reply: { ...base, body }, transfer: [body as unknown as Transferable] }
+    }
+    const buffered = await response.arrayBuffer()
+    return { reply: { ...base, body: buffered }, transfer: [buffered] }
   } catch (error) {
     console.warn('[service-worker] host request failed:', error)
-    return { handled: false }
+    return { reply: { handled: false }, transfer: [] }
   }
+}
+
+/** Whether this browser can hand a `ReadableStream` to another realm. */
+let streamTransfer: boolean | undefined
+
+/**
+ * Probe for transferable streams once.
+ *
+ * Chromium has them; Safari does not. Where they are missing the body is
+ * buffered instead, which is correct for a file and merely unusable for an
+ * endless stream — the same trade every other page in that browser makes.
+ */
+function supportsStreamTransfer(): boolean {
+  if (streamTransfer !== undefined) return streamTransfer
+  try {
+    const channel = new MessageChannel()
+    const probe = new ReadableStream()
+    channel.port1.postMessage(probe, [probe as unknown as Transferable])
+    channel.port1.close()
+    channel.port2.close()
+    streamTransfer = true
+  } catch {
+    streamTransfer = false
+  }
+  return streamTransfer
 }
 
 /**
@@ -84,7 +128,7 @@ export async function installRequestRouter(): Promise<boolean> {
     if (message?.type !== 'dsh-host-request') return
     const port = event.ports[0]
     if (port === undefined) return
-    void answer(message).then(reply => { port.postMessage(reply) })
+    void answer(message).then(({ reply, transfer }) => { port.postMessage(reply, transfer) })
   })
 
   try {

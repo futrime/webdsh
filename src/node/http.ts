@@ -100,14 +100,40 @@ export class ServerResponseShim extends StreamEmitter {
   headersSent = false
   finished = false
   private readonly headers = new Map<string, string>()
-  private readonly chunks: Uint8Array[] = []
-  private readonly done: (response: { status: number, headers: Record<string, string>, body: Uint8Array }) => void
+  private readonly done: (response: { status: number, headers: Record<string, string>, body: ReadableStream<Uint8Array> }) => void
   readonly socket: SocketShim
 
-  constructor(socket: SocketShim, done: (response: { status: number, headers: Record<string, string>, body: Uint8Array }) => void) {
+  /** Whether the reply has been handed to the caller yet. */
+  private started = false
+  /** Feeds {@link body}; set synchronously by the stream's `start`. */
+  private controller: ReadableStreamDefaultController<Uint8Array> | undefined
+  /** The response body, produced as the handler writes it. */
+  private readonly body: ReadableStream<Uint8Array>
+
+  constructor(socket: SocketShim, done: (response: { status: number, headers: Record<string, string>, body: ReadableStream<Uint8Array> }) => void) {
     super()
     this.socket = socket
     this.done = done
+    this.body = new ReadableStream<Uint8Array>({
+      start: (controller) => { this.controller = controller },
+    })
+  }
+
+  /**
+   * Hand the reply to the caller, once, as soon as anything is written.
+   *
+   * Waiting for `end()` before answering is what an ordinary handler makes look
+   * correct and what a streaming one exposes as broken: an event stream never
+   * ends, so the caller waits forever and eventually reports the route missing.
+   * Answering at the first write means the status and headers are whatever the
+   * handler had set by then — which is exactly what a real server sends, since
+   * that is the moment it commits them to the wire.
+   */
+  private begin(): void {
+    if (this.started) return
+    this.started = true
+    this.headersSent = true
+    this.done({ status: this.statusCode, headers: Object.fromEntries(this.headers), body: this.body })
   }
 
   setHeader(name: string, value: string | string[] | number): this {
@@ -137,24 +163,19 @@ export class ServerResponseShim extends StreamEmitter {
   }
 
   write(chunk: Uint8Array | string, encoding?: string | (() => void), callback?: () => void): boolean {
-    this.chunks.push(toBytes(chunk, typeof encoding === 'string' ? encoding : 'utf8'))
+    this.begin()
+    if (!this.finished) this.controller?.enqueue(toBytes(chunk, typeof encoding === 'string' ? encoding : 'utf8'))
     const finish = typeof encoding === 'function' ? encoding : callback
     if (finish !== undefined) queueMicrotask(finish)
     return true
   }
 
   end(chunk?: Uint8Array | string | (() => void), callback?: () => void): this {
-    if (chunk !== undefined && typeof chunk !== 'function') this.chunks.push(toBytes(chunk))
     if (this.finished) return this
+    this.begin()
+    if (chunk !== undefined && typeof chunk !== 'function') this.controller?.enqueue(toBytes(chunk))
     this.finished = true
-    const total = this.chunks.reduce((sum, part) => sum + part.length, 0)
-    const body = new Uint8Array(total)
-    let cursor = 0
-    for (const part of this.chunks) {
-      body.set(part, cursor)
-      cursor += part.length
-    }
-    this.done({ status: this.statusCode, headers: Object.fromEntries(this.headers), body })
+    this.controller?.close()
     queueMicrotask(() => {
       this.emit('finish')
       this.emit('close')
@@ -164,8 +185,9 @@ export class ServerResponseShim extends StreamEmitter {
     return this
   }
 
+  /** Commit the status and headers before any body, as an event stream does. */
   flushHeaders(): void {
-    this.headersSent = true
+    this.begin()
   }
 
   setTimeout(): this { return this }
@@ -275,7 +297,10 @@ export async function dispatchVirtualRequest(request: Request): Promise<Response
 
   return new Promise<Response>((resolve) => {
     const res = new ServerResponseShim(socket, (result) => {
-      resolve(new Response(result.body.length === 0 ? null : (result.body as BlobPart), {
+      // 204 and 304 must carry no body at all; anything else streams, including
+      // an empty one, which reads as zero bytes.
+      const bodyless = result.status === 204 || result.status === 304
+      resolve(new Response(bodyless ? null : result.body, {
         status: result.status,
         headers: result.headers,
       }))
