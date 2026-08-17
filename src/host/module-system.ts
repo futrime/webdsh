@@ -14,6 +14,9 @@ import { HOST_MODULES } from '../generated/host-modules.ts'
 import { resolveBuiltin } from '../node/registry.ts'
 import { setHostRequire } from '../node/misc.ts'
 import { scanModule } from '../plugins/module-scan.ts'
+// Imported for its URL alone: this makes the bundler emit a file it would
+// otherwise skip, because the package computes its own path at runtime.
+import codeRuntimeWorkerUrl from '../../node_modules/@deepseek-ai/dsh-code-runtime-worker-thread/lib/worker.cjs?url'
 
 /**
  * Libraries a plugin must share with the harness rather than install a second
@@ -161,7 +164,9 @@ export const hostModuleSystem = {
  * @returns the worker module's namespace, having run its body.
  */
 export async function loadWorkerEntry(url: string): Promise<unknown> {
-  const path = url.startsWith('file:') ? new URL(url).pathname : url
+  // A `file:` URL percent-encodes the `@` in a scoped package name, so the
+  // pathname reads `%40deepseek-ai` and no package pattern below would match it.
+  const path = url.startsWith('file:') ? decodeURIComponent(new URL(url).pathname) : url
 
   // The bundler rewrote `new URL('./worker.cjs', import.meta.url)` to the asset
   // it emitted, so the entry names a real static file — just not one inside a
@@ -181,8 +186,21 @@ export async function loadWorkerEntry(url: string): Promise<unknown> {
   return hostModuleSystem.import(specifier)
 }
 
-/** Worker assets already fetched and evaluated, keyed by their asset path. */
-const workerAssets = new Map<string, Promise<unknown>>()
+/**
+ * Worker entries the bundler could not emit on its own, by the filename their
+ * unresolvable URL lands on.
+ *
+ * The workflow runtime writes `new URL('./worker.cjs', import.meta.url)`, which
+ * the bundler reads and emits. The code runtime picks its filename with a
+ * conditional, so nothing is emitted — importing it here with `?url` makes the
+ * bundler emit the file anyway and hands back where it put it.
+ */
+const UNEMITTED_WORKERS: Record<string, string> = {
+  'worker.cjs': codeRuntimeWorkerUrl,
+}
+
+/** Worker sources already fetched, keyed by URL. Only the text is reused. */
+const workerSources = new Map<string, Promise<string>>()
 
 /**
  * Fetch a bundled CommonJS worker entry and run its body.
@@ -195,15 +213,28 @@ const workerAssets = new Map<string, Promise<unknown>>()
  * @returns the module's exports.
  */
 async function evaluateWorkerAsset(assetPath: string): Promise<unknown> {
-  const cached = workerAssets.get(assetPath)
-  if (cached !== undefined) return cached
+  // The bundler emits a worker file only when it can see the URL; when it could
+  // not, the path resolves beside whatever chunk the module landed in and there
+  // is nothing there.
+  const fallback = UNEMITTED_WORKERS[assetPath.split('/').pop() ?? '']
+  const href = fallback ?? new URL(assetPath, document.baseURI).href
 
-  const run = (async (): Promise<unknown> => {
-    const href = new URL(assetPath, document.baseURI).href
-    const response = await fetch(href)
-    if (!response.ok) throw new Error(`worker entry ${assetPath} could not be fetched (${String(response.status)})`)
-    const source = await response.text()
+  let pending = workerSources.get(href)
+  if (pending === undefined) {
+    pending = (async () => {
+      const response = await fetch(href)
+      if (!response.ok) throw new Error(`worker entry ${assetPath} could not be fetched (${String(response.status)})`)
+      return response.text()
+    })()
+    workerSources.set(href, pending)
+  }
+  const source = await pending
 
+  // Evaluated afresh for every worker. A module system would hand back the same
+  // namespace, and a worker entry is not a module in that sense: its body *is*
+  // the worker's lifetime, so reusing it would mean the second run_code call
+  // never starts a worker at all.
+  {
     const resolved = new Map<string, unknown>()
     for (const site of scanModule(source).requires) {
       if (resolved.has(site.value)) continue
@@ -224,8 +255,5 @@ async function evaluateWorkerAsset(assetPath: string): Promise<unknown> {
     ) => void
     factory(module.exports, require, module, `/${assetPath}`, `/${assetPath.replace(/\/[^/]*$/, '')}`)
     return module.exports
-  })()
-
-  workerAssets.set(assetPath, run)
-  return run
+  }
 }

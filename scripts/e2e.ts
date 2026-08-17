@@ -240,6 +240,44 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    name: 'code-mode',
+    async run(page, log) {
+      if (apiKey === '') {
+        console.log('  skipped: set DEEPSEEK_API_KEY to exercise Code Mode')
+        return
+      }
+      await waitForShell(page)
+      // Code Mode runs the model's code in a worker thread, which this build has
+      // no threads for: the entry runs in the page, reached through the shimmed
+      // `worker_threads`. What that shim gets wrong is invisible from outside —
+      // an entry that reads a stale `parentPort` decides it is the main thread
+      // and refuses to start — so the check is that a real code turn produces a
+      // real answer.
+      // Deliberately not a sum a model can do in its head: an answer it could
+      // reach without running anything would let a completely dead code runtime
+      // pass, which is how the shell tool stayed broken behind a green test.
+      let expected = 0
+      for (let i = 1; i <= 10_000; i++) expected = (expected + i * i) % 99_991
+      const reply = await page.evaluate(
+        async (key: string) => globalThis.dsh.promptOnce(
+          key,
+          'Use your code execution tool to run exactly this and report the number it prints:\n'
+          + 'let a = 0; for (let i = 1; i <= 10000; i++) a = (a + i * i) % 99991; console.log(a)',
+        ),
+        apiKey,
+      )
+      expect(
+        new RegExp(`\\b${String(expected)}\\b`).test(reply),
+        `Code Mode did not return the computed answer (${String(expected)}):\n${reply.slice(0, 1200)}`,
+      )
+      expect(
+        !/outside a worker thread|worker entry|not iterable/i.test(reply),
+        `the code runtime worker failed to start:\n${reply.slice(0, 1200)}`,
+      )
+      void log
+    },
+  },
+  {
     name: 'search-tools',
     async run(page, log) {
       if (apiKey === '') {
