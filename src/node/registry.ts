@@ -128,6 +128,7 @@ export function installNodeGlobals(): void {
   // `setTimeout` returns, which is an object in Node and a number here.
   installTimerHandles()
   const realm = globalThis as Record<string, unknown>
+
   realm.process ??= processShim
   realm.Buffer ??= Buffer
   realm.global ??= globalThis

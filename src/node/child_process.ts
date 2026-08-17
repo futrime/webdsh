@@ -14,7 +14,7 @@
  */
 
 import { runShell } from '../shell/index.ts'
-import { execute as executeInRuntime, runtimeAvailable } from '../runtime/webcontainer.ts'
+import { execute as executeInRuntime, runtimeAvailable, runtimeReady } from '../runtime/webcontainer.ts'
 import { isRipgrep, ripgrep } from '../runtime/ripgrep.ts'
 import { ReadableStreamShim, StreamEmitter, WritableStreamShim } from './streams.ts'
 import { Buffer, toText } from './binary.ts'
@@ -147,7 +147,7 @@ export class ChildProcessShim extends StreamEmitter {
       // machines, and a file one of them creates does not exist for the other.
       // The in-page shell remains the fallback for a browser that cannot host
       // the runtime at all.
-      if (runtimeAvailable()) {
+      if (await runtimeReady()) {
         const result = await executeInRuntime(script.source, {
           cwd,
           env: (this.options.env ?? processShim.env) as Record<string, string | undefined>,

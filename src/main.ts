@@ -14,6 +14,7 @@ import { installRequestRouter } from './net/service-worker.ts'
 import { bootHost } from './host/boot.ts'
 import { disableAllPlugins, installedPluginNames, installPluginManager } from './plugins/manager.ts'
 import { installWindowApi } from './api.ts'
+import { bootRuntime } from './runtime/webcontainer.ts'
 import { publishInstallerBridge, publishRuntimeBridge } from './host/bridges.ts'
 import { SHELL_ENTRY, SHELL_STYLES } from './generated/shell-assets.ts'
 import { renderBootFailure, renderBootProgress, type BootRecovery } from './boot-screen.ts'
@@ -99,6 +100,14 @@ async function main(): Promise<void> {
     // through a patched `fetch`. Its absence costs those assets and nothing else.
     progress.step('Routing plugin assets')
     await installRequestRouter()
+
+    // Started here rather than on first use, and not waited for. Whether the
+    // container can run at all is something the shell and the agent's file
+    // tools consult before every command, and finding out during the first one
+    // means that command fails for a reason the user cannot act on. Chrome on
+    // Android is the case that matters: it has cross-origin isolation and
+    // `SharedArrayBuffer`, and still cannot start a container.
+    void bootRuntime().catch(() => undefined)
 
     progress.step('Loading the web client')
     injectStyles()

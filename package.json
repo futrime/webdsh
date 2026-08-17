@@ -17,6 +17,7 @@
     "test:runtime": "tsx scripts/runtime-e2e.ts",
     "test:ui": "tsx scripts/ui-e2e.ts",
     "test:task": "tsx scripts/task-e2e.ts",
+    "test:fallback": "tsx scripts/fallback-e2e.ts",
     "test:shell": "node scripts/shell-diff.mjs",
     "build:plugins": "node scripts/build-plugins.mjs",
     "build:shell": "node scripts/build-container-shell.mjs"

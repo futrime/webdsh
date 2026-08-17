@@ -10,7 +10,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { runShell, type RunResult } from './shell/index.ts'
-import { execute as executeInRuntime, runtimeAvailable, runtimePersistence } from './runtime/webcontainer.ts'
+import { execute as executeInRuntime, runtimeReady, runtimePersistence } from './runtime/webcontainer.ts'
 import { volume } from './vfs/volume.ts'
 import { toBytes, toText } from './node/binary.ts'
 import type { PersistenceHandle } from './vfs/persist.ts'
@@ -57,7 +57,7 @@ export function installWindowApi(ctx: Context, persistence: PersistenceHandle): 
       // The same routing a tool call takes, so what this surface reports is
       // what the agent would actually see — running it against the in-page
       // shell while tool calls ran in the runtime would make it a liar.
-      if (runtimeAvailable()) {
+      if (await runtimeReady()) {
         const result = await executeInRuntime(script, { cwd: options?.cwd ?? WORKSPACE_ROOT })
         return { status: result.status, stdout: result.stdout, stderr: result.stderr, truncated: false }
       }

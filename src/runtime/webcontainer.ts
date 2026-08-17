@@ -104,6 +104,49 @@ export function runtimeSupported(): { ok: boolean, reason?: string } {
 let container: Promise<WebContainer> | undefined
 let durability: RuntimePersistence | undefined
 
+/** How long the container gets to start before it is treated as unavailable. */
+const BOOT_TIMEOUT_MS = 90_000
+
+/**
+ * Fail a boot that never finishes.
+ *
+ * A rejected boot falls back to the in-page shell; a boot that simply never
+ * settles does not, because every caller is still waiting on it. On a network
+ * that drops the runtime's assets rather than refusing them, that is the
+ * difference between a degraded harness and a frozen one.
+ * @param attempt - the boot in progress.
+ */
+async function withDeadline(attempt: Promise<WebContainer>): Promise<WebContainer> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      attempt,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => { reject(new Error('the runtime did not start within 90 seconds')) }, BOOT_TIMEOUT_MS)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/**
+ * Why the runtime is not usable, once an attempt to start it has failed.
+ *
+ * The checks in {@link runtimeSupported} are about the browser's capabilities,
+ * and a browser can have every one of them and still not run the container —
+ * Chrome on Android has `SharedArrayBuffer` and cross-origin isolation, and
+ * WebContainers refuses to boot there. Until that was recorded, everything kept
+ * routing to a runtime that would never exist: the shell, the agent's file
+ * tools, and search all failed, one confusing error at a time.
+ */
+let bootFailure: string | undefined
+
+/** Why the runtime is unusable, if it is. */
+export function runtimeFailure(): string | undefined {
+  return bootFailure
+}
+
 /** The workspace's durability handle, once the runtime has started. */
 export function runtimePersistence(): RuntimePersistence | undefined {
   return durability
@@ -119,7 +162,7 @@ export function runtimePersistence(): RuntimePersistence | undefined {
  * @returns the running container.
  */
 export async function bootRuntime(onProgress?: (step: string) => void): Promise<WebContainer> {
-  container ??= (async (): Promise<WebContainer> => {
+  container ??= withDeadline((async (): Promise<WebContainer> => {
     const support = runtimeSupported()
     if (!support.ok) throw new Error(`the runtime cannot start: ${support.reason ?? 'unsupported'}`)
 
@@ -139,7 +182,14 @@ export async function bootRuntime(onProgress?: (step: string) => void): Promise<
     if (restored) onProgress?.('Restored your workspace')
     durability = persistWorkspace(booted)
     return booted
-  })()
+  })()).catch((error: unknown) => {
+    // Recorded rather than only thrown: the callers that ask `runtimeAvailable`
+    // before routing a command need to know, and the next boot attempt would
+    // otherwise fail the same way for every one of them.
+    bootFailure = error instanceof Error ? error.message : String(error)
+    console.warn('[runtime] the container could not start; falling back to the in-page shell:', error)
+    throw error
+  })
   return container
 }
 
@@ -170,9 +220,29 @@ export interface RunOptions {
   onStderr?: (chunk: string) => void
 }
 
+/**
+ * Whether the runtime is usable, waiting for a boot already in flight.
+ *
+ * The synchronous {@link runtimeAvailable} cannot know the answer before the
+ * first attempt finishes. A caller that can fall back — the shell has an
+ * in-page implementation — should ask this instead, so the very first command
+ * is answered correctly rather than failing to find a container.
+ * @returns whether commands can run in the container.
+ */
+export async function runtimeReady(): Promise<boolean> {
+  if (bootFailure !== undefined) return false
+  if (!runtimeSupported().ok) return false
+  try {
+    await bootRuntime()
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Whether the runtime is usable right now. */
 export function runtimeAvailable(): boolean {
-  return runtimeSupported().ok
+  return bootFailure === undefined && runtimeSupported().ok
 }
 
 /**

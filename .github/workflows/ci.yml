@@ -44,6 +44,9 @@ jobs:
           node scripts/serve.mjs 4173 &
           sleep 3
           npx tsx scripts/e2e.ts
+          # The degraded path: a browser that cannot run the container still has
+          # to run commands and read files, on the page's own filesystem.
+          npx tsx scripts/fallback-e2e.ts
 
       - name: Runtime workloads
         # Runs Node, installs a package from the registry and imports it, runs a
