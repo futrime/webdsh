@@ -14,6 +14,7 @@ import { installRequestRouter } from './net/service-worker.ts'
 import { bootHost } from './host/boot.ts'
 import { disableAllPlugins, installedPluginNames, installPluginManager } from './plugins/manager.ts'
 import { installWindowApi } from './api.ts'
+import { installTerminal } from './terminal/panel.ts'
 import { SHELL_ENTRY, SHELL_STYLES } from './generated/shell-assets.ts'
 import { renderBootFailure, renderBootProgress, type BootRecovery } from './boot-screen.ts'
 import { attachPersistence } from './vfs/persist.ts'
@@ -101,6 +102,11 @@ async function main(): Promise<void> {
     // client-side boot against the manifest published above.
     await import(/* @vite-ignore */ new URL(SHELL_ENTRY, document.baseURI).href)
     progress.done()
+
+    // A user here has no machine to open a shell on: the filesystem the agent
+    // works in exists only in this page. The terminal is that missing window,
+    // and it runs the agent's own shell rather than an imitation of it.
+    installTerminal()
   } catch (error) {
     console.error('[dsh-web] boot failed:', error)
     renderBootFailure(error, await bootRecoveries())

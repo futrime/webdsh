@@ -87,13 +87,60 @@ export function createShellState(options: RunOptions = {}): ShellState {
 }
 
 /**
- * Run a shell script to completion.
+ * A shell that keeps its state between commands.
+ *
+ * `runShell` is one-shot by construction — every tool call is its own process —
+ * but a terminal is not: `cd src` then `ls` has to list the new directory, and
+ * `export KEY=…` has to still be set on the next line. Both faces run the same
+ * interpreter over the same VFS, so what the user types in a terminal and what
+ * the agent runs in a tool call are the same environment.
+ */
+export interface ShellSession {
+  /** Run one command line, keeping cwd, variables, and functions. */
+  run(script: string, options?: RunOptions): Promise<RunResult>
+  /** The session's current working directory. */
+  cwd(): string
+  /** The live interpreter state, for a caller that needs to inspect it. */
+  readonly state: ShellState
+}
+
+/**
+ * Build a shell session.
+ * @param options - the initial environment.
+ * @returns the session.
+ */
+export function createShellSession(options: RunOptions = {}): ShellSession {
+  const state = createShellState(options)
+  const interpreter = prepare(state)
+  return {
+    state,
+    cwd: () => state.cwd,
+    async run(script: string, runOptions: RunOptions = {}): Promise<RunResult> {
+      return execute(interpreter, state, script, runOptions)
+    },
+  }
+}
+
+/**
+ * Run a shell script to completion in a fresh session.
  * @param script - the shell source.
  * @param options - execution environment and streaming hooks.
  * @returns the exit status and captured output.
  */
 export async function runShell(script: string, options: RunOptions = {}): Promise<RunResult> {
   const state = createShellState(options)
+  return execute(prepare(state), state, script, options)
+}
+
+/**
+ * Run one script against an already-prepared interpreter.
+ * @param interpreter - the session's interpreter.
+ * @param state - the session's mutable state.
+ * @param script - the shell source.
+ * @param options - per-run streaming hooks, stdin, and cancellation.
+ * @returns the exit status and captured output.
+ */
+async function execute(interpreter: Interpreter, state: ShellState, script: string, options: RunOptions): Promise<RunResult> {
   const stdoutBuffer = new BufferSink()
   const stderrBuffer = new BufferSink()
   const stdout: Sink = options.onStdout === undefined
@@ -102,7 +149,18 @@ export async function runShell(script: string, options: RunOptions = {}): Promis
   const stderr: Sink = options.onStderr === undefined
     ? stderrBuffer
     : { write: (text) => { stderrBuffer.write(text); options.onStderr!(text) } }
+  if (options.args !== undefined) state.positional = options.args
+  if (options.signal !== undefined) state.signal = options.signal
+  return runWith(interpreter, state, script, options, stdout, stderr, stdoutBuffer, stderrBuffer)
+}
 
+/**
+ * Build the interpreter for a state and register the commands that need to
+ * re-enter it.
+ * @param state - the shell state the interpreter drives.
+ * @returns the prepared interpreter.
+ */
+function prepare(state: ShellState): Interpreter {
   const interpreter = new Interpreter(state)
   // `xargs` needs to re-enter the interpreter, so it is registered per run.
   state.commands.set('xargs', async (context) => {
@@ -176,6 +234,18 @@ export async function runShell(script: string, options: RunOptions = {}): Promis
     }
   })
 
+  return interpreter
+}
+
+/**
+ * Drive one script and collect its result.
+ * @returns the exit status and captured output.
+ */
+async function runWith(
+  interpreter: Interpreter, state: ShellState, script: string, options: RunOptions,
+  stdout: Sink, stderr: Sink, stdoutBuffer: BufferSink, stderrBuffer: BufferSink,
+): Promise<RunResult> {
+  void state
   let status: number
   try {
     status = await interpreter.run(script, { stdin: options.stdin ?? '', stdout, stderr })
