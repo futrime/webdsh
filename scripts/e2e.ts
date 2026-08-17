@@ -71,12 +71,27 @@ const scenarios: Scenario[] = [
       await waitForShell(page)
       const graph = await page.evaluate(() => (globalThis as { __DSH_BOOT__?: { entries: { id: string }[] } }).__DSH_BOOT__)
       expect(graph !== undefined, 'window.__DSH_BOOT__ missing')
-      expect(graph!.entries.length >= 30, `expected the full client roster, got ${String(graph!.entries.length)}`)
-      const failed = await page.evaluate(() => {
-        const modules = (globalThis as { __DSH_MODULES__?: { loadCache: Map<string, unknown> } }).__DSH_MODULES__
-        return modules === undefined ? -1 : modules.loadCache.size
-      })
-      expect(failed >= 30, `expected every client bundle to materialize, got ${String(failed)}`)
+      const expected = graph!.entries.map(entry => entry.id)
+      expect(expected.length >= 30, `expected the full client roster, got ${String(expected.length)}`)
+      // Bundles keep materializing after the shell's first paint, so wait for
+      // the roster to settle instead of sampling at whatever instant the shell
+      // happened to render — a slower machine reaches that instant earlier in
+      // the load, and the count alone cannot tell a race from a real failure.
+      await page
+        .waitForFunction(
+          (want: number) => ((globalThis as { __DSH_MODULES__?: { loadCache: Map<string, unknown> } }).__DSH_MODULES__?.loadCache.size ?? 0) >= want,
+          expected.length,
+          { timeout: 30_000 },
+        )
+        .catch(() => undefined)
+      const loaded = await page.evaluate(() =>
+        [...((globalThis as { __DSH_MODULES__?: { loadCache: Map<string, unknown> } }).__DSH_MODULES__?.loadCache.keys() ?? [])],
+      )
+      const missing = expected.filter(id => !loaded.includes(id))
+      expect(
+        missing.length === 0,
+        `client bundles never materialized (${String(loaded.length)} loaded of ${String(expected.length)} declared): ${missing.join(', ')}`,
+      )
     },
   },
   {
