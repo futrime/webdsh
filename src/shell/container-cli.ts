@@ -227,30 +227,42 @@ async function interactive(interpreter: Interpreter, state: ShellState): Promise
   return status
 }
 
-/** Read the script to run, from a file or from `-c`. */
-function readScript(argv: string[]): { script: string, args: string[] } | undefined {
+/**
+ * Read the script to run, from a file or from `-c`.
+ *
+ * Both forms take `[name [arg…]]` after the script, as POSIX defines for
+ * `sh -c`: the first token is `$0` and the positional parameters begin after
+ * it.
+ */
+function readScript(argv: string[]): { script: string, name?: string, args: string[] } | undefined {
   const dashC = argv.indexOf('-c')
   if (dashC !== -1) {
     const script = argv[dashC + 1]
     if (script === undefined) return undefined
-    return { script, args: argv.slice(dashC + 2) }
+    const rest = argv.slice(dashC + 2)
+    return { script, ...(rest[0] === undefined ? {} : { name: rest[0] }), args: rest.slice(1) }
   }
-  const [file, ...args] = argv
+  const [file, ...rest] = argv
   if (file === undefined) return undefined
-  return { script: readFileSync(file, 'utf8'), args }
+  return {
+    script: readFileSync(file, 'utf8'),
+    ...(rest[0] === undefined ? {} : { name: rest[0] }),
+    args: rest.slice(1),
+  }
 }
 
 /** Run the script named on the command line. */
 async function main(): Promise<number> {
   const argv = process.argv.slice(2)
   const wantsInteractive = argv.includes('-i')
-  const requested = wantsInteractive ? { script: '', args: [] } : readScript(argv)
+  const requested = wantsInteractive ? { script: '', name: undefined, args: [] } : readScript(argv)
   if (requested === undefined) {
     process.stderr.write('sh: usage: sh <file> [args…] | sh -c <script> [args…] | sh -i\n')
     return 2
   }
-  const { script, args } = requested
+  const { script, name, args } = requested
   const state = createState(process.cwd(), args)
+  if (name !== undefined) state.scriptName = name
   const interpreter = new Interpreter(state)
   registerReentrant(interpreter, state)
 

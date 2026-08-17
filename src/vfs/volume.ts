@@ -26,8 +26,16 @@ export interface Inode {
   birthtime: number
   /** Stable identity, used as `Stats.ino` and by the watcher. */
   ino: number
-  /** File payload. */
+  /**
+   * File payload.
+   *
+   * Present when this volume *is* the storage. A volume backed by a real
+   * filesystem reports {@link Inode.size} instead — reading a file's bytes to
+   * answer `ls -l` would be absurd.
+   */
   content?: Uint8Array
+  /** File length, when the payload is not held in memory. */
+  size?: number
   /** Directory children. */
   children?: Map<string, Inode>
   /** Symlink target (may be relative). */

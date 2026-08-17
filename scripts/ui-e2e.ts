@@ -170,6 +170,14 @@ async function main(): Promise<void> {
     // exactly what hid a completely broken Bash tool behind a green test. The
     // transcript names the tool it used.
     expect(/\bBash\b/.test(toolReply), `the reply never shows a Bash tool call:\n${toolReply.slice(-1500)}`)
+    // A Bash card appears whether the call succeeded or died, so its presence
+    // proves nothing on its own: a shell that answers every command with
+    // `command not found` still renders one, and the model still reaches the
+    // answer another way. The transcript must show no such failure.
+    expect(
+      !/command not found|exit code: 127/i.test(toolReply),
+      `the shell rejected the command it was given:\n${toolReply.slice(-1500)}`,
+    )
 
     console.log('▶ file edit')
     const editReply = await sendPrompt(

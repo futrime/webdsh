@@ -225,6 +225,55 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    name: 'spawn-argv',
+    async run(page) {
+      await waitForShell(page)
+      // The seam every tool call crosses: a plugin (or the agent's own bash
+      // tool) spawns a shell, and this build turns that argv into a script for
+      // the runtime. Getting the argv grammar wrong breaks every command at
+      // once, and does it below the model — which is why this is checked
+      // directly rather than by asking an agent to run something.
+      const cases: [string, string[], RegExp][] = [
+        // `bash -lc -- <script>` is what the harness spawns. Treating the token
+        // after `-c` as the script made the script literally `--`, so every
+        // command answered `sh: --: command not found`.
+        ['bash', ['-lc', '--', 'echo dashdash-ok'], /dashdash-ok/],
+        ['bash', ['-c', '--', 'echo c-ok'], /c-ok/],
+        ['bash', ['-lc', 'echo plain-ok'], /plain-ok/],
+        ['bash', ['--noprofile', '--norc', '-c', 'echo longopts-ok'], /longopts-ok/],
+        ['/bin/bash', ['-lc', '--', 'ls -la / | head -n 2'], /bin|dev|home/],
+        // POSIX puts `$0` after the script and the parameters after that.
+        ['bash', ['-c', 'echo "0=$0 1=$1"', 'myname', 'first'], /0=myname 1=first/],
+      ]
+      for (const [command, argv, matcher] of cases) {
+        const output = await page.evaluate(async ([cmd, args]: [string, string[]]) => {
+          const loader = (globalThis.dsh.ctx as unknown as {
+            loader: { internal: { import(specifier: string): Promise<unknown> } }
+          }).loader
+          const cp = await loader.internal.import('node:child_process') as {
+            spawn(command: string, args: string[], options: Record<string, unknown>): {
+              stdout?: { on(event: string, listener: (chunk: unknown) => void): void }
+              stderr?: { on(event: string, listener: (chunk: unknown) => void): void }
+              on(event: string, listener: (code: number | null) => void): void
+            }
+          }
+          return new Promise<string>((resolve) => {
+            const child = cp.spawn(cmd, args, {})
+            let text = ''
+            child.stdout?.on('data', (chunk) => { text += String(chunk) })
+            child.stderr?.on('data', (chunk) => { text += String(chunk) })
+            child.on('close', (code) => { resolve(`[${String(code)}] ${text}`) })
+          })
+        }, [command, argv] as [string, string[]])
+        expect(
+          matcher.test(output),
+          `spawn(${command}, ${JSON.stringify(argv)}) produced ${JSON.stringify(output.slice(0, 200))}`,
+        )
+        expect(output.startsWith('[0]'), `spawn(${command}, ${JSON.stringify(argv)}) failed: ${output.slice(0, 200)}`)
+      }
+    },
+  },
+  {
     name: 'plugin-routes',
     async run(page) {
       await waitForShell(page)

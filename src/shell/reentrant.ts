@@ -14,8 +14,8 @@
  */
 
 import type { Interpreter } from './interpreter.ts'
-import { parseArgs } from './coreutils.ts'
-import type { CommandImpl, ShellState } from './runtime.ts'
+import { coreutils, parseArgs } from './coreutils.ts'
+import { BufferSink, type CommandImpl, type ShellState } from './runtime.ts'
 
 /** Quote a token so re-entering the parser cannot reinterpret it. */
 function quote(token: string): string {
@@ -82,6 +82,59 @@ export function registerReentrant(interpreter: Interpreter, state: ShellState): 
     }
   }
 
+  /**
+   * `find … -exec CMD {} \;` — the one predicate that runs something.
+   *
+   * `find` itself cannot: it is a table of applets with no way back into the
+   * interpreter. So the action is split off here, the search delegated to the
+   * ordinary `find` with `-print0` appended, and the command run once per match
+   * (`\;`) or once with all of them (`+`), which is what the two terminators
+   * mean.
+   */
+  const find: CommandImpl = async (context) => {
+    const argv = context.argv
+    const at = argv.indexOf('-exec')
+    if (at === -1) return coreutils.find(context)
+
+    const terminator = argv.findIndex((token, index) => index > at && (token === ';' || token === '+'))
+    if (terminator === -1) {
+      context.stderr.write("find: missing terminator to -exec (expected ';' or '+')\n")
+      return 2
+    }
+    const template = argv.slice(at + 1, terminator)
+    const batched = argv[terminator] === '+'
+
+    const found = new BufferSink()
+    const status = await coreutils.find({
+      ...context,
+      argv: [...argv.slice(0, at), '-print0'],
+      stdout: found,
+    })
+    const matches = found.text().split('\0').filter(path => path !== '')
+    if (matches.length === 0) return status
+
+    const run = async (paths: string[]): Promise<number> => {
+      // `{}` stands for the path; with `+` a trailing `{}` takes all of them.
+      const argvOut = template.flatMap(token => (token === '{}' ? paths : [token]))
+      return interpreter.run(argvOut.map(quote).join(' '), {
+        stdin: '', stdout: context.stdout, stderr: context.stderr,
+      })
+    }
+
+    let worst = status
+    if (batched) {
+      const result = await run(matches)
+      if (result !== 0) worst = result
+      return worst
+    }
+    for (const match of matches) {
+      const result = await run([match])
+      if (result !== 0) worst = result
+    }
+    return worst
+  }
+
   state.commands.set('xargs', xargs)
   state.commands.set('timeout', timeout)
+  state.commands.set('find', find)
 }

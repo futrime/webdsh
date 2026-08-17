@@ -36,6 +36,8 @@ export const DEFAULT_DIR_MODE = 0o755
 export interface Inode {
   kind: NodeKind
   mode: number
+  /** File length. The bytes themselves are on disk, not in this object. */
+  size: number
   mtime: number
   ctime: number
   atime: number
@@ -55,6 +57,7 @@ function inodeOf(path: string, stats: fs.Stats, kind: NodeKind): Inode {
     kind,
     // The page volume carries permission bits only; the kind is its own field.
     mode: stats.mode & 0o7777,
+    size: stats.size,
     mtime: stats.mtimeMs,
     ctime: stats.ctimeMs,
     atime: stats.atimeMs,

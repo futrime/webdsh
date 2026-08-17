@@ -161,6 +161,10 @@ export interface RunOptions {
   env?: Record<string, string | undefined>
   /** Text fed to the command's standard input. */
   stdin?: string
+  /** `$0` for the script. */
+  name?: string
+  /** Positional parameters, `$1` onwards. */
+  args?: string[]
   signal?: AbortSignal
   onStdout?: (chunk: string) => void
   onStderr?: (chunk: string) => void
@@ -198,7 +202,13 @@ export async function execute(script: string, options: RunOptions = {}): Promise
   // thing. A file's bytes survive intact.
   const scriptFile = `${PRIVATE_DIR}/run-${String(runCounter++)}.sh`
   await runtime.fs.writeFile(scriptFile, script)
-  const process = await runtime.spawn('node', [SHELL_PATH, `${WORKDIR}/${scriptFile}`], {
+  // `$0` and the positional parameters follow the script, as they do for
+  // `sh -c`. They travel as argv rather than in the file, so a backslash in one
+  // is subject to the runtime's unescaping — the script itself is not.
+  const positional = options.name === undefined && (options.args?.length ?? 0) === 0
+    ? []
+    : [options.name ?? 'sh', ...(options.args ?? [])]
+  const process = await runtime.spawn('node', [SHELL_PATH, `${WORKDIR}/${scriptFile}`, ...positional], {
     cwd: toContainerPath(options.cwd ?? WORKSPACE),
     env,
   })

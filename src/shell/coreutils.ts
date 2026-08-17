@@ -88,6 +88,40 @@ export function abs(context: CommandContext, path: string): string {
   return isAbsolute(path) ? path : resolvePath(context.shell.cwd, path)
 }
 
+/**
+ * Translate a `-path` pattern, where `*` crosses directory boundaries.
+ *
+ * `find` matches these with `fnmatch` and no `FNM_PATHNAME`, so a `*` spans
+ * separators: `-path './node_modules/*'` is how everyone excludes a dependency
+ * tree, and it only works if the star reaches all the way down. The ordinary
+ * glob translation stops at `/`, which left that exclusion matching nothing.
+ * @param pattern - the pattern as written.
+ * @returns a regular expression anchored to the whole path.
+ */
+function pathGlob(pattern: string): RegExp {
+  let source = ''
+  for (const char of pattern) {
+    if (char === '*') source += '.*'
+    else if (char === '?') source += '.'
+    else source += char.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+  }
+  return new RegExp(`^${source}$`)
+}
+
+/**
+ * A file's length, whichever way its volume reports it.
+ *
+ * The page's volume holds the bytes, so the length is theirs. A volume over a
+ * real filesystem reports a size and keeps the bytes on disk — and reading
+ * `content` there yields `undefined`, which silently became a size of zero:
+ * `ls -l` showed every file empty, and `test -s` said every file was empty too.
+ * @param node - the inode to measure.
+ * @returns the file's length in bytes.
+ */
+function sizeOf(node: { content?: Uint8Array, size?: number } | undefined): number {
+  return node?.content?.length ?? node?.size ?? 0
+}
+
 /** Read a file operand, or stdin when the operand list is empty or `-`. */
 function readInput(context: CommandContext, operand?: string): string {
   if (operand === undefined || operand === '-') return context.stdin
@@ -177,7 +211,7 @@ export const coreutils: Record<string, CommandImpl> = {
       if (long) {
         out.push(`total ${String(visible.length)}`)
         for (const [name, node] of visible) {
-          const size = node.kind === 'file' ? (node.content?.length ?? 0) : 4096
+          const size = node.kind === 'file' ? sizeOf(node) : 4096
           out.push(`${modeString(node)} 1 dsh dsh ${String(size).padStart(8)} ${timeString(node.mtime)} ${name}${node.kind === 'dir' && flags.has('F') ? '/' : ''}`)
         }
       } else if (one) {
@@ -202,7 +236,7 @@ export const coreutils: Record<string, CommandImpl> = {
         continue
       }
       if (node.kind !== 'dir') {
-        out.push(long ? `${modeString(node)} 1 dsh dsh ${String(node.content?.length ?? 0).padStart(8)} ${timeString(node.mtime)} ${target}` : target)
+        out.push(long ? `${modeString(node)} 1 dsh dsh ${String(sizeOf(node)).padStart(8)} ${timeString(node.mtime)} ${target}` : target)
         continue
       }
       renderDirectory(path, targets.length > 1 || recursive ? target : undefined)
@@ -410,7 +444,7 @@ export const coreutils: Record<string, CommandImpl> = {
     for (const operand of operands) {
       try {
         const node = context.shell.volume.statNode(abs(context, operand), false)
-        const size = node.kind === 'file' ? (node.content?.length ?? 0) : 4096
+        const size = node.kind === 'file' ? sizeOf(node) : 4096
         context.stdout.write(`  File: ${operand}\n  Size: ${String(size)}\t${node.kind === 'dir' ? 'directory' : node.kind === 'link' ? 'symbolic link' : 'regular file'}\nAccess: (${(node.mode & 0o777).toString(8).padStart(4, '0')}/${modeString(node)})\nModify: ${new Date(node.mtime).toISOString()}\n`)
       } catch {
         status = fail(context, `cannot stat '${operand}': No such file or directory`)
@@ -712,7 +746,13 @@ export const coreutils: Record<string, CommandImpl> = {
   },
 
   find(context) {
-    const { operands } = parseArgs(context.argv)
+    // Deliberately not `parseArgs`: `find` does not take options, it takes an
+    // expression. Handing `-maxdepth 2 -type f` to a getopt parser shreds the
+    // predicates into single letters and leaves `2` and `f` looking like search
+    // roots — so the depth bound vanishes and the walk covers the entire tree,
+    // `node_modules` and `.git` included. On a real project that is the
+    // difference between an instant answer and a minute of hanging.
+    const operands = context.argv.slice(1)
     const { volume } = context.shell
     // Split roots from the expression at the first predicate token.
     const roots: string[] = []
@@ -723,28 +763,68 @@ export const coreutils: Record<string, CommandImpl> = {
     if (roots.length === 0) roots.push('.')
     const expression = operands.slice(i)
 
-    let namePattern: RegExp | undefined
-    let iNamePattern: RegExp | undefined
-    let pathPattern: RegExp | undefined
-    let typeFilter: string | undefined
+    // Each predicate becomes a test over one entry, so `!` and `-not` can negate
+    // whatever follows rather than only the one case that was special-cased.
+    // `display` is the path as `find` prints it — relative to the starting
+    // point when that is `.`. Predicates test it rather than the absolute path,
+    // because that is the string the user wrote their pattern against:
+    // `-not -path './node_modules/*'` matches nothing at all if it is compared
+    // with `/home/dsh/workspace/proj/node_modules/...`.
+    type Entry = { path: string, display: string, node: { kind: string }, depth: number }
+    const tests: ((entry: Entry) => boolean)[] = []
     let maxDepth = Infinity
     let minDepth = 0
     let printZero = false
-    const notNames: RegExp[] = []
-    for (let j = 0; j < expression.length; j++) {
+    let negate = false
+    let unknown: string | undefined
+
+    /** Add a test, applying any pending negation. */
+    const test = (predicate: (entry: Entry) => boolean): void => {
+      const pending = negate
+      negate = false
+      tests.push(pending ? (entry: Entry) => !predicate(entry) : predicate)
+    }
+
+    for (let j = 0; j < expression.length && unknown === undefined; j++) {
       const token = expression[j]
-      if (token === '-name') namePattern = globToRegExp(expression[++j])
-      else if (token === '-iname') iNamePattern = new RegExp(globToRegExp(expression[++j]).source, 'i')
-      else if (token === '-path' || token === '-wholename') pathPattern = globToRegExp(expression[++j])
-      else if (token === '-type') typeFilter = expression[++j]
-      else if (token === '-maxdepth') maxDepth = Number(expression[++j])
-      else if (token === '-mindepth') minDepth = Number(expression[++j])
-      else if (token === '-print0') printZero = true
-      else if (token === '!' && expression[j + 1] === '-name') {
-        j += 2
-        notNames.push(globToRegExp(expression[j]))
+      switch (token) {
+        case '!': case '-not': negate = !negate; break
+        // Conjunction is the default and `-print` is the default action, so both
+        // are accepted and change nothing.
+        case '-a': case '-and': case '-print': break
+        case '-print0': printZero = true; break
+        case '-name': {
+          const pattern = globToRegExp(expression[++j] ?? '')
+          test(entry => pattern.test(basename(entry.display)))
+          break
+        }
+        case '-iname': {
+          const pattern = new RegExp(globToRegExp(expression[++j] ?? '').source, 'i')
+          test(entry => pattern.test(basename(entry.display)))
+          break
+        }
+        case '-path': case '-wholename': {
+          const pattern = pathGlob(expression[++j] ?? '')
+          test(entry => pattern.test(entry.display))
+          break
+        }
+        case '-type': {
+          const kind = expression[++j] ?? ''
+          const wanted = kind === 'f' ? 'file' : kind === 'd' ? 'dir' : kind === 'l' ? 'link' : undefined
+          test(entry => entry.node.kind === wanted)
+          break
+        }
+        case '-maxdepth': maxDepth = Number(expression[++j]); break
+        case '-mindepth': minDepth = Number(expression[++j]); break
+        default:
+          // Ignoring a predicate it does not know would make `find` answer a
+          // question it was not asked — `-size +1M` would list every file, and
+          // `-exec rm {} ;` would list what it was told to delete and delete
+          // nothing. Refusing is the only honest answer.
+          unknown = token
       }
     }
+    if (unknown !== undefined) return fail(context, `unknown predicate '${unknown}'`, 2)
 
     const separator = printZero ? '\0' : '\n'
     let status = 0
@@ -756,17 +836,10 @@ export const coreutils: Record<string, CommandImpl> = {
       }
       for (const entry of walk(context, rootPath)) {
         if (entry.depth > maxDepth || entry.depth < minDepth) continue
-        const name = basename(entry.path)
-        if (namePattern !== undefined && !namePattern.test(name)) continue
-        if (iNamePattern !== undefined && !iNamePattern.test(name)) continue
-        if (pathPattern !== undefined && !pathPattern.test(entry.path)) continue
-        if (notNames.some(pattern => pattern.test(name))) continue
-        if (typeFilter === 'f' && entry.node.kind !== 'file') continue
-        if (typeFilter === 'd' && entry.node.kind !== 'dir') continue
-        if (typeFilter === 'l' && entry.node.kind !== 'link') continue
         const display = root === '.' && entry.path.startsWith(context.shell.cwd)
-          ? `.${entry.path.slice(context.shell.cwd.length)}`
+          ? `.${entry.path.slice(context.shell.cwd.length)}` || '.'
           : entry.path
+        if (!tests.every(matches => matches({ ...entry, display }))) continue
         context.stdout.write(`${display}${separator}`)
       }
     }
@@ -946,7 +1019,7 @@ export const coreutils: Record<string, CommandImpl> = {
     for (const root of roots) {
       let total = 0
       for (const entry of walk(context, abs(context, root))) {
-        if (entry.node.kind === 'file') total += entry.node.content?.length ?? 0
+        if (entry.node.kind === 'file') total += sizeOf(entry.node)
       }
       const blocks = flags.has('h') ? formatSize(total) : String(Math.ceil(total / 1024))
       context.stdout.write(`${blocks}\t${root}\n`)
@@ -1175,7 +1248,7 @@ function testCommand(context: CommandContext): number {
         case '-f': return volume.lookup(path)?.kind === 'file'
         case '-d': return volume.lookup(path)?.kind === 'dir'
         case '-L': case '-h': return volume.lookup(path, false)?.kind === 'link'
-        case '-s': return (volume.lookup(path)?.content?.length ?? 0) > 0
+        case '-s': return sizeOf(volume.lookup(path)) > 0
         case '-r': case '-w': return volume.exists(path)
         case '-x': return ((volume.lookup(path)?.mode ?? 0) & 0o111) !== 0
         case '-z': return operand.length === 0

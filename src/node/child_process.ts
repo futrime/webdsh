@@ -152,6 +152,8 @@ export class ChildProcessShim extends StreamEmitter {
           cwd,
           env: (this.options.env ?? processShim.env) as Record<string, string | undefined>,
           stdin: this.stdinClosed ? this.stdinBuffer : '',
+          ...(script.name === undefined ? {} : { name: script.name }),
+          args: script.args,
           signal: this.abort.signal,
           onStdout: chunk => { this.stdout?.push(chunk) },
           onStderr: chunk => { this.stderr?.push(chunk) },
@@ -209,16 +211,40 @@ export class ChildProcessShim extends StreamEmitter {
   send(): boolean { return false }
 }
 
-/** Turn a spawn argv into a shell script plus positional parameters. */
-function buildScript(command: string, args: string[]): { source: string, args: string[] } | undefined {
+/** Turn a spawn argv into a shell script, its `$0`, and its positional parameters. */
+function buildScript(command: string, args: string[]): { source: string, name?: string, args: string[] } | undefined {
   const name = command.split('/').pop() ?? command
   // The shell family: `-c script` runs the script text directly.
   if (name === 'bash' || name === 'sh' || name === 'zsh' || name === 'dash') {
-    const cIndex = args.findIndex(argument => argument === '-c' || argument === '-lc' || argument === '-lic')
-    if (cIndex !== -1) return { source: args[cIndex + 1] ?? '', args: args.slice(cIndex + 2) }
-    if (args.length > 0 && !args[0].startsWith('-')) {
-      // Running a script file.
-      return { source: `. ${quote(args[0])}`, args: args.slice(1) }
+    // Options are scanned rather than searched for, because the script is not
+    // simply "whatever follows -c". A caller may end the options explicitly —
+    // `bash -lc -- '<script>'` is what the harness spawns, and taking the next
+    // token made the script literally `--`, so every tool call died with
+    // `sh: --: command not found`. Long options like `--noprofile` are skipped
+    // the same way a shell skips them.
+    let sawCommandFlag = false
+    let index = 0
+    for (; index < args.length; index++) {
+      const argument = args[index]
+      if (argument === '--') { index++; break }
+      if (!argument.startsWith('-')) break
+      // `-c`, and the bundled forms a caller may write it in: `-lc`, `-lic`,
+      // `-ec`. A long option never carries it.
+      if (!argument.startsWith('--') && argument.includes('c')) sawCommandFlag = true
+    }
+    const rest = args.slice(index)
+    // POSIX: `sh -c <script> [name [arg…]]` — the token after the script is
+    // `$0`, and the positional parameters start after it.
+    if (sawCommandFlag) {
+      return {
+        source: rest[0] ?? '',
+        ...(rest[1] === undefined ? {} : { name: rest[1] }),
+        args: rest.slice(2),
+      }
+    }
+    if (rest.length > 0) {
+      // Running a script file: its own name is `$0`.
+      return { source: `. ${quote(rest[0])}`, name: rest[0], args: rest.slice(1) }
     }
     return { source: '', args: [] }
   }
