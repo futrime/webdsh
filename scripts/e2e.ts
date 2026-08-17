@@ -138,6 +138,13 @@ const scenarios: Scenario[] = [
         ["echo hello | sed 's/hello/replaced/'", /replaced/],
         ["printf '3 4\\n' | awk '{print $1+$2}'", /\b7\b/],
         ['grep -c . lines.txt', /\b2\b/],
+        // Archives and encodings: pure computation, so their absence was a gap
+        // in this build rather than a limit of running in a page.
+        ['mkdir -p arc/sub && echo packed > arc/sub/p.txt && tar -czf arc.tgz arc && tar -tzf arc.tgz', /arc\/sub\/p\.txt/],
+        ['rm -rf unpack && mkdir unpack && tar -xzf arc.tgz -C unpack && cat unpack/arc/sub/p.txt', /packed/],
+        ['echo zipped > z.txt && gzip z.txt && zcat z.txt.gz', /zipped/],
+        ['printf hello | base64 | base64 -d', /hello/],
+        ['file arc.tgz', /gzip compressed/],
         // The real toolchain, not an emulation of it.
         ['python3 -c "print(6*7)"', /42/],
         ['npm --version', /\d+\.\d+\.\d+/],

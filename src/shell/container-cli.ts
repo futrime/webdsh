@@ -31,6 +31,7 @@ import { createInterface } from 'node:readline'
 import { Interpreter } from './interpreter.ts'
 import { coreutils } from './coreutils.ts'
 import { busybox } from './busybox.ts'
+import { archive } from './archive.ts'
 import { awk } from './awk.ts'
 import { ripgrep } from './ripgrep.ts'
 import { gitCommand } from './git.ts'
@@ -55,6 +56,7 @@ function buildRegistry(): Map<string, CommandImpl> {
   const registry = new Map<string, CommandImpl>()
   for (const [name, impl] of Object.entries(coreutils)) registry.set(name, impl)
   for (const [name, impl] of Object.entries(busybox)) if (!registry.has(name)) registry.set(name, impl)
+  for (const [name, impl] of Object.entries(archive)) if (!registry.has(name)) registry.set(name, impl)
   for (const name of ['awk', 'gawk', 'mawk', 'nawk']) registry.set(name, awk)
   for (const name of ['rg', '/usr/bin/rg']) registry.set(name, ripgrep)
   // The container has no git at all, so the JavaScript one is not a substitute

@@ -472,7 +472,9 @@ async function transfer(context: CommandContext, name: 'curl' | 'wget'): Promise
   }
 }
 
-busybox.zcat = busybox.less
+// `more` pages a file, which in a pipe is `cat`. `zcat` is *not* an alias for
+// it — it decompresses, and treating it as a pager emitted the compressed bytes
+// verbatim while reporting success. It lives in `archive.ts` with `gzip`.
 busybox.more = busybox.less
 busybox.md5sum = sumApplet(16)
 busybox.sha1sum = sumApplet(20)
