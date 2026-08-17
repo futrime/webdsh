@@ -67,15 +67,32 @@ export class LoopSignal {
   constructor(readonly kind: 'break' | 'continue', public levels: number) {}
 }
 
+/**
+ * A consumable view of a command's standard input.
+ *
+ * `read` takes one line and leaves the rest, which is what lets
+ * `… | while read line; do …; done` reach the end of its input instead of
+ * repeating the first line until a loop guard stops it.
+ */
+export interface InputCursor {
+  /** The whole input. */
+  text: string
+  /** How much of it has been consumed. */
+  offset: number
+}
+
 /** One command invocation's context. */
 export interface CommandContext {
   /** `argv[0]` is the command name. */
   argv: string[]
   /** The shell state, so builtins can mutate `cwd`, variables, and functions. */
   shell: ShellState
+  /** What is left to read. */
   stdin: string
   stdout: Sink
   stderr: Sink
+  /** The shared read position, when the caller keeps one. */
+  input?: InputCursor
   /** Cancels a long-running command (the bash tool's timeout). */
   signal?: AbortSignal
 }
@@ -90,6 +107,8 @@ export interface ShellState {
   cwd: string
   /** Exported plus shell-local variables; exported ones reach child commands. */
   vars: Map<string, string>
+  /** Indexed arrays, which are a separate namespace from plain variables. */
+  arrays: Map<string, string[]>
   /** Names marked for export. */
   exported: Set<string>
   /** Positional parameters `$1…`. */

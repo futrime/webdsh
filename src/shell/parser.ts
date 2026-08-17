@@ -213,7 +213,8 @@ class Parser {
     if (keyword === 'while' || keyword === 'until') return this.parseWhile(keyword === 'until')
     if (keyword === 'case') return this.parseCase()
     if (keyword === 'function') return this.parseFunctionKeyword()
-    if (this.peek() === '(') return this.parseGroup(true)
+    // `((` is an arithmetic command, not a subshell opening another subshell.
+    if (this.peek() === '(' && !this.source.startsWith('((', this.index)) return this.parseGroup(true)
     if (keyword === '{') return this.parseGroup(false)
     const functionDef = this.tryParseFunctionDefinition()
     if (functionDef !== undefined) return functionDef
@@ -310,9 +311,36 @@ class Parser {
   }
 
   /** `for name [in words]; do …; done`. */
-  private parseFor(): For {
+  private parseFor(): For | Sequence {
     this.readWordText() // for
     this.skipSpace()
+
+    // `for ((init; test; step))` is a while loop wearing a different hat, so it
+    // is rewritten as one rather than given its own evaluator.
+    if (this.source.startsWith('((', this.index)) {
+      const closed = this.findClosingParens(this.index)
+      if (closed === -1) throw new ShellSyntaxError("expected '))' to close a for loop", this.index)
+      const header = this.source.slice(this.index + 2, closed)
+      this.index = closed + 2
+      const [init = '', test = '', step = ''] = header.split(';')
+      this.skipBlank()
+      if (this.peek() === ';') this.index++
+      this.skipBlank()
+      this.expectKeyword('do')
+      const inner = this.parseList(new Set(['done']))
+      this.expectKeyword('done')
+      const redirects = this.parseRedirects()
+      const arithmetic = (expression: string): Node => ({
+        type: 'simple',
+        assignments: [],
+        words: [[{ kind: 'literal', value: 'let' }], [{ kind: 'quoted', value: expression.trim() || '1' }]],
+        redirects: [],
+      })
+      const body: Node = { type: 'sequence', statements: [inner, arithmetic(step)] }
+      const loop: While = { type: 'while', condition: arithmetic(test), body, until: false, redirects }
+      return { type: 'sequence', statements: [arithmetic(init), loop] }
+    }
+
     const name = this.readWordText()
     this.skipSpace()
     let words: Word[] = []
@@ -333,7 +361,7 @@ class Parser {
     this.expectKeyword('do')
     const body = this.parseList(new Set(['done']))
     this.expectKeyword('done')
-    return { type: 'for', name, words, usesPositional, body }
+    return { type: 'for', name, words, usesPositional, body, redirects: this.parseRedirects() }
   }
 
   /** `while|until cond; do …; done`. */
@@ -343,7 +371,7 @@ class Parser {
     this.expectKeyword('do')
     const body = this.parseList(new Set(['done']))
     this.expectKeyword('done')
-    return { type: 'while', condition, body, until }
+    return { type: 'while', condition, body, until, redirects: this.parseRedirects() }
   }
 
   /** `case word in pattern|pattern) body ;; esac`. */
@@ -391,14 +419,78 @@ class Parser {
   }
 
   /** Parse assignments, words, and redirections up to a separator. */
+  /**
+   * `<(…)` in word position: the command's output, named as a file.
+   * @returns the part, or `undefined` when this is an ordinary redirect.
+   */
+  private tryParseProcessSubstitution(): WordPart | undefined {
+    if (!this.source.startsWith('<(', this.index)) return undefined
+    const closed = this.findClosingParens(this.index + 1)
+    if (closed === -1) return undefined
+    const script = this.source.slice(this.index + 2, closed)
+    this.index = closed + 1
+    return { kind: 'procsub', script: new Parser(script).parse() }
+  }
+
   private parseSimple(): SimpleCommand {
     const command: SimpleCommand = { type: 'simple', assignments: [], words: [], redirects: [] }
+
+    // `(( … ))` is an arithmetic command: the expression is one opaque word,
+    // and the status says whether the result was non-zero.
+    if (this.source.startsWith('((', this.index)) {
+      const closed = this.findClosingParens(this.index)
+      if (closed !== -1) {
+        const expression = this.source.slice(this.index + 2, closed)
+        this.index = closed + 2
+        command.words.push([{ kind: 'literal', value: 'let' }])
+        command.words.push([{ kind: 'quoted', value: expression }])
+        this.skipSpace()
+        return command
+      }
+    }
+
+    // `[[ … ]]` is a conditional: its words are collected as written.
+    if (this.source.startsWith('[[', this.index) && /\s|$/.test(this.source[this.index + 2] ?? '')) {
+      this.index += 2
+      command.conditional = true
+      command.words.push([{ kind: 'literal', value: '[[' }])
+      for (;;) {
+        this.skipSpace()
+        if (this.eof()) throw new ShellSyntaxError('unexpected end of input, expected `]]`', this.index)
+        if (this.source.startsWith(']]', this.index)) {
+          this.index += 2
+          break
+        }
+        // The operators are words here, and `parseWord` would consume none of
+        // them — which spun this loop until the process ran out of memory.
+        const operator = ['&&', '||', '!', '(', ')'].find(token => this.source.startsWith(token, this.index))
+        if (operator !== undefined) {
+          this.index += operator.length
+          command.words.push([{ kind: 'literal', value: operator }])
+          continue
+        }
+        command.words.push(this.parseWord())
+      }
+      this.skipSpace()
+      for (;;) {
+        const redirect = this.tryParseRedirect()
+        if (redirect === undefined) break
+        command.redirects.push(redirect)
+      }
+      return command
+    }
+
     for (;;) {
       this.skipSpace()
       if (this.eof()) break
       const char = this.peek()
       if (char === '\n' || char === ';' || char === ')') break
       if (char === '&' || char === '|') break
+      const substitution = this.tryParseProcessSubstitution()
+      if (substitution !== undefined) {
+        command.words.push([substitution])
+        continue
+      }
       const redirect = this.tryParseRedirect()
       if (redirect !== undefined) {
         command.redirects.push(redirect)
@@ -418,11 +510,44 @@ class Parser {
     return command
   }
 
-  /** `NAME=value` before the first word. */
-  private tryParseAssignment(): { name: string, value: Word } | undefined {
-    const match = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(this.source.slice(this.index))
+  /**
+   * Index of the `))` closing an arithmetic command, or -1 when unbalanced.
+   * @param from - the index of the opening `((`.
+   */
+  private findClosingParens(from: number): number {
+    let depth = 0
+    for (let index = from; index < this.source.length; index++) {
+      if (this.source[index] === '(') depth++
+      else if (this.source[index] === ')') {
+        depth--
+        if (depth === 0) return this.source.startsWith('))', index - 1) ? index - 1 : index
+      }
+    }
+    return -1
+  }
+
+  /** `NAME=value` or `NAME+=value` before the first word. */
+  private tryParseAssignment(): { name: string, value: Word, append?: boolean, array?: Word[] } | undefined {
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)(\+?)=/.exec(this.source.slice(this.index))
     if (match === null) return undefined
     this.index += match[0].length
+    // `name=(a b c)` — an array literal.
+    if (this.peek() === '(') {
+      this.index++
+      const elements: Word[] = []
+      for (;;) {
+        this.skipSpace()
+        if (this.eof()) throw new ShellSyntaxError("expected ')' to close an array", this.index)
+        if (this.peek() === ')') { this.index++; break }
+        if (this.peek() === '\n') { this.index++; continue }
+        elements.push(this.parseWord())
+      }
+      return { name: match[1], value: [], array: elements, ...(match[2] === '+' ? { append: true } : {}) }
+    }
+    if (match[2] === '+') {
+      const value = this.parseWord()
+      return { name: match[1], value, append: true }
+    }
     const value = this.peek() === ' ' || this.peek() === '\n' || this.eof() ? [] : this.parseWord()
     return { name: match[1], value }
   }
@@ -695,14 +820,20 @@ class Parser {
       // ${#VAR} — string length, modeled as an operator on the name.
       return { kind: 'param', name: body.slice(1), op: '#' }
     }
-    const match = /^([A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])(.*)$/s.exec(body)
+    // `arr[0]`, `arr[@]`, `arr[*]` name an array element rather than a variable.
+    const match = /^([A-Za-z_][A-Za-z0-9_]*\[[^\]]*\]|[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])(.*)$/s.exec(body)
     if (match === null) return { kind: 'literal', value: `\${${body}}` }
     const [, name, rest] = match
     if (rest.length === 0) return { kind: 'param', name }
-    for (const op of ['##', '%%', ':-', ':=', ':+', ':?', '//', '#', '%', '-', '+', '/'] as const) {
+    for (const op of ['##', '%%', ':-', ':=', ':+', ':?', '//', '^^', ',,', '#', '%', '-', '+', '/', '^', ','] as const) {
       if (rest.startsWith(op)) {
         return { kind: 'param', name, op, argument: new Parser(rest.slice(op.length)).parseWordToEnd() }
       }
+    }
+    // `${VAR:offset:length}`. Checked after the `:-`-style operators above, so
+    // only a `:` followed by something arithmetic reaches here.
+    if (rest.startsWith(':')) {
+      return { kind: 'param', name, op: 'substring', argument: new Parser(rest.slice(1)).parseWordToEnd() }
     }
     return { kind: 'param', name }
   }

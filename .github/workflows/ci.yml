@@ -27,6 +27,12 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      # The shell the agent's commands run in, compared against the real bash on
+      # the runner. Every construct in the corpus is one an agent writes, and a
+      # disagreement here is a wrong answer the other suites cannot see.
+      - name: Shell matches bash
+        run: npm run test:shell
+
       - name: Build
         run: npm run build
 

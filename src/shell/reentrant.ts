@@ -14,7 +14,7 @@
  */
 
 import type { Interpreter } from './interpreter.ts'
-import { coreutils, parseArgs } from './coreutils.ts'
+import { coreutils } from './coreutils.ts'
 import { BufferSink, type CommandImpl, type ShellState } from './runtime.ts'
 
 /** Quote a token so re-entering the parser cannot reinterpret it. */
@@ -29,18 +29,36 @@ function quote(token: string): string {
  */
 export function registerReentrant(interpreter: Interpreter, state: ShellState): void {
   const xargs: CommandImpl = async (context) => {
-    const { flags, operands, values } = parseArgs(context.argv, 'In')
-    const items = context.stdin.split(flags.has('0') ? '\0' : /\s+/).filter(item => item.length > 0)
+    // `xargs` options stop at the first word that is not one, and everything
+    // after that belongs to the command being run. Parsing the whole argv with
+    // a generic option parser stole the command's own flags: `xargs wc -l`
+    // reached `wc` as a bare `wc`, which counts lines, words, and bytes.
+    let index = 1
+    let nulSeparated = false
+    let batchSize: number | undefined
+    let placeholder: string | undefined
+    for (; index < context.argv.length; index++) {
+      const token = context.argv[index]
+      if (token === '-0' || token === '--null') { nulSeparated = true; continue }
+      if (token === '-r' || token === '--no-run-if-empty') continue
+      if (token === '-n') { batchSize = Number(context.argv[++index]); continue }
+      if (token === '-I') { placeholder = context.argv[++index]; continue }
+      if (/^-n\d+$/.test(token)) { batchSize = Number(token.slice(2)); continue }
+      if (/^-I./.test(token)) { placeholder = token.slice(2); continue }
+      break
+    }
+
+    const items = context.stdin.split(nulSeparated ? '\0' : /\s+/).filter(item => item.length > 0)
     if (items.length === 0) return 0
-    const base = operands.length > 0 ? operands : ['echo']
-    const placeholder = values.get('I')
-    const batchSize = values.has('n') ? Number(values.get('n')) : (placeholder === undefined ? items.length : 1)
+    const base = context.argv.slice(index)
+    const command = base.length > 0 ? base : ['echo']
+    const size = batchSize ?? (placeholder === undefined ? items.length : 1)
     let status = 0
-    for (let index = 0; index < items.length; index += batchSize) {
-      const batch = items.slice(index, index + batchSize)
+    for (let at = 0; at < items.length; at += size) {
+      const batch = items.slice(at, at + size)
       const argv = placeholder === undefined
-        ? [...base, ...batch]
-        : base.map(token => token.replaceAll(placeholder, batch[0]))
+        ? [...command, ...batch]
+        : command.map(token => token.replaceAll(placeholder, batch[0]))
       const result = await interpreter.run(argv.map(quote).join(' '), {
         stdin: '', stdout: context.stdout, stderr: context.stderr,
       })

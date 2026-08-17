@@ -15,6 +15,7 @@
 import type { CommandContext, CommandImpl } from './runtime.ts'
 import { abs, absWritable, parseArgs } from './coreutils.ts'
 import { toBytes, toText } from '../node/binary.ts'
+import { digest } from '../node/hash.ts'
 import { dirname } from '../node/path.ts'
 
 /** Emit a POSIX-style diagnostic and return the failure status. */
@@ -40,33 +41,22 @@ function lines(text: string): string[] {
 const hex = (value: number, width = 2): string => value.toString(16).padStart(width, '0')
 
 /**
- * A deterministic digest, for the `*sum` family.
+ * Build a `*sum` applet.
  *
- * `crypto.subtle` is asynchronous and unavailable outside a secure context,
- * and these applets are used for change detection far more often than for
- * security. The FNV-1a-derived construction below is a checksum, and the help
- * text says so rather than implying a cryptographic guarantee.
- * @param bytes - the input.
- * @param width - digest length in bytes.
- * @returns the hex digest.
+ * The algorithm is the real one. What stood here before was an invented
+ * FNV-style mixer producing a hash of the right length and the wrong value —
+ * which is worse than not having the command at all, because a checksum that
+ * looks like a checksum gets compared against a published one and quietly
+ * disagrees, or gets recorded and quietly agrees with nothing.
+ * @param algorithm - the digest to compute.
  */
-function digest(bytes: Uint8Array, width: number): string {
-  const state = new Uint32Array(width / 4);
-  for (let lane = 0; lane < state.length; lane++) state[lane] = 0x811c9dc5 + lane * 0x9e3779b9
-  for (let i = 0; i < bytes.length; i++) {
-    const lane = i % state.length
-    state[lane] = Math.imul(state[lane] ^ bytes[i], 0x01000193) >>> 0
-    state[(lane + 1) % state.length] = (state[(lane + 1) % state.length] + Math.imul(bytes[i] + i, 0x85ebca6b)) >>> 0
-  }
-  return [...state].map(value => hex(value >>> 0, 8)).join('')
-}
-
-/** Build a `*sum` applet of the given digest width. */
-function sumApplet(width: number): CommandImpl {
+function sumApplet(algorithm: 'md5' | 'sha1' | 'sha256'): CommandImpl {
   return (context) => {
     const { operands } = parseArgs(context.argv)
     const emit = (text: string, label: string): void => {
-      context.stdout.write(`${digest(toBytes(text), width)}  ${label}\n`)
+      const bytes = digest(algorithm, toBytes(text))
+      const rendered = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('')
+      context.stdout.write(`${rendered}  ${label}\n`)
     }
     if (operands.length === 0) {
       emit(context.stdin, '-')
@@ -476,10 +466,80 @@ async function transfer(context: CommandContext, name: 'curl' | 'wget'): Promise
 // it — it decompresses, and treating it as a pager emitted the compressed bytes
 // verbatim while reporting success. It lives in `archive.ts` with `gzip`.
 busybox.more = busybox.less
-busybox.md5sum = sumApplet(16)
-busybox.sha1sum = sumApplet(20)
-busybox.sha256sum = sumApplet(32)
-busybox.sha512sum = sumApplet(64)
-busybox.cksum = sumApplet(4)
+busybox.md5sum = sumApplet('md5')
+busybox.sha1sum = sumApplet('sha1')
+busybox.sha256sum = sumApplet('sha256')
+/**
+ * `sha512sum`, through the platform's own crypto.
+ *
+ * `hash.ts` implements the digests this shell needs synchronously; SHA-512 is
+ * not one of them, and `crypto.subtle` has it in both hosts — a page and the
+ * container's Node both expose it. A command may be asynchronous, so using it
+ * costs nothing.
+ */
+busybox.sha512sum = async (context) => {
+  const { operands } = parseArgs(context.argv)
+  const emit = async (text: string, label: string): Promise<void> => {
+    const bytes = new Uint8Array(await crypto.subtle.digest('SHA-512', toBytes(text) as BufferSource))
+    context.stdout.write(`${[...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('')}  ${label}\n`)
+  }
+  if (operands.length === 0) {
+    await emit(context.stdin, '-')
+    return 0
+  }
+  let status = 0
+  for (const operand of operands) {
+    try {
+      await emit(input(context, operand), operand)
+    } catch {
+      status = fail(context, `${operand}: No such file or directory`)
+    }
+  }
+  return status
+}
+
+/** The CRC-32 table POSIX `cksum` is defined against. */
+const CKSUM_TABLE = (() => {
+  const table = new Uint32Array(256)
+  for (let index = 0; index < 256; index++) {
+    let value = index << 24
+    for (let bit = 0; bit < 8; bit++) {
+      value = (value & 0x80000000) !== 0 ? ((value << 1) ^ 0x04c11db7) >>> 0 : (value << 1) >>> 0
+    }
+    table[index] = value >>> 0
+  }
+  return table
+})()
+
+/** POSIX `cksum`: a CRC-32 over the bytes, then over the length. */
+function cksumOf(bytes: Uint8Array): number {
+  let crc = 0
+  for (const byte of bytes) crc = ((crc << 8) ^ CKSUM_TABLE[((crc >>> 24) ^ byte) & 0xff]) >>> 0
+  for (let length = bytes.length; length !== 0; length >>>= 8) {
+    crc = ((crc << 8) ^ CKSUM_TABLE[((crc >>> 24) ^ (length & 0xff)) & 0xff]) >>> 0
+  }
+  return (~crc) >>> 0
+}
+
+busybox.cksum = (context) => {
+  const { operands } = parseArgs(context.argv)
+  const emit = (text: string, label?: string): void => {
+    const bytes = toBytes(text)
+    context.stdout.write(`${String(cksumOf(bytes))} ${String(bytes.length)}${label === undefined ? '' : ` ${label}`}\n`)
+  }
+  if (operands.length === 0) {
+    emit(context.stdin)
+    return 0
+  }
+  let status = 0
+  for (const operand of operands) {
+    try {
+      emit(input(context, operand), operand)
+    } catch {
+      status = fail(context, `${operand}: No such file or directory`)
+    }
+  }
+  return status
+}
 busybox.hexdump = busybox.xxd
 busybox.fetch = busybox.curl

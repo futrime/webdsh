@@ -123,6 +123,7 @@ function createState(cwd: string, args: string[]): ShellState {
     volume,
     cwd,
     vars,
+    arrays: new Map(),
     exported,
     positional: args,
     scriptName: 'sh',

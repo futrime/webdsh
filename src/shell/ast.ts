@@ -20,14 +20,30 @@ export type WordPart =
   | { kind: 'quoted', value: string }
   /** Double-quoted: expansion happens, but no globbing or field splitting. */
   | { kind: 'dquoted', parts: WordPart[] }
-  | { kind: 'param', name: string, op?: ':-' | ':=' | ':+' | ':?' | '-' | '+' | '#' | '##' | '%' | '%%' | '/' | '//', argument?: Word }
+  | {
+      kind: 'param'
+      name: string
+      op?: ':-' | ':=' | ':+' | ':?' | '-' | '+' | '#' | '##' | '%' | '%%' | '/' | '//'
+        /** `${VAR:offset:length}`. */
+        | 'substring'
+        /** `${VAR^^}`, `${VAR^}`, `${VAR,,}`, `${VAR,}` — case conversion. */
+        | '^^' | '^' | ',,' | ','
+      argument?: Word
+    }
   | { kind: 'command', script: Node }
+  /** `<(…)` — the command's output, presented as a readable file. */
+  | { kind: 'procsub', script: Node }
   | { kind: 'arith', expression: string }
 
 /** A simple command: assignments, words, and redirections. */
 export interface SimpleCommand {
   type: 'simple'
-  assignments: { name: string, value: Word }[]
+  assignments: { name: string, value: Word, append?: boolean, array?: Word[] }[]
+  /**
+   * Set for `[[ … ]]`, whose words are neither split nor glob-expanded — the
+   * pattern in `[[ $f == *.ts ]]` belongs to the test, not to the filesystem.
+   */
+  conditional?: boolean
   words: Word[]
   redirects: Redirect[]
 }
@@ -64,6 +80,8 @@ export interface For {
   /** Absent `in` list means `"$@"`. */
   usesPositional: boolean
   body: Node
+  /** Redirections written after `done`, which apply to the whole loop. */
+  redirects?: Redirect[]
 }
 
 /** `while|until cond; do … done` */
@@ -72,6 +90,8 @@ export interface While {
   condition: Node
   body: Node
   until: boolean
+  /** Redirections written after `done`, which apply to the whole loop. */
+  redirects?: Redirect[]
 }
 
 /** `case word in pattern) body ;; esac` */

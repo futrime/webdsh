@@ -91,6 +91,7 @@ export function createShellState(options: RunOptions = {}): ShellState {
     volume,
     cwd,
     vars,
+    arrays: new Map(),
     exported,
     positional: options.args ?? [],
     scriptName: 'sh',

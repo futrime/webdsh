@@ -192,7 +192,15 @@ export const coreutils: Record<string, CommandImpl> = {
     const long = flags.has('l')
     const all = flags.has('a') || flags.has('A')
     const recursive = flags.has('R')
-    const one = flags.has('1') || long
+    // `-d` names the directory instead of listing it, which is how `ls -d */`
+    // and `ls -d some/dir` are meant to work.
+    const asEntry = flags.has('d')
+    // Always one per line. `ls` only packs entries into columns when its output
+    // is a terminal; a pipe or a capture gets one name per line, which is what
+    // `ls | while read` and `ls | wc -l` depend on. Nothing this shell writes to
+    // is a terminal.
+    const one = true
+    void flags.has('1')
     let status = 0
     const out: string[] = []
 
@@ -232,10 +240,11 @@ export const coreutils: Record<string, CommandImpl> = {
       const path = abs(context, target)
       const node = volume.lookup(path, false)
       if (node === undefined) {
-        status = fail(context, `cannot access '${target}': No such file or directory`)
+        // `ls` reports a missing operand with status 2, which scripts test for.
+        status = fail(context, `cannot access '${target}': No such file or directory`, 2)
         continue
       }
-      if (node.kind !== 'dir') {
+      if (node.kind !== 'dir' || asEntry) {
         out.push(long ? `${modeString(node)} 1 dsh dsh ${String(sizeOf(node)).padStart(8)} ${timeString(node.mtime)} ${target}` : target)
         continue
       }
@@ -516,51 +525,77 @@ export const coreutils: Record<string, CommandImpl> = {
     const showAll = !flags.has('l') && !flags.has('w') && !flags.has('c') && !flags.has('m')
     const totals = { lines: 0, words: 0, bytes: 0 }
     let status = 0
-    const render = (text: string, label?: string): void => {
+
+    /** Count one input without printing it: the width depends on every row. */
+    const measure = (text: string): number[] => {
       const lines = text.length === 0 ? 0 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0)
       const words = text.trim().length === 0 ? 0 : text.trim().split(/\s+/).length
       const bytes = toBytes(text).length
       totals.lines += lines
       totals.words += words
       totals.bytes += bytes
-      const columns: string[] = []
-      if (showAll || flags.has('l')) columns.push(String(lines).padStart(7))
-      if (showAll || flags.has('w')) columns.push(String(words).padStart(7))
-      if (showAll || flags.has('c') || flags.has('m')) columns.push(String(flags.has('m') ? text.length : bytes).padStart(7))
-      context.stdout.write(`${columns.join('')}${label === undefined ? '' : ` ${label}`}\n`)
+      const counts: number[] = []
+      if (showAll || flags.has('l')) counts.push(lines)
+      if (showAll || flags.has('w')) counts.push(words)
+      if (showAll || flags.has('c') || flags.has('m')) counts.push(flags.has('m') ? text.length : bytes)
+      return counts
     }
+
+    const rows: { counts: number[], label?: string }[] = []
     if (operands.length === 0) {
-      render(context.stdin)
-      return 0
-    }
-    for (const operand of operands) {
-      try {
-        render(readInput(context, operand), operand)
-      } catch {
-        status = fail(context, `${operand}: No such file or directory`)
+      rows.push({ counts: measure(context.stdin) })
+    } else {
+      for (const operand of operands) {
+        try {
+          rows.push({ counts: measure(readInput(context, operand)), label: operand })
+        } catch {
+          status = fail(context, `${operand}: No such file or directory`)
+        }
+      }
+      if (operands.length > 1) {
+        const counts: number[] = []
+        if (showAll || flags.has('l')) counts.push(totals.lines)
+        if (showAll || flags.has('w')) counts.push(totals.words)
+        if (showAll || flags.has('c') || flags.has('m')) counts.push(totals.bytes)
+        rows.push({ counts, label: 'total' })
       }
     }
-    if (operands.length > 1) {
-      const columns: string[] = []
-      if (showAll || flags.has('l')) columns.push(String(totals.lines).padStart(7))
-      if (showAll || flags.has('w')) columns.push(String(totals.words).padStart(7))
-      if (showAll || flags.has('c') || flags.has('m')) columns.push(String(totals.bytes).padStart(7))
-      context.stdout.write(`${columns.join('')} total\n`)
+
+    // With more than one input the counts are right-aligned to the width of the
+    // largest count that could occur — which `wc` knows before counting, since
+    // no count can exceed the total number of bytes. A single input is printed
+    // unpadded.
+    //
+    // The padding matters beyond looks: `n=$(wc -l < file)` yielding "      3"
+    // makes `[ "$n" -gt 1 ]` compare a string full of spaces and quietly take
+    // the wrong branch.
+    const width = rows.length > 1 ? String(totals.bytes).length : 0
+    for (const row of rows) {
+      const rendered = row.counts.map(count => String(count).padStart(width)).join(' ')
+      context.stdout.write(`${rendered}${row.label === undefined ? '' : ` ${row.label}`}\n`)
     }
     return status
   },
 
   grep(context) {
-    const { flags, operands, values, long } = parseArgs(context.argv, 'em')
+    const { flags, operands, values, long } = parseArgs(context.argv, 'emABC')
     const pattern = values.get('e') ?? operands.shift() ?? ''
     const fixed = flags.has('F')
     const ignoreCase = flags.has('i')
     const invert = flags.has('v')
     const listFiles = flags.has('l')
     const countOnly = flags.has('c')
+    // `-q` reports the answer through the exit status and prints nothing, which
+    // is the whole point of it in `if … | grep -q pattern`.
+    const quiet = flags.has('q')
     const withNumbers = flags.has('n')
     const recursive = flags.has('r') || flags.has('R')
     const wholeWord = flags.has('w')
+    // `-o` prints each match rather than the line, and the context flags print
+    // neighbouring lines. All three are ordinary in an agent's search commands.
+    const onlyMatching = flags.has('o')
+    const after = Number(values.get('A') ?? values.get('C') ?? '0')
+    const before = Number(values.get('B') ?? values.get('C') ?? '0')
     const maxCount = values.has('m') ? Number(values.get('m')) : Infinity
     const source = fixed ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : pattern
     let matcher: RegExp
@@ -576,15 +611,37 @@ export const coreutils: Record<string, CommandImpl> = {
       const lines = text.split('\n')
       if (lines[lines.length - 1] === '') lines.pop()
       let hits = 0
+      let lastPrinted = -1
       for (let i = 0; i < lines.length && hits < maxCount; i++) {
         const isMatch = matcher.test(lines[i])
         if (isMatch === invert) continue
         hits++
         matched = true
         if (listFiles) return hits
-        if (countOnly) continue
-        const prefix = label === undefined ? '' : `${label}:`
-        context.stdout.write(`${prefix}${withNumbers ? `${String(i + 1)}:` : ''}${lines[i]}\n`)
+        if (countOnly || quiet) continue
+
+        const emit = (index: number, separator: string, body?: string): void => {
+          const prefix = label === undefined ? '' : `${label}${separator}`
+          context.stdout.write(`${prefix}${withNumbers ? `${String(index + 1)}${separator}` : ''}${body ?? lines[index]}\n`)
+        }
+
+        if (onlyMatching) {
+          // `-o` prints each match on its own line rather than the line it sat in.
+          const every = new RegExp(matcher.source, matcher.flags.includes('g') ? matcher.flags : `${matcher.flags}g`)
+          for (const found of lines[i].matchAll(every)) emit(i, ':', found[0])
+          lastPrinted = i
+          continue
+        }
+
+        // Context lines are printed once even when two matches both claim them.
+        for (let leading = Math.max(i - before, lastPrinted + 1); leading < i; leading++) emit(leading, '-')
+        emit(i, ':')
+        lastPrinted = i
+        for (let trailing = i + 1; trailing <= Math.min(i + after, lines.length - 1); trailing++) {
+          if (matcher.test(lines[trailing]) !== invert) break
+          emit(trailing, '-')
+          lastPrinted = trailing
+        }
       }
       return hits
     }
@@ -604,7 +661,11 @@ export const coreutils: Record<string, CommandImpl> = {
     }
 
     if (targets.length === 0) {
-      searchText(context.stdin)
+      const hits = searchText(context.stdin)
+      // A count of zero is still a count: printing nothing makes
+      // `n=$(… | grep -c pattern)` an empty string instead of `0`, and the
+      // arithmetic that follows it silently wrong.
+      if (countOnly && !quiet) context.stdout.write(`${String(hits)}\n`)
       return matched ? 0 : 1
     }
 
@@ -618,6 +679,7 @@ export const coreutils: Record<string, CommandImpl> = {
       }
       const relative = target.startsWith(`${context.shell.cwd}/`) ? target.slice(context.shell.cwd.length + 1) : target
       const hits = searchText(text, showLabel ? relative : undefined)
+      if (quiet) continue
       if (listFiles && hits > 0) context.stdout.write(`${relative}\n`)
       else if (countOnly) context.stdout.write(`${showLabel ? `${relative}:` : ''}${String(hits)}\n`)
     }
@@ -625,33 +687,87 @@ export const coreutils: Record<string, CommandImpl> = {
   },
 
   sed(context) {
-    const { flags, operands, values } = parseArgs(context.argv, 'e')
+    const { flags, operands } = parseArgs(context.argv, 'e')
+    // Every `-e` counts. A map keyed by option name keeps only the last, so
+    // `sed -e s/a/1/ -e s/b/2/` silently applied half of what it was given.
     const scripts: string[] = []
-    if (values.has('e')) scripts.push(values.get('e')!)
+    const argv = context.argv
+    for (let index = 1; index < argv.length; index++) {
+      if (argv[index] === '-e' && argv[index + 1] !== undefined) {
+        scripts.push(argv[++index])
+        continue
+      }
+      const attached = /^-e(.+)$/.exec(argv[index])
+      if (attached !== null) scripts.push(attached[1])
+    }
     if (scripts.length === 0 && operands.length > 0) scripts.push(operands.shift()!)
     const inPlace = flags.has('i')
     const quiet = flags.has('n')
 
-    /** One compiled sed instruction. */
-    type Instruction =
-      | { kind: 'substitute', matcher: RegExp, replacement: string }
-      | { kind: 'delete', matcher: RegExp | undefined, line?: number }
-      | { kind: 'print', matcher: RegExp | undefined, line?: number }
+    /** Where an instruction applies. */
+    type Address =
+      | { kind: 'line', line: number }
+      | { kind: 'last' }
+      | { kind: 'regex', matcher: RegExp }
+
+    /** One compiled sed instruction, with the lines it applies to. */
+    interface Instruction {
+      kind: 'substitute' | 'delete' | 'print'
+      from?: Address
+      to?: Address
+      matcher?: RegExp
+      replacement?: string
+      /** Whether a `/from/,/to/` range is currently open. */
+      active?: boolean
+    }
+
+    /** Parse one address, returning it and how much of the text it used. */
+    const parseAddress = (text: string): { address: Address, rest: string } | undefined => {
+      const line = /^(\d+)/.exec(text)
+      if (line !== null) return { address: { kind: 'line', line: Number(line[1]) }, rest: text.slice(line[0].length) }
+      if (text.startsWith('$')) return { address: { kind: 'last' }, rest: text.slice(1) }
+      if (text.startsWith('/')) {
+        // Find the closing slash, honouring escapes.
+        for (let index = 1; index < text.length; index++) {
+          if (text[index] === '\\') { index++; continue }
+          if (text[index] === '/') {
+            return { address: { kind: 'regex', matcher: new RegExp(text.slice(1, index)) }, rest: text.slice(index + 1) }
+          }
+        }
+      }
+      return undefined
+    }
 
     const instructions: Instruction[] = []
-    for (const script of scripts.join(';').split(';')) {
-      const trimmed = script.trim()
-      if (trimmed.length === 0) continue
-      const substitute = /^s(.)(.*)$/s.exec(trimmed)
-      if (substitute !== null && trimmed.startsWith('s')) {
-        const delimiter = substitute[1]
+    for (const script of scripts.join('\n').split('\n')) {
+      let trimmed = script.trim()
+      if (trimmed.length === 0 || trimmed.startsWith('#')) continue
+
+      // Addresses come first: `2`, `$`, `/re/`, `2,5`, `/a/,/b/`.
+      let from: Address | undefined
+      let to: Address | undefined
+      const first = parseAddress(trimmed)
+      if (first !== undefined) {
+        from = first.address
+        trimmed = first.rest
+        if (trimmed.startsWith(',')) {
+          const second = parseAddress(trimmed.slice(1))
+          if (second === undefined) return fail(context, `unexpected ',' in '${script.trim()}'`, 1)
+          to = second.address
+          trimmed = second.rest
+        }
+      }
+      trimmed = trimmed.trim()
+
+      if (trimmed.startsWith('s')) {
+        const delimiter = trimmed[1]
         const parts: string[] = []
         let buffer = ''
-        for (let i = 0; i < substitute[2].length; i++) {
-          const char = substitute[2][i]
-          if (char === '\\' && substitute[2][i + 1] === delimiter) {
+        for (let index = 2; index < trimmed.length; index++) {
+          const char = trimmed[index]
+          if (char === '\\' && trimmed[index + 1] === delimiter) {
             buffer += delimiter
-            i++
+            index++
             continue
           }
           if (char === delimiter) {
@@ -666,6 +782,8 @@ export const coreutils: Record<string, CommandImpl> = {
         try {
           instructions.push({
             kind: 'substitute',
+            ...(from === undefined ? {} : { from }),
+            ...(to === undefined ? {} : { to }),
             matcher: new RegExp(search, modifiers.replace(/[^gimsu]/g, '')),
             replacement: replacement.replace(/\\(\d)/g, '$$$1').replace(/&/g, '$&'),
           })
@@ -674,27 +792,37 @@ export const coreutils: Record<string, CommandImpl> = {
         }
         continue
       }
-      const deleteMatch = /^\/(.*)\/d$/.exec(trimmed)
-      if (deleteMatch !== null) {
-        instructions.push({ kind: 'delete', matcher: new RegExp(deleteMatch[1]) })
+      if (trimmed === 'd' || trimmed === 'p') {
+        instructions.push({
+          kind: trimmed === 'd' ? 'delete' : 'print',
+          ...(from === undefined ? {} : { from }),
+          ...(to === undefined ? {} : { to }),
+        })
         continue
       }
-      const deleteLine = /^(\d+)d$/.exec(trimmed)
-      if (deleteLine !== null) {
-        instructions.push({ kind: 'delete', matcher: undefined, line: Number(deleteLine[1]) })
-        continue
+      return fail(context, `unknown command: '${script.trim()}'`, 1)
+    }
+
+    /** Whether an address selects this line. */
+    const selects = (address: Address, line: string, index: number, total: number): boolean => {
+      if (address.kind === 'line') return address.line === index + 1
+      if (address.kind === 'last') return index + 1 === total
+      return address.matcher.test(line)
+    }
+
+    /** Whether an instruction applies to this line, advancing any open range. */
+    const applies = (instruction: Instruction, line: string, index: number, total: number): boolean => {
+      if (instruction.from === undefined) return true
+      if (instruction.to === undefined) return selects(instruction.from, line, index, total)
+      if (instruction.active !== true) {
+        if (!selects(instruction.from, line, index, total)) return false
+        instruction.active = true
+        // A numeric range that ends where it starts covers one line only.
+        if (instruction.to.kind === 'line' && instruction.to.line <= index + 1) instruction.active = false
+        return true
       }
-      const printMatch = /^\/(.*)\/p$/.exec(trimmed)
-      if (printMatch !== null) {
-        instructions.push({ kind: 'print', matcher: new RegExp(printMatch[1]) })
-        continue
-      }
-      const printLine = /^(\d+)p$/.exec(trimmed)
-      if (printLine !== null) {
-        instructions.push({ kind: 'print', matcher: undefined, line: Number(printLine[1]) })
-        continue
-      }
-      return fail(context, `unknown command: '${trimmed}'`, 1)
+      if (selects(instruction.to, line, index, total)) instruction.active = false
+      return true
     }
 
     const transform = (text: string): string => {
@@ -702,17 +830,17 @@ export const coreutils: Record<string, CommandImpl> = {
       const hadTrailing = lines[lines.length - 1] === ''
       if (hadTrailing) lines.pop()
       const out: string[] = []
+      for (const instruction of instructions) instruction.active = false
       lines.forEach((line, index) => {
         let current = line
         let deleted = false
         let printed = false
         for (const instruction of instructions) {
+          if (!applies(instruction, current, index, lines.length)) continue
           if (instruction.kind === 'substitute') {
-            current = current.replace(instruction.matcher, instruction.replacement)
+            current = current.replace(instruction.matcher!, instruction.replacement!)
             continue
           }
-          const applies = instruction.line !== undefined ? instruction.line === index + 1 : instruction.matcher!.test(current)
-          if (!applies) continue
           if (instruction.kind === 'delete') deleted = true
           else printed = true
         }
@@ -771,7 +899,11 @@ export const coreutils: Record<string, CommandImpl> = {
     // `-not -path './node_modules/*'` matches nothing at all if it is compared
     // with `/home/dsh/workspace/proj/node_modules/...`.
     type Entry = { path: string, display: string, node: { kind: string }, depth: number }
-    const tests: ((entry: Entry) => boolean)[] = []
+    // Alternatives separated by `-o`; a path matches if every test in any one
+    // of them matches. Without this, `-name '*.ts' -o -name '*.js'` silently
+    // required both and matched nothing.
+    const alternatives: ((entry: Entry) => boolean)[][] = [[]]
+    let tests = alternatives[0]
     let maxDepth = Infinity
     let minDepth = 0
     let printZero = false
@@ -792,6 +924,10 @@ export const coreutils: Record<string, CommandImpl> = {
         // Conjunction is the default and `-print` is the default action, so both
         // are accepted and change nothing.
         case '-a': case '-and': case '-print': break
+        case '-o': case '-or':
+          tests = []
+          alternatives.push(tests)
+          break
         case '-print0': printZero = true; break
         case '-name': {
           const pattern = globToRegExp(expression[++j] ?? '')
@@ -836,10 +972,17 @@ export const coreutils: Record<string, CommandImpl> = {
       }
       for (const entry of walk(context, rootPath)) {
         if (entry.depth > maxDepth || entry.depth < minDepth) continue
-        const display = root === '.' && entry.path.startsWith(context.shell.cwd)
-          ? `.${entry.path.slice(context.shell.cwd.length)}` || '.'
-          : entry.path
-        if (!tests.every(matches => matches({ ...entry, display }))) continue
+        // Printed under the root as it was written: `find src` reports
+        // `src/a.ts`, not the absolute path it resolved to. Anything reading the
+        // output — `xargs`, a later `cat`, the agent — expects the path it asked
+        // about.
+        const display = entry.path === rootPath
+          ? root
+          : entry.path.startsWith(`${rootPath}/`)
+            ? `${root.replace(/\/+$/, '')}/${entry.path.slice(rootPath.length + 1)}`
+            : entry.path
+        const candidate = { ...entry, display }
+        if (!alternatives.some(group => group.every(matches => matches(candidate)))) continue
         context.stdout.write(`${display}${separator}`)
       }
     }
@@ -885,21 +1028,39 @@ export const coreutils: Record<string, CommandImpl> = {
   },
 
   cut(context) {
-    const { operands, values } = parseArgs(context.argv, 'df')
+    const { operands, values } = parseArgs(context.argv, 'dfcb')
     const delimiter = values.get('d') ?? '\t'
-    const fieldSpec = values.get('f') ?? '1'
-    const fields = new Set<number>()
-    for (const range of fieldSpec.split(',')) {
+    // `-c` selects characters and `-b` bytes; both are common, and neither used
+    // to be understood at all, so `cut -c2-4` returned the whole line.
+    const bySelection = values.get('c') ?? values.get('b')
+    const spec = bySelection ?? values.get('f') ?? '1'
+    const selected = new Set<number>()
+    let openEnded = Infinity
+    for (const range of spec.split(',')) {
       const [from, to] = range.split('-')
-      if (to === undefined) fields.add(Number(from))
-      else for (let i = Number(from); i <= Number(to || '99'); i++) fields.add(i)
+      if (to === undefined) {
+        selected.add(Number(from))
+        continue
+      }
+      // `N-` runs to the end of the line.
+      if (to === '') {
+        openEnded = Math.min(openEnded, Number(from))
+        continue
+      }
+      for (let index = Number(from || '1'); index <= Number(to); index++) selected.add(index)
     }
+    const wanted = (position: number): boolean => selected.has(position) || position >= openEnded
     const text = operands.length > 0 ? readInput(context, operands[0]) : context.stdin
     const lines = text.split('\n')
     if (lines[lines.length - 1] === '') lines.pop()
     const out = lines.map((line) => {
+      if (bySelection !== undefined) {
+        return [...line].filter((_character, index) => wanted(index + 1)).join('')
+      }
+      // A line with no delimiter is passed through whole, as `cut` does.
+      if (!line.includes(delimiter)) return line
       const parts = line.split(delimiter)
-      return parts.filter((_part, index) => fields.has(index + 1)).join(delimiter)
+      return parts.filter((_part, index) => wanted(index + 1)).join(delimiter)
     })
     if (out.length > 0) context.stdout.write(`${out.join('\n')}\n`)
     return 0
@@ -930,15 +1091,23 @@ export const coreutils: Record<string, CommandImpl> = {
     }
     const source = expand(from)
     const target = expand(to)
+    // `-c` complements the set: the operation applies to every character *not*
+    // listed, which is how `tr -cd '0-9'` keeps only digits.
+    const complement = flags.has('c') || flags.has('C')
+    const inSet = (char: string): boolean => complement ? !source.includes(char) : source.includes(char)
     let text = context.stdin
     if (flags.has('d')) {
-      text = [...text].filter(char => !source.includes(char)).join('')
+      text = [...text].filter(char => !inSet(char)).join('')
     } else if (flags.has('s')) {
-      text = text.replace(new RegExp(`([${source.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')}])\\1+`, 'g'), '$1')
+      const escaped = source.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')
+      text = text.replace(new RegExp(`([${complement ? '^' : ''}${escaped}])\\1+`, 'g'), '$1')
     } else {
       text = [...text].map((char) => {
+        if (!inSet(char)) return char
+        // Complemented translation maps everything outside the set to the last
+        // character of the target, which is what `tr` specifies.
+        if (complement) return target[target.length - 1] ?? char
         const index = source.indexOf(char)
-        if (index === -1) return char
         return target[Math.min(index, target.length - 1)] ?? char
       }).join('')
     }
@@ -971,9 +1140,23 @@ export const coreutils: Record<string, CommandImpl> = {
   },
 
   nl(context) {
-    const lines = context.stdin.split('\n')
+    const { operands } = parseArgs(context.argv)
+    // Reading only stdin meant `nl file` printed nothing at all.
+    const text = operands.length > 0
+      ? operands.map(operand => readInput(context, operand)).join('')
+      : context.stdin
+    const lines = text.split('\n')
     if (lines[lines.length - 1] === '') lines.pop()
-    lines.forEach((line, index) => { context.stdout.write(`${String(index + 1).padStart(6)}\t${line}\n`) })
+    // Blank lines are not numbered and not counted, which is `nl`'s default.
+    let number = 0
+    for (const line of lines) {
+      if (line === '') {
+        context.stdout.write('\n')
+        continue
+      }
+      number++
+      context.stdout.write(`${String(number).padStart(6)}\t${line}\n`)
+    }
     return 0
   },
 
