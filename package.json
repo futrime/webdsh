@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Pure-static, browser-only build of DeepSeek Harness (dsh web) — no server, deployable to GitHub Pages",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=22"
   },

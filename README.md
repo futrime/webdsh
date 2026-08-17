@@ -117,5 +117,6 @@ The build uses relative asset URLs, so it works at a project path
 
 ## License
 
-MIT, matching upstream. The `@deepseek-ai/*` packages this build composes are
-published by DeepSeek AI under their own terms.
+Apache License 2.0 — see [LICENSE](LICENSE). The `@deepseek-ai/*` packages this
+build composes are published by DeepSeek AI under their own terms (MIT); nothing
+here modifies or redistributes their source.
