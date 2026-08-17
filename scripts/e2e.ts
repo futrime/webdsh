@@ -172,6 +172,74 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    name: 'node-runtime',
+    async run(page) {
+      await waitForShell(page)
+      const cases: [string, RegExp][] = [
+        ['node -v', /^v\d+\./m],
+        [`node -e 'console.log("from node", 1 + 1)'`, /from node 2/],
+        [`node -p '[1,2,3].map(x => x * 2)'`, /\[ 2, 4, 6 \]/],
+        // Two evals in a row: each is its own program, not the first one's
+        // cached module.
+        [`node -e 'console.log("first")' && node -e 'console.log("second")'`, /first[\s\S]*second/],
+        // A script's relative paths resolve against the shell's directory, so
+        // what it writes is what the next command sees.
+        [
+          'mkdir -p /workspace/nr && cd /workspace/nr'
+          + ` && printf 'const fs=require("fs");fs.writeFileSync("out.txt","node-wrote-this")' > s.cjs`
+          + ' && node s.cjs && cat out.txt',
+          /node-wrote-this/,
+        ],
+        // ESM, not just CommonJS.
+        [
+          `cd /workspace/nr && printf 'import {basename} from "node:path";console.log("esm:", basename("/a/b.txt"))' > m.mjs && node m.mjs`,
+          /esm: b\.txt/,
+        ],
+      ]
+      for (const [script, matcher] of cases) {
+        const result = await shell(page, script)
+        expect(matcher.test(result.stdout), `\`${script}\` → ${result.stdout}${result.stderr}`)
+      }
+    },
+  },
+  {
+    name: 'npm-registry',
+    async run(page) {
+      await waitForShell(page)
+      // The whole point of `npm` here is that it reaches the real registry and
+      // what it installs is then requirable — a stub that printed a plausible
+      // message would pass any weaker check.
+      const installed = await shell(page, 'mkdir -p /workspace/npmtest && cd /workspace/npmtest && npm init --force && npm install is-odd')
+      expect(/added \d+ package/.test(installed.stdout), `npm install did not report progress: ${installed.stdout}${installed.stderr}`)
+      const used = await shell(page, `cd /workspace/npmtest && node -e 'console.log("odd:", require("is-odd")(3))'`)
+      expect(/odd: true/.test(used.stdout), `an installed package was not requirable: ${used.stdout}${used.stderr}`)
+      const listed = await shell(page, 'cd /workspace/npmtest && npm ls')
+      expect(/is-odd@/.test(listed.stdout), `npm ls did not report the install: ${listed.stdout}${listed.stderr}`)
+    },
+  },
+  {
+    name: 'terminal',
+    async run(page) {
+      await waitForShell(page)
+      // The terminal is the user's only way into the filesystem the agent
+      // edits, and its value depends on being a session rather than a series of
+      // unrelated commands.
+      await page.getByRole('button', { name: /Terminal/ }).click()
+      const input = page.locator('.dsht-input')
+      await input.waitFor({ state: 'visible', timeout: 10_000 })
+      for (const line of ['mkdir -p /workspace/term && cd /workspace/term', 'export MARKER=kept', 'echo "$MARKER" > m.txt', 'cat m.txt']) {
+        await input.fill(line)
+        await input.press('Enter')
+        await page.waitForTimeout(600)
+      }
+      const screen = await page.locator('.dsht-screen').innerText()
+      expect(/kept/.test(screen), `the terminal did not keep its session state:\n${screen}`)
+      // And it is the *same* filesystem, not a copy of one.
+      const seen = await shell(page, 'cat /workspace/term/m.txt')
+      expect(/kept/.test(seen.stdout), `the terminal wrote somewhere the agent cannot see: ${seen.stdout}${seen.stderr}`)
+    },
+  },
+  {
     name: 'persistence',
     async run(page) {
       await waitForShell(page)

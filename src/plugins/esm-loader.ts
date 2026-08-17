@@ -132,14 +132,37 @@ function resolveFile(base: string): string | undefined {
 }
 
 /** Read a package manifest from the plugin module root. */
-function readManifest(packageName: string): Record<string, unknown> | undefined {
-  const path = `${PLUGIN_MODULES_ROOT}/${packageName}/package.json`
+function readManifest(packageName: string, root = PLUGIN_MODULES_ROOT): Record<string, unknown> | undefined {
+  const path = `${root}/${packageName}/package.json`
   if (!volume.exists(path)) return undefined
   try {
     return JSON.parse(toText(volume.readFile(path))) as Record<string, unknown>
   } catch {
     return undefined
   }
+}
+
+/**
+ * The `node_modules` directories to search for a bare specifier, nearest first.
+ *
+ * Node walks up from the importing file; so does this, which is what makes a
+ * package installed into a user's own workspace resolvable from a script in it.
+ * The plugin root is always last, so the harness's own packages stay reachable
+ * from anywhere.
+ * @param fromDir - the importing module's directory, if there is one.
+ * @returns the search roots in resolution order.
+ */
+function moduleRoots(fromDir?: string): string[] {
+  const roots: string[] = []
+  if (fromDir !== undefined) {
+    const segments = resolvePath(fromDir).split('/').filter(Boolean)
+    for (let i = segments.length; i >= 0; i--) {
+      const base = `/${segments.slice(0, i).join('/')}`.replace(/\/+$/, '') || ''
+      roots.push(`${base}/node_modules`)
+    }
+  }
+  roots.push(PLUGIN_MODULES_ROOT)
+  return [...new Set(roots)]
 }
 
 /** Pick the runtime entry for a subpath from a package manifest. */
@@ -175,15 +198,21 @@ function entryFor(manifest: Record<string, unknown>, subpath: string): string | 
  * @param specifier - the bare specifier (`pkg` or `pkg/sub`).
  * @returns the module path, or undefined when the package is not installed.
  */
-export function resolveInstalled(specifier: string): string | undefined {
+export function resolveInstalled(specifier: string, fromDir?: string): string | undefined {
   const parts = specifier.split('/')
   const packageName = specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
   const subpath = specifier.slice(packageName.length).replace(/^\//, '')
-  const manifest = readManifest(packageName)
-  if (manifest === undefined) return undefined
-  const entry = entryFor(manifest, subpath)
-  if (entry === undefined) return undefined
-  return resolveFile(resolvePath(`${PLUGIN_MODULES_ROOT}/${packageName}`, entry))
+  for (const root of moduleRoots(fromDir)) {
+    const manifest = readManifest(packageName, root)
+    if (manifest === undefined) continue
+    const entry = entryFor(manifest, subpath)
+    // A package present but exposing no such subpath is still the package that
+    // owns the name; falling through to an outer root would resolve the wrong
+    // copy, so the miss is reported here.
+    if (entry === undefined) return undefined
+    return resolveFile(resolvePath(`${root}/${packageName}`, entry))
+  }
+  return undefined
 }
 
 /**
@@ -327,7 +356,7 @@ export async function importVfsModule(path: string): Promise<unknown> {
       if (isSharedModule(specifier)) {
         return { blob: await bridgeFor(specifier), exports: await hostModuleSystem.import(specifier) }
       }
-      const installed = resolveInstalled(specifier)
+      const installed = resolveInstalled(specifier, directory)
       if (installed !== undefined) {
         const cyclic = loading.has(installed) ? cjsRecords.get(installed) : undefined
         if (cyclic !== undefined) return { blob: blobUrls.get(installed) ?? '', exports: cyclic.exports }

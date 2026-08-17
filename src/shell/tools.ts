@@ -300,13 +300,6 @@ export const tools: Record<string, CommandImpl> = {
     }
   },
 
-  /** Node's package manager cannot run here; say so precisely rather than hanging. */
-  npm(context) {
-    context.stderr.write('npm: not available in the browser host.\n')
-    context.stderr.write('Install DSH plugins from Settings → Plugins, which fetches packages from the npm registry over HTTPS.\n')
-    return 127
-  },
-
   python3(context) {
     context.stderr.write('python3: not available in the browser host. Use `node` for scripting.\n')
     return 127
@@ -314,8 +307,6 @@ export const tools: Record<string, CommandImpl> = {
 }
 
 tools.python = tools.python3
-tools.pnpm = tools.npm
-tools.yarn = tools.npm
 tools.shasum = tools.sha1sum
 
 /** `tar` is accepted with the common flag spellings and delegates to the zip container. */

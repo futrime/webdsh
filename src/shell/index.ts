@@ -12,6 +12,8 @@ import { coreutils, parseArgs } from './coreutils.ts'
 import { tools } from './tools.ts'
 import { gitCommand } from './git.ts'
 import { ripgrep } from './ripgrep.ts'
+import { nodeCommand } from './node-runtime.ts'
+import { npmCommand } from './npm.ts'
 import { BufferSink, CallbackSink, type CommandImpl, type ShellState, type Sink } from './runtime.ts'
 import { volume } from '../vfs/volume.ts'
 import { env as processEnv, process as processShim } from '../node/process.ts'
@@ -55,6 +57,12 @@ function buildRegistry(): Map<string, CommandImpl> {
   // The absolute spelling is what the search tool spawns, since that is the
   // path `@vscode/ripgrep` reports; the bare name is what a person types.
   for (const name of ['rg', '/usr/bin/rg']) registry.set(name, ripgrep)
+  // A real JavaScript runtime and package manager, not stubs: this host already
+  // implements the Node platform and can reach the registry, so the parts of
+  // both that do not need a native toolchain genuinely work.
+  for (const name of ['node', '/usr/bin/node', '/usr/local/bin/node']) registry.set(name, nodeCommand)
+  for (const name of ['npm', 'pnpm', 'yarn']) registry.set(name, npmCommand)
+  registry.set('npx', async context => npmCommand({ ...context, argv: ['npm', 'exec', ...context.argv.slice(1)] }))
   return registry
 }
 
