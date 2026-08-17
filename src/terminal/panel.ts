@@ -26,6 +26,7 @@ const STYLE = `
  font:13px/1 system-ui,-apple-system,"Segoe UI",sans-serif;padding:.55rem .9rem;border-radius:999px;cursor:pointer;
  border:1px solid rgba(127,127,127,.35);background:rgba(255,255,255,.92);color:#1a1a1a;backdrop-filter:blur(8px);
  box-shadow:0 2px 12px rgba(0,0,0,.12)}
+.dsht-toggle-plugins{right:9.5rem}
 .dsht-toggle:hover{background:#fff}
 @media (prefers-color-scheme:dark){.dsht-toggle{background:rgba(32,32,32,.92);color:#ededed}
  .dsht-toggle:hover{background:#2a2a2a}}
@@ -61,6 +62,8 @@ export interface TerminalPanel {
   toggle(): void
   /** Run a command as if typed, for automation. */
   submit(line: string): Promise<void>
+  /** The toolbar button that opens the plugin inventory. */
+  readonly pluginsButton: HTMLButtonElement
   /** Everything currently on screen. */
   text(): string
 }
@@ -87,6 +90,12 @@ export function installTerminal(): TerminalPanel {
   toggle.textContent = '⌘ Terminal'
   toggle.title = 'Open a shell in this workspace (Ctrl+`)'
 
+  const pluginsButton = document.createElement('button')
+  pluginsButton.className = 'dsht-toggle dsht-toggle-plugins'
+  pluginsButton.type = 'button'
+  pluginsButton.textContent = '⧉ Plugins'
+  pluginsButton.title = 'Install and manage plugins'
+
   const panel = document.createElement('div')
   panel.className = 'dsht-panel'
   panel.innerHTML = `
@@ -103,7 +112,7 @@ export function installTerminal(): TerminalPanel {
       <input class="dsht-input" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Terminal input">
     </form>`
 
-  document.body.append(toggle, panel)
+  document.body.append(toggle, pluginsButton, panel)
 
   const screen = panel.querySelector('.dsht-screen') as HTMLPreElement
   const form = panel.querySelector('.dsht-form') as HTMLFormElement
@@ -199,6 +208,7 @@ export function installTerminal(): TerminalPanel {
     close() { panel.removeAttribute('data-open') },
     toggle() { if (panel.hasAttribute('data-open')) api.close(); else api.open() },
     async submit(line: string) { await run(line) },
+    pluginsButton,
     text: () => screen.textContent ?? '',
   }
 

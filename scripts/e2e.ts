@@ -267,6 +267,42 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    name: 'plugin-sources',
+    async run(page) {
+      await waitForShell(page)
+      // `dsh plugin add` on a machine inherits everything npm accepts. The
+      // registry case is covered elsewhere; these are the two that a browser
+      // makes people ask for — something published at a URL, and something the
+      // user made here.
+      const remote = await page.evaluate(async () => {
+        try {
+          const entry = await globalThis.dsh.plugins.install(
+            'https://registry.npmjs.org/dsh-working-activity/-/dsh-working-activity-0.2.4.tgz',
+          )
+          return `${entry.name}@${entry.version}`
+        } catch (error) { return `failed: ${String(error)}` }
+      })
+      expect(/^dsh-working-activity@0\.2\.4$/.test(remote), `installing from a tarball URL failed: ${remote}`)
+
+      const local = await page.evaluate(async () => {
+        await globalThis.dsh.shell(
+          'mkdir -p /tmp/myplug'
+          + ` && printf '{"name":"my-local-plugin","version":"9.9.9"}' > /tmp/myplug/package.json`
+          + ` && printf 'export default {}' > /tmp/myplug/index.js`,
+        )
+        try {
+          const entry = await globalThis.dsh.plugins.install('/tmp/myplug')
+          return `${entry.name}@${entry.version}`
+        } catch (error) { return `failed: ${String(error)}` }
+      })
+      expect(/^my-local-plugin@9\.9\.9$/.test(local), `installing from a local directory failed: ${local}`)
+
+      await page.getByRole('button', { name: /Plugins/ }).click()
+      const listed = await page.locator('.dshp-list').innerText()
+      expect(/my-local-plugin/.test(listed), `the inventory does not show what was installed:\n${listed}`)
+    },
+  },
+  {
     name: 'terminal',
     async run(page) {
       await waitForShell(page)

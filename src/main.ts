@@ -15,6 +15,7 @@ import { bootHost } from './host/boot.ts'
 import { disableAllPlugins, installedPluginNames, installPluginManager } from './plugins/manager.ts'
 import { installWindowApi } from './api.ts'
 import { installTerminal } from './terminal/panel.ts'
+import { installPluginsPanel } from './terminal/plugins-panel.ts'
 import { SHELL_ENTRY, SHELL_STYLES } from './generated/shell-assets.ts'
 import { renderBootFailure, renderBootProgress, type BootRecovery } from './boot-screen.ts'
 import { attachPersistence } from './vfs/persist.ts'
@@ -88,7 +89,7 @@ async function main(): Promise<void> {
     }
     ;(globalThis as { __DSH_BOOT__?: unknown }).__DSH_BOOT__ = clientModules.graph()
 
-    installPluginManager(ctx)
+    const plugins = installPluginManager(ctx)
 
     // Plugin-registered HTTP routes (a plugin serving its own assets) are only
     // reachable through a Service Worker, because an `<img src>` never passes
@@ -106,7 +107,11 @@ async function main(): Promise<void> {
     // A user here has no machine to open a shell on: the filesystem the agent
     // works in exists only in this page. The terminal is that missing window,
     // and it runs the agent's own shell rather than an imitation of it.
-    installTerminal()
+    const terminal = installTerminal()
+    // The shipped Settings page lists plugins but cannot add one, because on a
+    // machine that is a shell command and there is no shell outside this page.
+    const pluginsPanel = installPluginsPanel(plugins)
+    terminal.pluginsButton.addEventListener('click', () => { pluginsPanel.toggle() })
   } catch (error) {
     console.error('[dsh-web] boot failed:', error)
     renderBootFailure(error, await bootRecoveries())

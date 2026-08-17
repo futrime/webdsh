@@ -18,6 +18,7 @@ import { extractTarball } from './tar.ts'
 import { importInstalledPackage, PLUGIN_MODULES_ROOT, resolveInstalled } from './esm-loader.ts'
 import { isSharedModule, registerRuntimeLoader } from '../host/module-system.ts'
 import { volume } from '../vfs/volume.ts'
+import { resolveSource, type PackageSource } from './sources.ts'
 import { toBytes, toText } from '../node/binary.ts'
 import { dirname } from '../vfs/path.ts'
 import { DEPLOY_ROOT } from '../host/seed.ts'
@@ -136,6 +137,23 @@ function unpack(name: string, tarball: Uint8Array): Record<string, unknown> {
   }
   if (manifest === undefined) throw new Error(`install: ${name} tarball has no package.json`)
   return manifest
+}
+
+/**
+ * Write a resolved source into the plugin module root.
+ * @param source - the resolved package.
+ * @returns the package's manifest.
+ */
+function writeSource(source: PackageSource): Record<string, unknown> {
+  const root = `${PLUGIN_MODULES_ROOT}/${source.name}`
+  volume.rm(root, { recursive: true, force: true })
+  volume.mkdirp(root)
+  for (const file of source.files) {
+    const path = `${root}/${file.name}`
+    volume.mkdirp(dirname(path))
+    volume.writeFile(path, file.data, file.mode)
+  }
+  return source.manifest
 }
 
 /** The manager surface, exposed on `window.dsh.plugins`. */
@@ -280,15 +298,17 @@ export function installPluginManager(ctx: Context): PluginManager {
     list: () => readRoster().plugins,
 
     async install(spec: string): Promise<InstalledPlugin> {
-      const { name, range } = parseSpec(spec)
+      // Any source npm would accept: a registry name, a tarball URL, a GitHub
+      // reference, or a path in this filesystem — which is how a plugin the
+      // user wrote in the terminal, or dropped in from their machine, installs.
+      const source = await resolveSource(spec, registry)
+      const name = source.name
       if (PROVIDED_PREFIXES.some(prefix => name.startsWith(prefix))) {
         throw new Error(`install: ${name} is part of this build and cannot be installed separately`)
       }
-      const resolved = await resolveVersion(name, range, registry)
-      const response = await fetch(resolved.tarball)
-      if (!response.ok) throw new Error(`install: tarball ${resolved.tarball} → ${String(response.status)}`)
-      const manifest = unpack(name, new Uint8Array(await response.arrayBuffer()))
+      const manifest = writeSource(source)
       await installDependencies(manifest, registry, new Set([name]), 0)
+      const resolved = { version: source.version }
 
       const dsh = manifest.dsh as { bundle?: { patch?: string }, client?: { platform?: string } } | undefined
       const entry: InstalledPlugin = {
