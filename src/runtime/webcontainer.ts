@@ -184,7 +184,10 @@ export function runtimeAvailable(): boolean {
  */
 export async function execute(script: string, options: RunOptions = {}): Promise<RunResult> {
   const runtime = await bootRuntime()
-  const env: Record<string, string> = {}
+  // The container's own `HOME` is `/home`, one level above the working
+  // directory, so `~` and `cd` with no argument would land somewhere the user
+  // has nothing. The page reports the same home, and the two must agree.
+  const env: Record<string, string> = { HOME: WORKDIR }
   for (const [name, value] of Object.entries(options.env ?? {})) {
     if (value !== undefined) env[name] = value
   }
@@ -197,7 +200,7 @@ export async function execute(script: string, options: RunOptions = {}): Promise
   await runtime.fs.writeFile(scriptFile, script)
   const process = await runtime.spawn('node', [SHELL_PATH, `${WORKDIR}/${scriptFile}`], {
     cwd: toContainerPath(options.cwd ?? WORKSPACE),
-    ...(Object.keys(env).length === 0 ? {} : { env }),
+    env,
   })
 
   let output = ''
@@ -234,8 +237,12 @@ export async function execute(script: string, options: RunOptions = {}): Promise
  */
 export async function startShell(size: { cols: number, rows: number }): Promise<WebContainerProcess> {
   const runtime = await bootRuntime()
-  return runtime.spawn('jsh', [], {
+  // The same shell the agent's tool calls run in, so what a person types and
+  // what the model runs behave identically — and a person is not left with the
+  // container's `jsh`, whose command substitution silently expands to nothing.
+  return runtime.spawn('node', [SHELL_PATH, '-i'], {
     cwd: toContainerPath(WORKSPACE),
+    env: { HOME: WORKDIR },
     terminal: { cols: size.cols, rows: size.rows },
   })
 }

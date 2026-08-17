@@ -16,7 +16,9 @@
  * the runtime's filesystem, with `node`, `npm`, and `python3` still being the
  * real ones.
  *
- * Invoked as `node sh.cjs <file> [args…]` or `node sh.cjs -c <script> [args…]`.
+ * Invoked as `node sh.cjs <file> [args…]`, `node sh.cjs -c <script> [args…]`,
+ * or `node sh.cjs -i` for the terminal's interactive session — the same shell
+ * either way, so what a person types and what the agent runs behave alike.
  * The harness uses the file form: the runtime's `spawn` unescapes backslashes
  * in argv — `printf "a\nb"` arrives as `printf "anb"` — so a script that
  * travels as an argument is silently corrupted, while a file's bytes are its
@@ -25,6 +27,7 @@
 
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { createInterface } from 'node:readline'
 import { Interpreter } from './interpreter.ts'
 import { coreutils } from './coreutils.ts'
 import { busybox } from './busybox.ts'
@@ -147,6 +150,81 @@ function readStdin(): string {
   }
 }
 
+/**
+ * Render the prompt, abbreviating the home directory the way a shell does.
+ * @param cwd - the session's working directory.
+ */
+function prompt(cwd: string): string {
+  const home = process.env.HOME ?? ''
+  const shown = home !== '' && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd
+  return `\u001b[36m${shown}\u001b[0m \u001b[32m❯\u001b[0m `
+}
+
+/**
+ * Run the interactive session the terminal attaches to.
+ *
+ * `readline` is what makes this a terminal rather than a pipe: history, arrow
+ * keys, and line editing come from it, and the container gives the process a
+ * real TTY to drive them. State is kept across lines, so `cd` and `export` mean
+ * what they mean in any other shell.
+ * @param interpreter - the interpreter to run each line through.
+ * @param state - its state, whose `cwd` the prompt follows.
+ * @returns the status the session ended with.
+ */
+async function interactive(interpreter: Interpreter, state: ShellState): Promise<number> {
+  const stdout = passthrough(process.stdout)
+  const stderr = passthrough(process.stderr)
+  const lines = createInterface({ input: process.stdin, output: process.stdout, terminal: true, historySize: 1000 })
+
+  let status = 0
+  let running: AbortController | undefined
+  // Ctrl+C abandons the line being typed, or the command in flight — never the
+  // session, which is what closing the terminal is for.
+  lines.on('SIGINT', () => {
+    if (running !== undefined) {
+      running.abort()
+      return
+    }
+    process.stdout.write('^C\n')
+    lines.setPrompt(prompt(state.cwd))
+    lines.prompt()
+  })
+
+  lines.setPrompt(prompt(state.cwd))
+  lines.prompt()
+  for await (const line of lines) {
+    if (line.trim() === '') {
+      lines.setPrompt(prompt(state.cwd))
+      lines.prompt()
+      continue
+    }
+    const controller = new AbortController()
+    running = controller
+    state.signal = controller.signal
+    try {
+      status = await interpreter.run(line, { stdin: '', stdout, stderr })
+    } catch (error) {
+      if (error instanceof ExitSignal) {
+        lines.close()
+        return error.status
+      }
+      if (controller.signal.aborted) {
+        stderr.write('^C\n')
+        status = 130
+      } else {
+        stderr.write(`sh: ${error instanceof Error ? error.message : String(error)}\n`)
+        status = 1
+      }
+    } finally {
+      running = undefined
+      state.signal = undefined
+    }
+    lines.setPrompt(prompt(state.cwd))
+    lines.prompt()
+  }
+  return status
+}
+
 /** Read the script to run, from a file or from `-c`. */
 function readScript(argv: string[]): { script: string, args: string[] } | undefined {
   const dashC = argv.indexOf('-c')
@@ -162,9 +240,11 @@ function readScript(argv: string[]): { script: string, args: string[] } | undefi
 
 /** Run the script named on the command line. */
 async function main(): Promise<number> {
-  const requested = readScript(process.argv.slice(2))
+  const argv = process.argv.slice(2)
+  const wantsInteractive = argv.includes('-i')
+  const requested = wantsInteractive ? { script: '', args: [] } : readScript(argv)
   if (requested === undefined) {
-    process.stderr.write('sh: usage: sh <file> [args…] | sh -c <script> [args…]\n')
+    process.stderr.write('sh: usage: sh <file> [args…] | sh -c <script> [args…] | sh -i\n')
     return 2
   }
   const { script, args } = requested
@@ -192,6 +272,8 @@ async function main(): Promise<number> {
   for (const name of ['sh', 'bash', 'zsh', 'dash', 'jsh', '/bin/sh', '/bin/bash', '/bin/jsh']) {
     state.commands.set(name, nested)
   }
+
+  if (wantsInteractive) return interactive(interpreter, state)
 
   const stdout = passthrough(process.stdout)
   const stderr = passthrough(process.stderr)

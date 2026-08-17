@@ -149,6 +149,26 @@ const WORKLOADS: Workload[] = [
     script: 'echo persisted-by-runtime > marker.txt && cat marker.txt',
     expect: /persisted-by-runtime/,
   },
+  // The terminal runs the same shell the agent's tool calls do. These are the
+  // constructs the container's own `jsh` cannot do — and command substitution,
+  // which it does silently and wrongly, expanding to nothing while succeeding.
+  {
+    name: 'command substitution',
+    script: 'echo "sub=$(echo inner)"',
+    expect: /sub=inner/,
+  },
+  {
+    name: 'control flow',
+    script: 'for i in 1 2; do if [ $i -lt 2 ]; then echo "low-$i"; else echo "high-$i"; fi; done',
+    expect: /low-1[\s\S]*high-2/,
+  },
+  {
+    name: 'a session keeps its state',
+    // Restores the directory it moved out of: the session really does keep its
+    // state, so a workload that wanders leaves every later one somewhere else.
+    script: 'mkdir -p sess && cd sess && export MARK=kept && echo "$MARK in $(basename $(pwd))"; cd ..',
+    expect: /kept in sess/,
+  },
 ]
 
 
