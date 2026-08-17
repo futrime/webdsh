@@ -145,6 +145,12 @@ const scenarios: Scenario[] = [
         ['echo zipped > z.txt && gzip z.txt && zcat z.txt.gz', /zipped/],
         ['printf hello | base64 | base64 -d', /hello/],
         ['file arc.tgz', /gzip compressed/],
+        // git: the container ships none, so this is the only one there is.
+        ['git --version', /git version/],
+        ['rm -rf r && mkdir r && cd r && git init 2>&1', /Initialized empty Git repository/],
+        ['cd r && echo tracked > f.txt && git add f.txt && git status', /new file:\s+f\.txt/],
+        ['cd r && git commit -m first 2>&1 && git log 2>&1', /commit [0-9a-f]{7}/],
+        ['cd r && echo more >> f.txt && git diff 2>&1', /\+more/],
         // The real toolchain, not an emulation of it.
         ['python3 -c "print(6*7)"', /42/],
         ['npm --version', /\d+\.\d+\.\d+/],

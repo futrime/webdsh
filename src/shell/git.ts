@@ -56,10 +56,42 @@ function author(context: CommandContext): { name: string, email: string } {
   }
 }
 
+/**
+ * Long options that take a separate word, as `--depth 1` rather than
+ * `--depth=1`.
+ *
+ * The generic parser cannot know which ones those are, so it reads the value as
+ * a positional — and `git clone --depth 1 URL dir` then tries to clone the
+ * repository named "1".
+ */
+const VALUED_LONG_OPTIONS = new Set(['depth', 'branch', 'message', 'author', 'date', 'origin'])
+
+/** Rewrite `--name value` into `--name=value` so the parser keeps them together. */
+function joinLongValues(argv: readonly string[]): string[] {
+  const out: string[] = []
+  for (let index = 0; index < argv.length; index++) {
+    const token = argv[index]
+    const name = /^--([a-z-]+)$/.exec(token)?.[1]
+    if (name !== undefined && VALUED_LONG_OPTIONS.has(name) && argv[index + 1] !== undefined) {
+      out.push(`${token}=${argv[++index]}`)
+      continue
+    }
+    out.push(token)
+  }
+  return out
+}
+
 /** The `git` command. */
 export const gitCommand: CommandImpl = async (context) => {
-  const { operands, flags, values } = parseArgs(context.argv, 'mCb')
+  const { operands, flags, values, long } = parseArgs(joinLongValues(context.argv), 'mCb')
   const subcommand = operands[0]
+  // `git --version` is how nearly everything checks whether git is here at all,
+  // so answering it is what makes the rest of this command discoverable. The
+  // version named is the engine's, because that is what determines behaviour.
+  if (long.has('version') || subcommand === 'version') {
+    context.stdout.write('git version 2.45.0 (isomorphic-git)\n')
+    return 0
+  }
   if (subcommand === undefined || flags.has('h') || subcommand === 'help') {
     context.stdout.write('usage: git <command> [<args>]\n\nAvailable: init add commit status log diff branch checkout clone fetch push pull remote rev-parse show config ls-files\n')
     return subcommand === undefined ? 1 : 0
@@ -324,7 +356,7 @@ export const gitCommand: CommandImpl = async (context) => {
         await git.clone({
           fs, http: http as never, dir: target, url,
           singleBranch: true,
-          depth: values.has('depth') ? Number(values.get('depth')) : 1,
+          depth: long.has('depth') ? Number(long.get('depth')) : 1,
           ...(corsProxy(context) === undefined ? {} : { corsProxy: corsProxy(context)! }),
         })
         return 0
@@ -351,9 +383,15 @@ export const gitCommand: CommandImpl = async (context) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     context.stderr.write(`fatal: ${message}\n`)
-    if (/fetch|network|CORS|Failed to fetch/i.test(message) && corsProxy(context) === undefined) {
-      context.stderr.write('hint: remote git over HTTP needs an origin that allows cross-origin reads.\n')
-      context.stderr.write('hint: set GIT_CORS_PROXY=https://cors.isomorphic-git.org to route through a proxy.\n')
+    // A remote refusing a browser looks like a plain HTTP status, not like a
+    // network error: GitHub answers a cross-origin git request with 401 rather
+    // than with a CORS rejection, so matching only on the word "CORS" left the
+    // one explanation that helps unsaid.
+    if (/fetch|network|CORS|Failed to fetch|HTTP Error/i.test(message) && corsProxy(context) === undefined) {
+      context.stderr.write('hint: git-over-HTTP needs a remote that allows cross-origin reads, and no git host does.\n')
+      context.stderr.write('hint: set GIT_CORS_PROXY to a proxy you trust to route through it — for example\n')
+      context.stderr.write('hint:   export GIT_CORS_PROXY=https://cors.isomorphic-git.org\n')
+      context.stderr.write('hint: that sends the repository URL, and any credentials, to whoever runs it.\n')
     }
     return 128
   }

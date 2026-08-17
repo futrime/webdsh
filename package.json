@@ -9,13 +9,14 @@
     "node": ">=22"
   },
   "scripts": {
-    "assemble": "npm run build:plugins && tsx scripts/assemble.ts",
+    "assemble": "npm run build:plugins && npm run build:shell && tsx scripts/assemble.ts",
     "dev": "npm run assemble && vite",
     "build": "npm run assemble && vite build",
     "preview": "vite preview --port 4173",
     "test": "tsx scripts/e2e.ts",
     "test:runtime": "tsx scripts/runtime-e2e.ts",
-    "build:plugins": "node scripts/build-plugins.mjs"
+    "build:plugins": "node scripts/build-plugins.mjs",
+    "build:shell": "node scripts/build-container-shell.mjs"
   },
   "dependencies": {
     "@bokuweb/zstd-wasm": "^0.0.27",
