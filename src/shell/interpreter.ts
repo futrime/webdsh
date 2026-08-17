@@ -633,7 +633,7 @@ export class Interpreter {
   absolute(path: string): string {
     if (isAbsolute(path)) return path
     if (path === '~' || path.startsWith('~/')) {
-      const home = this.state.vars.get('HOME') ?? '/home/dsh'
+      const home = this.state.vars.get('HOME') ?? '/home'
       return path === '~' ? home : `${home}/${path.slice(2)}`
     }
     return resolvePath(this.state.cwd, path)

@@ -22,7 +22,7 @@ import { resolveSource, type PackageSource } from './sources.ts'
 import { toBytes, toText } from '../node/binary.ts'
 import { dirname } from '../vfs/path.ts'
 import { DEPLOY_ROOT } from '../host/seed.ts'
-import { setPluginManager } from '../host/plugin-command.ts'
+import { setPluginManager } from '../../packages/dsh-web-plugins/src/index.ts'
 
 /** Where the installed-plugin roster lives. */
 const ROSTER_PATH = `${DEPLOY_ROOT}/plugins/installed.json`

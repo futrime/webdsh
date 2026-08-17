@@ -65,9 +65,6 @@
     - id: sandbox-browser
       name: 'browser:sandbox'
 
-    # `/plugin` — the browser's counterpart to the `dsh plugin` CLI verb.
-    - id: plugin-command
-      name: 'browser:plugin-command'
 
 # ── rows kept, with browser-appropriate values ──────────────────────────────
 
@@ -82,22 +79,14 @@
       - path: /opt/dsh/config/agent-presets
         trust: system
 
-# Session logs are stored uncompressed. The JSONL backend's default is
-# Zstandard through `node:zlib`, which has no browser implementation — and
-# plaintext is the better trade here anyway: the virtual filesystem is already
-# in memory, and an uncompressed log is one a person can read, grep, and export
-# straight out of the browser.
-- id: session-persistence-jsonl
-  config:
-    root: !!js dshHomePath('sessions')
-    compression: none
-
 # ── rows whose backing capability does not exist in a page ──────────────────
 
-# Client-plugin hot reload needs a rebuild watcher writing new bundles to disk.
-# A static deployment has neither, and its node half binds an HTTP event route.
-- id: client-hmr
-  disabled: true
+# Client-plugin hot reload stays mounted, as `dsh web` mounts it. Its node half
+# registers `/plugins/events` on the in-page server and is idle until a rebuild
+# watcher rewrites a bundle — which a static deployment has none of, so the row
+# costs an open event stream that never emits. Disabling it would be a
+# divergence bought for nothing.
+
 
 # `session-telemetry-otel` is deliberately NOT disabled here. Its shipped mode
 # is DISABLED, so it exports nothing unless a deployment opts in — and leaving

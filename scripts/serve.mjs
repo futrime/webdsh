@@ -35,8 +35,21 @@ const TYPES = {
 createServer((req, res) => {
   const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
   let file = join(root, normalize(pathname).replace(/^(\.\.[/\\])+/, ''))
-  // Single-page fallback, matching a static host configured for SPA routing.
-  if (!existsSync(file) || statSync(file).isDirectory()) file = join(root, 'index.html')
+  // Single-page fallback, but only for a navigation. GitHub Pages answers an
+  // unknown path with 404, and the app depends on that: a plugin registers HTTP
+  // routes on the in-page server, and the service worker only offers a request
+  // to the page once the network has declined it. Falling back to index.html
+  // for every path would shadow every one of those routes — which is exactly
+  // how `/plugins/events` came to be answered with HTML.
+  const wantsDocument = (req.headers.accept ?? '').includes('text/html')
+  if (!existsSync(file) || statSync(file).isDirectory()) {
+    if (!wantsDocument) {
+      res.writeHead(404, { 'cross-origin-embedder-policy': 'require-corp', 'cross-origin-opener-policy': 'same-origin' })
+      res.end('not found')
+      return
+    }
+    file = join(root, 'index.html')
+  }
   if (!existsSync(file)) {
     res.writeHead(404)
     res.end('not found')

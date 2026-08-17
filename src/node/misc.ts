@@ -11,6 +11,7 @@ import { Buffer, toBytes, toText } from './binary.ts'
 import { resolve as resolvePath, isAbsolute } from '../vfs/path.ts'
 import { deflateSync, gunzipSync, gzipSync, inflateSync } from 'fflate'
 import { AsyncLocalStorage, AsyncResource } from './async-context.ts'
+import { zstdCompress, zstdCompressSync, zstdDecompress, zstdDecompressSync } from './zstd.ts'
 
 // ---- node:url --------------------------------------------------------------
 
@@ -639,20 +640,10 @@ export const zlibModule = {
   // Zstd has no pure-JS implementation in this build. Callers reach it only
   // through optional content-encoding negotiation, so a loud throw is right:
   // silently returning the compressed bytes would corrupt the payload.
-  zstdCompressSync: (): never => { throw new Error('zlib: zstd is unavailable in the browser host') },
-  zstdDecompressSync: (): never => { throw new Error('zlib: zstd is unavailable in the browser host') },
-  // Node's callback form is `(data, options?, callback)`; accept both arities so
-  // a caller gets the documented error instead of a TypeError on the wrong slot.
-  zstdCompress: (...args: unknown[]): void => {
-    const callback = args[args.length - 1]
-    if (typeof callback !== 'function') return
-    queueMicrotask(() => { (callback as (error: Error) => void)(new Error('zlib: zstd is unavailable in the browser host')) })
-  },
-  zstdDecompress: (...args: unknown[]): void => {
-    const callback = args[args.length - 1]
-    if (typeof callback !== 'function') return
-    queueMicrotask(() => { (callback as (error: Error) => void)(new Error('zlib: zstd is unavailable in the browser host')) })
-  },
+  zstdCompressSync,
+  zstdDecompressSync,
+  zstdCompress,
+  zstdDecompress,
   createZstdCompress: (): never => { throw new Error('zlib: zstd is unavailable in the browser host') },
   createZstdDecompress: (): never => { throw new Error('zlib: zstd is unavailable in the browser host') },
   createGzip: (): never => { throw new Error('zlib: streaming gzip is unavailable in the browser host') },

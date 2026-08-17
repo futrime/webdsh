@@ -21,6 +21,27 @@ import { Buffer, toText } from './binary.ts'
 import { process as processShim, setProcessTable } from './process.ts'
 import { volume } from '../vfs/volume.ts'
 
+/**
+ * Render a thrown value for a command's stderr.
+ *
+ * `String(value)` on a plain object yields `[object Object]`, which tells the
+ * model — and whoever is reading the transcript — nothing at all. Anything that
+ * is not an Error is more useful serialised.
+ * @param error - whatever was thrown.
+ * @returns a line worth printing.
+ */
+function describe(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'object' && error !== null) {
+    try {
+      return JSON.stringify(error)
+    } catch {
+      return Object.prototype.toString.call(error)
+    }
+  }
+  return String(error)
+}
+
 /** Live pid → child, so `process.kill(pid, 0)` can answer truthfully. */
 const livePids = new Map<number, ChildProcessShim>()
 let nextPid = 1000
@@ -101,7 +122,7 @@ export class ChildProcessShim extends StreamEmitter {
         if (result.stderr !== '') this.stderr?.push(result.stderr)
         this.settle(result.status, null)
       } catch (error) {
-        this.stderr?.push(`${error instanceof Error ? error.message : String(error)}\n`)
+        this.stderr?.push(`${describe(error)}\n`)
         this.settle(2, null)
       }
       return
@@ -149,7 +170,7 @@ export class ChildProcessShim extends StreamEmitter {
       })
       this.settle(result.status, null)
     } catch (error) {
-      this.stderr?.push(`${error instanceof Error ? error.message : String(error)}\n`)
+      this.stderr?.push(`${describe(error)}\n`)
       this.settle(1, null)
     }
   }

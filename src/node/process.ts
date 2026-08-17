@@ -12,7 +12,12 @@ import { Buffer } from './binary.ts'
 
 /** Environment variables. Seeded at boot from persisted settings. */
 export const env: Record<string, string | undefined> = {
-  HOME: '/home/dsh',
+  // The home the workspace sits inside. It is `/home` rather than `/home/dsh`
+  // because the runtime's working directory — the workspace — is `/home/
+  // workspace`, and the directory picker opens at home: a home that did not
+  // contain the workspace would offer everything except the one directory the
+  // user wants.
+  HOME: '/home',
   // The workspace the runtime opens on. It is the container's own working
   // directory, and the host has to agree: a session's cwd comes from here, and
   // a tool searching a path the runtime cannot resolve finds nothing at all

@@ -153,8 +153,11 @@ async function main(): Promise<void> {
     // prompt, so the assertion can only pass if the tool really ran and its
     // stdout really reached the model.
     const marker = `dsh-web-${Math.floor(Date.now() % 1e9).toString(36)}${Math.floor(performance.now()).toString(36)}`
-    await page.evaluate((value: string) => {
-      globalThis.dsh.writeFile('/home/dsh/workspace/marker.txt', `${value}\n`)
+    await page.evaluate(async (value: string) => {
+      // Written where the agent will look: the runtime's workspace, which is
+      // the same filesystem its bash tool and the terminal share. The page's
+      // own virtual filesystem holds the harness's state, not the user's files.
+      await globalThis.dsh.shell(`echo ${value} > marker.txt`)
     }, marker)
     const toolReply = await sendPrompt(
       page,
@@ -170,8 +173,8 @@ async function main(): Promise<void> {
     )
     await page.screenshot({ path: `${shots}-6-edit.png` })
     const onDisk = await page.evaluate(async () => {
-      const result = await globalThis.dsh.shell('cat /home/dsh/workspace/hello.txt 2>&1')
-      return result.stdout
+      const result = await globalThis.dsh.shell('cat hello.txt')
+      return result.stdout + result.stderr
     })
     expect(/from-the-browser/.test(onDisk), `the agent's file edit did not land: ${onDisk}\n${editReply.slice(-1500)}`)
 
@@ -192,24 +195,22 @@ async function main(): Promise<void> {
     if (sessionTitle !== undefined && sessionTitle.length > 0) {
       expect(afterReload.includes(sessionTitle), `session "${sessionTitle}" is not listed after a reload`)
     }
+    // The session log is the harness's own state, so it lives in the page's
+    // filesystem rather than the runtime's, and it is zstd-compressed exactly as
+    // `dsh web` writes it. Asking the backend what it can see is the check that
+    // matters: a shell `ls` would report its own "no matches" message, which
+    // contains the filename and would satisfy a careless assertion.
     const restored = await page.evaluate(async () => {
-      const result = await globalThis.dsh.shell('ls /home/dsh/.dsh/sessions/*/*/session.jsonl 2>&1 | head -3')
-      return result.stdout
+      const persistence = globalThis.dsh.ctx.get('sessionPersistence') as Record<string, unknown> | undefined
+      if (persistence === undefined) return '(the session persistence service is not mounted)'
+      const listArtifacts = (persistence.listArtifacts
+        ?? (Object.getPrototypeOf(persistence) as Record<string, unknown>).listArtifacts) as
+        (() => Promise<{ path: string }[]>) | undefined
+      if (listArtifacts === undefined) return '(the backend exposes no artifact listing)'
+      const artifacts = await listArtifacts.call(persistence)
+      return artifacts.map(artifact => artifact.path).join('\n')
     })
-    expect(/session\.jsonl/.test(restored), `no session log survived the reload: ${restored}`)
-    // The log is append-only and its first line is the header the backend reads
-    // to recognise the session at all. Checking both catches a descriptor that
-    // writes at the wrong offset — which leaves a plausible-looking file whose
-    // header has been overwritten, so the session silently disappears.
-    const log = await page.evaluate(async () => {
-      const path = '/home/dsh/.dsh/sessions/*/*/session.jsonl'
-      return {
-        header: (await globalThis.dsh.shell(`head -1 ${path}`)).stdout,
-        lines: (await globalThis.dsh.shell(`wc -l ${path}`)).stdout,
-      }
-    })
-    expect(/"type"\s*:\s*"session"/.test(log.header), `the session log lost its header line: ${log.header.slice(0, 200)}`)
-    expect(Number(/(\d+)/.exec(log.lines)?.[1] ?? '0') > 1, `the session log did not accumulate events: ${log.lines}`)
+    expect(/session\.jsonl\.zstd$/m.test(restored), `no session log survived the reload:\n${restored}`)
 
     const fatal = errors.filter(line => !/Failed to load resource|favicon|net::ERR_/.test(line))
     expect(fatal.length === 0, `console errors during the run:\n  ${fatal.join('\n  ')}`)

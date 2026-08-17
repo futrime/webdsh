@@ -8,7 +8,7 @@ import { env } from './process.ts'
 export const EOL = '\n'
 
 /** The synthetic home directory the VFS seeds. */
-export const homedir = (): string => env.HOME ?? '/home/dsh'
+export const homedir = (): string => env.HOME ?? '/home'
 export const tmpdir = (): string => env.TMPDIR ?? '/tmp'
 export const platform = (): NodeJS.Platform => 'linux'
 export const type = (): string => 'Linux'

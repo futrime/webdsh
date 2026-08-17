@@ -82,7 +82,7 @@ export function absWritable(context: CommandContext, path: string): string {
 /** Resolve an operand against the shell's cwd, expanding `~`. */
 export function abs(context: CommandContext, path: string): string {
   if (path.startsWith('~')) {
-    const home = context.shell.vars.get('HOME') ?? '/home/dsh'
+    const home = context.shell.vars.get('HOME') ?? '/home'
     return path === '~' ? home : resolvePath(home, path.slice(2))
   }
   return isAbsolute(path) ? path : resolvePath(context.shell.cwd, path)

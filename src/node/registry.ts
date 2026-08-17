@@ -29,6 +29,7 @@ import { netModule } from './net.ts'
 import { eventsModule } from './events-impl.ts'
 import { Blob as BlobRef, File as FileRef } from './blob-refs.ts'
 import { installTimerHandles } from './timer-handles.ts'
+import { initZstd } from './zstd.ts'
 
 /** `node:buffer` module face. */
 const bufferModule = {
@@ -119,6 +120,10 @@ export function resolveBuiltin(specifier: string): unknown {
  * `global`, and `setImmediate`. Called once, before any dsh module evaluates.
  */
 export function installNodeGlobals(): void {
+  // The zstd codec is a wasm module with an asynchronous load, and the session
+  // log's synchronous decompress cannot wait for it — so it starts here, long
+  // before a session exists.
+  void initZstd()
   // Before anything schedules a timer: dsh calls `.unref()` on what
   // `setTimeout` returns, which is an object in Node and a number here.
   installTimerHandles()

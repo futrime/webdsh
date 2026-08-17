@@ -278,7 +278,114 @@ export const lchown = async (): Promise<void> => {}
 export const utimes = async (path: unknown, atime: number | Date, mtime: number | Date): Promise<void> => { core.utimes(toPath(path), atime, mtime) }
 export const truncate = async (path: unknown, length?: number): Promise<void> => { core.truncate(toPath(path), length) }
 export const mkdtemp = async (prefix: unknown): Promise<string> => core.mkdtemp(toPath(prefix))
-export const open = async (path: unknown, flags?: string | number, mode?: number): Promise<FileHandle> => new FileHandle(core.open(toPath(path), flags, mode))
+/**
+ * A `FileHandle` over a file the runtime owns.
+ *
+ * `dsh-fs-local` reads through `open(path, 'r')` and writes through
+ * `open(temp, 'wx')` followed by `writeFile` and a rename — so a handle that
+ * resolved against the page's filesystem would put the agent's edits somewhere
+ * the runtime, the terminal, and the next tool call cannot see. The whole file
+ * is held in memory for the handle's lifetime, which is what the callers here
+ * do anyway.
+ */
+class RuntimeFileHandle {
+  private contents: Uint8Array<ArrayBufferLike>
+  private position = 0
+
+  constructor(private readonly path: string, contents: Uint8Array<ArrayBufferLike>, private readonly exclusive: boolean) {
+    this.contents = contents
+  }
+
+  async read(
+    buffer?: Uint8Array | { buffer?: Uint8Array, offset?: number, length?: number, position?: number | null },
+    offset?: number,
+    length?: number,
+    position?: number | null,
+  ): Promise<{ bytesRead: number, buffer: Uint8Array }> {
+    const options = buffer instanceof Uint8Array || buffer === undefined
+      ? { target: buffer ?? new Uint8Array(16384), offset: offset ?? 0, length, position }
+      : {
+        target: buffer.buffer ?? new Uint8Array(16384),
+        offset: buffer.offset ?? 0,
+        length: buffer.length,
+        position: buffer.position ?? null,
+      }
+    const target = options.target
+    const from = options.position ?? this.position
+    const slice = this.contents.subarray(from, from + (options.length ?? target.length))
+    target.set(slice, options.offset)
+    if (options.position === null || options.position === undefined) this.position = from + slice.length
+    return { bytesRead: slice.length, buffer: target }
+  }
+
+  async write(data: BinaryLike): Promise<{ bytesWritten: number, buffer: BinaryLike }> {
+    const bytes = toBytes(data, 'utf8')
+    const next = new Uint8Array(Math.max(this.contents.length, this.position + bytes.length))
+    next.set(this.contents, 0)
+    next.set(bytes, this.position)
+    this.contents = next
+    this.position += bytes.length
+    await runtimeWriteFile(this.path, this.contents)
+    return { bytesWritten: bytes.length, buffer: data }
+  }
+
+  async writeFile(data: BinaryLike, options?: unknown): Promise<void> {
+    const bytes = toBytes(data, readOptions(options).encoding ?? 'utf8')
+    // An `'a'` handle appends and every other form writes at the position, as
+    // Node's handle overload does — it neither truncates nor seeks.
+    const next = new Uint8Array(Math.max(this.contents.length, this.position + bytes.length))
+    next.set(this.contents, 0)
+    next.set(bytes, this.position)
+    this.contents = next
+    this.position += bytes.length
+    await runtimeWriteFile(this.path, this.contents)
+  }
+
+  async readFile(options?: unknown): Promise<Buffer | string> {
+    const encoding = readOptions(options).encoding
+    return encoding === undefined || encoding === null ? asBuffer(this.contents) : toText(this.contents, encoding)
+  }
+
+  async stat(): Promise<Stats> {
+    const entry = await runtimeStat(this.path)
+    return statsFromRuntime(entry ?? { kind: 'file', size: this.contents.length, mode: 0o644, mtimeMs: Date.now() }, false) as Stats
+  }
+
+  async truncate(length = 0): Promise<void> {
+    this.contents = this.contents.subarray(0, length)
+    await runtimeWriteFile(this.path, this.contents)
+  }
+
+  async chmod(): Promise<void> {}
+  async sync(): Promise<void> {}
+  async datasync(): Promise<void> {}
+  async close(): Promise<void> {
+    if (this.exclusive) await runtimeWriteFile(this.path, this.contents)
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> { await this.close() }
+}
+
+export const open = async (path: unknown, flags?: string | number, mode?: number): Promise<FileHandle> => {
+  const target = toPath(path)
+  if (routedToRuntime(target)) {
+    const text = typeof flags === 'string' ? flags : 'r'
+    const creating = text.startsWith('w') || text.startsWith('a') || text.includes('x')
+    let contents: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
+    if (!text.startsWith('w')) {
+      try {
+        contents = await runtimeReadFile(target)
+        if (text.includes('x')) throw Object.assign(new Error(`EEXIST: file already exists, open '${target}'`), { code: 'EEXIST', path: target })
+      } catch (error) {
+        if ((error as { code?: string }).code === 'EEXIST') throw error
+        if (!creating) throw missing(target, 'open')
+      }
+    }
+    if (creating) await runtimeWriteFile(target, contents)
+    return new RuntimeFileHandle(target, contents, creating) as unknown as FileHandle
+  }
+  return new FileHandle(core.open(target, flags, mode))
+}
 export const opendir = async (path: unknown): Promise<Dir> => {
   const absolute = toPath(path)
   return new Dir(absolute, core.readdir(absolute, { withFileTypes: true }) as Dirent[])

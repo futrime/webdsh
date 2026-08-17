@@ -98,7 +98,7 @@ export async function resolveSource(spec: string, registry = DEFAULT_REGISTRY): 
   const trimmed = spec.trim()
 
   if (trimmed.startsWith('file:') || trimmed.startsWith('/') || trimmed.startsWith('./') || trimmed.startsWith('~/')) {
-    const path = trimmed.startsWith('file:') ? new URL(trimmed).pathname : trimmed.replace(/^~/, '/home/dsh')
+    const path = trimmed.startsWith('file:') ? new URL(trimmed).pathname : trimmed.replace(/^~/, '/home')
     if (path.endsWith('.tgz') || path.endsWith('.tar.gz')) {
       return fromTarball(volume.readFile(path).slice(), path)
     }

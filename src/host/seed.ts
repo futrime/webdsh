@@ -35,23 +35,20 @@ export const SHIPPED_BUNDLES = ['browser', ...Object.keys(SHIPPED_PLUGIN_PATCHES
 export const DEPLOY_ROOT = '/opt/dsh'
 
 /**
- * The starter workspace. It lives under the home directory because that is
- * where the directory picker opens, so a first-time visitor sees a workspace
- * they can select without navigating anywhere.
- */
-/**
  * Where the user's files live.
  *
  * This is the runtime's own working directory, not a path invented for it: the
  * container roots every path at that directory, so a workspace anywhere else
- * ends up nested inside it and its snapshot cannot be addressed.
+ * ends up nested inside it and its snapshot cannot be addressed. It sits
+ * directly under the home the picker opens at, so a first-time visitor sees it
+ * without navigating anywhere.
  */
 export const WORKSPACE_ROOT = '/home/workspace'
 
 /** Directories a POSIX-shaped world is expected to have. */
 const SKELETON = [
   '/bin', '/usr/bin', '/usr/local/bin', '/etc', '/tmp', '/var', '/var/log',
-  '/home/dsh', WORKSPACE_ROOT, '/opt', DEPLOY_ROOT,
+  '/home', WORKSPACE_ROOT, '/opt', DEPLOY_ROOT,
 ]
 
 
@@ -96,7 +93,7 @@ function writeSkeleton(): void {
     )
     if (!volume.exists(`/usr/bin/${name}`)) volume.symlink(`/bin/${name}`, `/usr/bin/${name}`)
   }
-  const home = env.HOME ?? '/home/dsh'
+  const home = env.HOME ?? '/home'
   volume.mkdirp(`${home}/.dsh`)
   if (!volume.exists(`${WORKSPACE_ROOT}/README.md`)) {
     volume.writeFile(`${WORKSPACE_ROOT}/README.md`, toBytes(WORKSPACE_README))
@@ -110,17 +107,18 @@ This is a virtual filesystem that lives in your browser. Files you and the agent
 create here persist across reloads (they are stored in IndexedDB for this
 origin) and are private to this browser — nothing is uploaded anywhere.
 
+The agent and the terminal share this directory: a file either of them creates,
+the other sees immediately.
+
 Things that work here:
 
 - reading, writing, searching, and editing files
-- an in-browser POSIX shell: pipes, redirects, globs, control flow, and the
-  usual coreutils (ls, cat, grep, sed, find, sort, head, tail, wc, ...)
-- \`git\` — init, add, commit, log, diff, branch, checkout, and clone over HTTP
-- \`curl\` / \`wget\` against any origin that allows cross-origin reads
+- Node and npm — install a package from the registry and import it
+- a shell for running them, and the common file commands
 
 Things that do not:
 
-- native toolchains (compilers, python, a system package manager)
+- native toolchains (a compiler, python, a system package manager)
 - listening on a port, or reaching a host that refuses cross-origin reads
 `
 
