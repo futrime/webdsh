@@ -410,11 +410,15 @@ asyncHooksModule.default = asyncHooksModule
 
 // ---- node:timers + node:timers/promises ------------------------------------
 
+// Every entry delegates to the *current* global rather than binding one at
+// module scope: the realm's timer functions are replaced during boot to return
+// Node-shaped handles, and `node:timers` has to hand back the same thing the
+// global does or `.unref()` works in one spelling and not the other.
 export const timersModule = {
-  setTimeout: globalThis.setTimeout.bind(globalThis),
-  clearTimeout: globalThis.clearTimeout.bind(globalThis),
-  setInterval: globalThis.setInterval.bind(globalThis),
-  clearInterval: globalThis.clearInterval.bind(globalThis),
+  setTimeout: ((...args: Parameters<typeof globalThis.setTimeout>) => globalThis.setTimeout(...args)) as typeof globalThis.setTimeout,
+  clearTimeout: ((handle?: unknown) => { globalThis.clearTimeout(handle as number) }) as typeof globalThis.clearTimeout,
+  setInterval: ((...args: Parameters<typeof globalThis.setInterval>) => globalThis.setInterval(...args)) as typeof globalThis.setInterval,
+  clearInterval: ((handle?: unknown) => { globalThis.clearInterval(handle as number) }) as typeof globalThis.clearInterval,
   setImmediate: (callback: (...args: unknown[]) => void, ...args: unknown[]): ReturnType<typeof setTimeout> => setTimeout(() => { callback(...args) }, 0),
   clearImmediate: (handle: ReturnType<typeof setTimeout>): void => { clearTimeout(handle) },
   default: undefined as unknown,
@@ -533,26 +537,58 @@ export function setHostRequire(lookup: (specifier: string) => unknown): void {
  * `runInNewContext` evaluates against the page realm with the supplied names
  * bound as parameters.
  */
+/**
+ * Compile code so the context's members are in scope as bare identifiers.
+ *
+ * A real `vm` context is a fresh global object; the closest a page can get is
+ * binding each member as a parameter. The expression form is tried first
+ * because `vm` yields the completion value and the callers here evaluate an
+ * expression — an IIFE — and read what it returns; a statement body only
+ * parses the other way, so a parse failure selects it.
+ * @param code - the source to compile.
+ * @param names - the context members to bind.
+ * @returns the compiled body.
+ */
+function compileInContext(code: string, names: string[]): (...args: unknown[]) => unknown {
+  try {
+    // eslint-disable-next-line no-new-func
+    return new Function(...names, `"use strict";return (${code})`) as (...args: unknown[]) => unknown
+  } catch {
+    // eslint-disable-next-line no-new-func
+    return new Function(...names, `"use strict";${code}`) as (...args: unknown[]) => unknown
+  }
+}
+
 export const vmModule = {
   runInNewContext(code: string, sandbox: Record<string, unknown> = {}): unknown {
+    // Read the members now, not when the context was created: callers build an
+    // empty context and populate it afterwards.
     const names = Object.keys(sandbox)
-    // eslint-disable-next-line no-new-func
-    const body = new Function(...names, `"use strict";return (${code})`) as (...args: unknown[]) => unknown
-    return body(...names.map(name => sandbox[name]))
+    return compileInContext(code, names)(...names.map(name => sandbox[name]))
   },
   runInThisContext(code: string): unknown {
-    // eslint-disable-next-line no-new-func
-    return new Function(`"use strict";return (${code})`)()
+    return compileInContext(code, [])()
   },
   runInContext(code: string, sandbox: Record<string, unknown> = {}): unknown {
     return vmModule.runInNewContext(code, sandbox)
   },
+  /** The sandbox *is* the context here; `options` only names it for diagnostics. */
   createContext: (sandbox: Record<string, unknown> = {}): Record<string, unknown> => sandbox,
   Script: class {
     constructor(private readonly code: string) {}
+    /**
+     * Run against a context object.
+     *
+     * The `timeout` option cannot be honored — a page has no way to interrupt
+     * synchronous code — and callers that pass it also enforce their own
+     * asynchronous deadline, which does work here.
+     */
+    runInContext(sandbox: Record<string, unknown> = {}): unknown { return vmModule.runInNewContext(this.code, sandbox) }
     runInNewContext(sandbox: Record<string, unknown> = {}): unknown { return vmModule.runInNewContext(this.code, sandbox) }
     runInThisContext(): unknown { return vmModule.runInThisContext(this.code) }
   },
+  /** `vm.isContext`: every object handed back by {@link createContext} qualifies. */
+  isContext: (value: unknown): boolean => typeof value === 'object' && value !== null,
   default: undefined as unknown,
 }
 vmModule.default = vmModule

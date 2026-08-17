@@ -17,11 +17,12 @@ import Include from '@deepseek-ai/cordis-plugin-include'
 import { loadOptionalPatches, loadOverlayPatches, mountRootInclude } from '@deepseek-ai/dsh-app-boot'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
-import { hostModuleSystem, registerRuntimeModule } from './module-system.ts'
+import { hostModuleSystem, loadWorkerEntry, registerRuntimeModule } from './module-system.ts'
 import { BROWSER_PLUGINS } from './plugins.ts'
 import BrowserClientModules from './client-modules-browser.ts'
 import { seedFilesystem, DEPLOY_ROOT } from './seed.ts'
 import { installNodeGlobals } from '../node/registry.ts'
+import { setWorkerEntryLoader } from '../node/worker_threads.ts'
 import { installedPatchFiles, registerInstalledModules } from '../plugins/manager.ts'
 import { attachPersistence, type PersistenceHandle } from '../vfs/persist.ts'
 import { volume } from '../vfs/volume.ts'
@@ -55,6 +56,10 @@ const ROOT_CONFIG = `${DEPLOY_ROOT}/cordis.yml`
  */
 export async function bootHost(): Promise<HostBoot> {
   installNodeGlobals()
+  // Durable workflows and Code Mode both spawn a worker naming its entry by
+  // filesystem path; only the host module system can turn that back into
+  // something loadable, so it has to be handed over before either can run.
+  setWorkerEntryLoader(loadWorkerEntry)
   const persistence = await attachPersistence(volume)
   seedFilesystem()
 

@@ -28,6 +28,7 @@ import { sqliteModule } from './sqlite.ts'
 import { netModule } from './net.ts'
 import { eventsModule } from './events-impl.ts'
 import { Blob as BlobRef, File as FileRef } from './blob-refs.ts'
+import { installTimerHandles } from './timer-handles.ts'
 
 /** `node:buffer` module face. */
 const bufferModule = {
@@ -118,6 +119,9 @@ export function resolveBuiltin(specifier: string): unknown {
  * `global`, and `setImmediate`. Called once, before any dsh module evaluates.
  */
 export function installNodeGlobals(): void {
+  // Before anything schedules a timer: dsh calls `.unref()` on what
+  // `setTimeout` returns, which is an object in Node and a number here.
+  installTimerHandles()
   const realm = globalThis as Record<string, unknown>
   realm.process ??= processShim
   realm.Buffer ??= Buffer

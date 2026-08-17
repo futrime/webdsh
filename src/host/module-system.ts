@@ -13,6 +13,7 @@
 import { HOST_MODULES } from '../generated/host-modules.ts'
 import { resolveBuiltin } from '../node/registry.ts'
 import { setHostRequire } from '../node/misc.ts'
+import { scanModule } from '../plugins/module-scan.ts'
 
 /**
  * Libraries a plugin must share with the harness rather than install a second
@@ -145,4 +146,86 @@ export const hostModuleSystem = {
       + 'src/generated/host-modules.ts; anything else must be installed through the plugin manager first.',
     )
   },
+}
+
+/**
+ * Load a worker entry named by a filesystem URL.
+ *
+ * `worker_threads` callers name their entry the way Node needs — an absolute
+ * path to a built file, `…/node_modules/@deepseek-ai/<pkg>/lib/worker.cjs` —
+ * but nothing in a page can load a path. Every such entry is published as the
+ * package's `./worker` subpath, and that specifier is already in the host
+ * module map, so the path only has to be read back into the specifier it
+ * denotes.
+ * @param url - the `file://` URL (or bare path) of the worker entry.
+ * @returns the worker module's namespace, having run its body.
+ */
+export async function loadWorkerEntry(url: string): Promise<unknown> {
+  const path = url.startsWith('file:') ? new URL(url).pathname : url
+
+  // The bundler rewrote `new URL('./worker.cjs', import.meta.url)` to the asset
+  // it emitted, so the entry names a real static file — just not one inside a
+  // package any more. Fetching and evaluating it is what a worker would have
+  // done, minus the thread.
+  const asset = /\/assets\/[^/]+\.(?:cjs|mjs|js)$/.exec(path)
+  if (asset !== null) return evaluateWorkerAsset(path.replace(/^\//, ''))
+
+  const match = /node_modules\/(@[^/]+\/[^/]+|[^@/][^/]*)\/(?:lib\/)?([^/]+?)\.(?:cjs|mjs|js)$/.exec(path)
+  if (match === null) {
+    throw new Error(`worker entry "${url}" does not name a package file this build can resolve`)
+  }
+  const [, packageName, basename] = match
+  // `worker.cjs` is published as `./worker`; an entry that is the package's own
+  // main has no subpath.
+  const specifier = basename === 'index' ? packageName : `${packageName}/${basename}`
+  return hostModuleSystem.import(specifier)
+}
+
+/** Worker assets already fetched and evaluated, keyed by their asset path. */
+const workerAssets = new Map<string, Promise<unknown>>()
+
+/**
+ * Fetch a bundled CommonJS worker entry and run its body.
+ *
+ * `require` in CommonJS is synchronous while this host resolves modules
+ * asynchronously, so every specifier the source names is resolved up front and
+ * the evaluation then reads from that table. The entry runs to completion here,
+ * which is what a worker's first tick does.
+ * @param assetPath - the emitted asset's path, relative to the app's base.
+ * @returns the module's exports.
+ */
+async function evaluateWorkerAsset(assetPath: string): Promise<unknown> {
+  const cached = workerAssets.get(assetPath)
+  if (cached !== undefined) return cached
+
+  const run = (async (): Promise<unknown> => {
+    const href = new URL(assetPath, document.baseURI).href
+    const response = await fetch(href)
+    if (!response.ok) throw new Error(`worker entry ${assetPath} could not be fetched (${String(response.status)})`)
+    const source = await response.text()
+
+    const resolved = new Map<string, unknown>()
+    for (const site of scanModule(source).requires) {
+      if (resolved.has(site.value)) continue
+      resolved.set(site.value, await hostModuleSystem.import(site.value))
+    }
+
+    const module = { exports: {} as Record<string, unknown> }
+    const require = (specifier: string): unknown => {
+      const namespace = resolved.get(specifier)
+      if (namespace === undefined) throw new Error(`worker entry required "${specifier}", which was not resolvable`)
+      // A namespace whose only meaningful member is `default` is an ES module
+      // being consumed by CommonJS; hand over what `require` would have seen.
+      const record = namespace as Record<string, unknown>
+      return record.default !== undefined && record.__esModule !== true ? record.default : namespace
+    }
+    const factory = new Function('exports', 'require', 'module', '__filename', '__dirname', source) as (
+      exports: unknown, require: (specifier: string) => unknown, module: unknown, filename: string, dirname: string,
+    ) => void
+    factory(module.exports, require, module, `/${assetPath}`, `/${assetPath.replace(/\/[^/]*$/, '')}`)
+    return module.exports
+  })()
+
+  workerAssets.set(assetPath, run)
+  return run
 }
