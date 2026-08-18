@@ -174,45 +174,57 @@ const scenarios: Scenario[] = [
     },
   },
   {
-    name: 'jsh-plugin',
+    name: 'model-request',
     async run(page) {
       await waitForShell(page)
-      // The plugin REPLACES the shell tool. The model must be offered exactly
-      // one shell, it must be `jsh`, and — the part that actually went wrong —
-      // nothing anywhere in the assembled prompt may advertise a `bash` tool.
-      // A model told it has one will call it, and there is nothing to answer.
-      const composition = await page.evaluate(async () => {
-        const tools = globalThis.dsh.ctx.get('tools') as {
-          schemas(): { name: string }[]
-          get(name: string): { description?: string } | undefined
-        } | undefined
-        const prompt = globalThis.dsh.ctx.get('systemPrompt') as {
-          assemble(): Promise<unknown>
-        } | undefined
-        const runtime = (globalThis as { __DSH_WEB_RUNTIME__?: { shellMode(): string } }).__DSH_WEB_RUNTIME__
-        return {
-          names: (tools?.schemas() ?? []).map(tool => tool.name).sort(),
-          description: tools?.get('jsh')?.description ?? '',
-          assembly: JSON.stringify(await prompt?.assemble() ?? {}),
-          mode: runtime?.shellMode(),
+      // Drive one real turn with a dummy key: the provider rejects it, but the
+      // request is built and sent first, and that request IS the trajectory.
+      await page.evaluate(async () => {
+        try {
+          await globalThis.dsh.promptOnce('sk-not-a-real-key', 'List the files here.')
+        } catch {
+          // Expected — the key is a placeholder. The body was already captured.
         }
-      })
-      expect(composition.names.includes('jsh'), `the jsh tool is not registered: ${composition.names.join(', ')}`)
-      expect(!composition.names.includes('bash'), 'a bash tool is registered; the model must only see jsh')
-      expect(composition.mode === 'jsh', `commands do not run in jsh: mode is ${String(composition.mode)}`)
-      for (const claim of ['$(...)', 'for', 'heredocs', 'node -e', 'python3 -c']) {
-        expect(composition.description.includes(claim), `the tool description does not mention ${claim}`)
-      }
+      }).catch(() => undefined)
+      await page.waitForTimeout(4000)
 
-      // Saying "there is no bash tool" is the one way the words may appear;
-      // anything else that names one is a prompt telling the model to call
-      // something that does not exist. `web-terminal` used to do exactly that.
-      const remaining = composition.assembly.replace(/is no `?bash`? tool/gi, '')
-      const offenders = [...remaining.matchAll(/.{60}bash tool.{60}/gi)].map(match => match[0])
+      const bodies = await page.evaluate(() => (globalThis as { __SENT__?: string[] }).__SENT__ ?? [])
+      const request = bodies.map((body) => {
+        try {
+          return JSON.parse(body) as { tools?: { function?: { name?: string } }[] }
+        } catch {
+          return undefined
+        }
+      }).find(parsed => Array.isArray(parsed?.tools) && parsed.tools.length > 0)
+      expect(request !== undefined, `no model request was captured (${String(bodies.length)} bodies seen)`)
+
+      const names = (request?.tools ?? []).map(tool => tool.function?.name ?? '?').sort()
+      expect(names.includes('jsh'), `the model was not offered the jsh tool: ${names.join(', ')}`)
+      expect(
+        !names.includes('bash'),
+        `the model was offered a bash tool: ${names.join(', ')}`
+          + ' — check that every agent preset mounts browser:jsh, not @deepseek-ai/dsh-tool-bash',
+      )
+
+      // And nothing in the prompt may advertise one either. The only permitted
+      // mention is the sentence saying there is none.
+      const raw = bodies.find(body => body.includes('"tools"')) ?? ''
+      const offenders = [...raw.replace(/is no `?bash`? tool/gi, '').matchAll(/.{60}bash tool.{60}/gi)]
       expect(
         offenders.length === 0,
-        `the assembled prompt advertises a bash tool:\n    ${offenders.join('\n    ')}`,
+        `the request advertises a bash tool:\n    ${offenders.map(match => match[0]).join('\n    ')}`,
       )
+
+      // The description the model plans against, read off the wire rather than
+      // out of a registry.
+      const described = JSON.stringify((request?.tools ?? []).find(tool => tool.function?.name === 'jsh'))
+      for (const claim of ['$(...)', 'heredocs', 'node -e', 'python3 -c', 'there is no `bash` tool']) {
+        expect(described.includes(claim), `the jsh tool description does not mention ${claim}`)
+      }
+
+      const mode = await page.evaluate(() =>
+        (globalThis as { __DSH_WEB_RUNTIME__?: { shellMode(): string } }).__DSH_WEB_RUNTIME__?.shellMode())
+      expect(mode === 'jsh', `commands do not run in jsh: mode is ${String(mode)}`)
     },
   },
   {
@@ -487,6 +499,22 @@ async function main(): Promise<void> {
     if (only !== undefined && scenario.name !== only) continue
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
     const page = await context.newPage()
+    // Record every outbound request body before any app code runs. The
+    // `model-request` case reads it: what the model is offered is decided by
+    // the composition the *agent preset* mounts, and no registry this page
+    // exposes reports that faithfully — a `bash` tool survived three green
+    // suites because they all asked the registry instead of the wire.
+    await page.addInitScript(`
+      window.__SENT__ = []
+      const original = window.fetch
+      window.fetch = function (input, init) {
+        try {
+          const body = (init && init.body) || (input && input.body)
+          if (typeof body === 'string' && body.length > 200) window.__SENT__.push(body)
+        } catch (error) { /* recording must never break the request */ }
+        return original.apply(this, arguments)
+      }
+    `)
     const log: Logger = { errors: [], lines: [] }
     page.on('console', (message: ConsoleMessage) => {
       log.lines.push(`${message.type()}: ${message.text()}`)

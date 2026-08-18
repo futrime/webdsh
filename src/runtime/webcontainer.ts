@@ -63,13 +63,17 @@ export type ShellMode = 'harness' | 'jsh'
  * The shell commands run in.
  *
  * `harness` is the interpreter in `src/shell/`, written because `jsh` is not
- * one; `jsh` is the container's own shell, warts and all. The choice is a
- * policy rather than a fact about the page, so it is settable — the
- * `@dsh-web/jsh` plugin sets it, and pairs it with a tool description that
- * tells the model exactly what `jsh` can and cannot do. Running one shell while
- * describing the other is the failure mode both halves exist to prevent.
+ * one; `jsh` is the container's own shell, warts and all. This deployment runs
+ * `jsh` and tells the model exactly what `jsh` is — see `src/host/jsh-tool.ts`
+ * for the argument. Running one shell while describing the other is the failure
+ * mode the pair exists to prevent, so the default here and the tool description
+ * there have to move together.
+ *
+ * It stays settable because the other answer is still in the tree and still
+ * correct: `setShellMode('harness')` puts the bundled POSIX shell back for
+ * anyone who would rather have it.
  */
-let mode: ShellMode = 'harness'
+let mode: ShellMode = 'jsh'
 
 /** Which interpreter commands are currently handed to. */
 export function shellMode(): ShellMode {

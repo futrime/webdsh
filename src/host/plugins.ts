@@ -14,6 +14,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-shell-env'
 import { SandboxProvider, type ConfinedArgv, type SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import * as TypertLoaderBrowser from './typert-loader-browser.ts'
+import * as jshToolPlugin from './jsh-tool.ts'
 
 // ---- browser:web-startup ----------------------------------------------------
 
@@ -168,6 +169,10 @@ export const BROWSER_PLUGINS: Record<string, unknown> = {
   'browser:web-runtime': webRuntimePlugin,
   'browser:sandbox': { default: browserSandboxPlugin, name: 'browser-sandbox' },
   'browser:typert-loader': TypertLoaderBrowser,
+  // The shell tool. Mounted from the agent presets rather than from the
+  // overlay — `scripts/assemble.ts` rewrites their `tool-bash` row to name it —
+  // because that is where the tool it replaces is mounted.
+  'browser:jsh': jshToolPlugin,
 }
 
 /** Re-exported so `boot.ts` can register the client-module table under the same scheme. */

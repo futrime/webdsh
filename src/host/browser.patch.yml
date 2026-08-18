@@ -44,6 +44,18 @@
 - id: sandbox
   disabled: true
 
+# The model-facing bash tool, replaced by `packages/dsh-web-jsh`.
+#
+# This disable belongs to that plugin and is written here for one reason: a
+# `disabled: true` in a plugin's own bundle layer is applied after the row has
+# already mounted, and by then `dsh-tool-bash` has registered its tool — the
+# loader reports the row as disabled while the model is still offered `bash`.
+# Disabling it from the overlay happens early enough to stop the row running at
+# all. The two are a pair: remove `packages/dsh-web-jsh/` and this line goes
+# with it, or the session has no shell tool.
+- id: tool-bash
+  disabled: true
+
 - insert:
     - id: web-startup-browser
       name: 'browser:web-startup'

@@ -130,12 +130,10 @@ coreutils, awk, git — written against the page's own filesystem and checked
 against real bash by `scripts/shell-diff.mjs`, 305 constructs at last count. It
 is what runs when the runtime cannot start at all.
 
-`packages/dsh-web-jsh/` is the second, and it is what the shipped composition
-mounts: **run the shell the machine actually has, and describe it exactly.** The
-plugin disables `tool-bash` and registers a `jsh` tool in its place — one shell
-tool, not two — whose description is the measured capability matrix: which
-constructs fail silently, which fail loudly, which commands exist, and what to
-use instead.
+`src/host/jsh-tool.ts` is the second, and it is what this build ships: **run the
+shell the machine actually has, and describe it exactly.** The tool's
+description is the measured capability matrix — which constructs fail silently,
+which fail loudly, which commands exist, and what to use instead:
 
 ```
 This is the only shell tool in this session; there is no `bash` tool …
@@ -149,22 +147,27 @@ Available commands, and no others: alias cat cd chmod … node npm npx python3 �
 Do anything else in a language: `node -e '...'`, `python3 -c '...'`, `jq`.
 ```
 
-The model is offered exactly one shell tool and it is called `jsh`; the `bash`
-tool is gone. Getting that to actually hold took one more pass than expected:
-the roster was right, but `web-terminal`'s prompt section still told the model
-"the same runtime your Bash tool runs in" — so the model went looking for a tool
-nothing had registered. `scripts/e2e.ts` now greps the whole assembled prompt
-for anything advertising a bash tool, and the only permitted mention is the
-`jsh` tool saying there is not one.
-
 It swaps both halves together — the interpreter commands are handed to, and the
 description the model plans against — because swapping either one alone is how
-the confident wrong answer happens. Everything else about a command is
-unchanged: `ctx.shell` still resolves the timeout, still confines the command
-under the sandbox policy, still spills long output to a file, and still runs it
-in the background when asked.
+the confident wrong answer happens. Everything else is unchanged: `ctx.shell`
+still resolves the timeout, confines the command under the sandbox policy,
+spills long output to a file, and backgrounds it when asked.
 
-Removing the directory puts the harness shell back.
+**Where the swap happens is the whole trick, and it is worth writing down.**
+`tool-bash` appears in two different compositions. One is the host plane, which
+`src/host/browser.patch.yml` disables like any other row. The other is inside
+each agent preset's `agent.cordis.yml` — a separate composition that no host
+patch layer can see. Disabling only the first produces a build where the loader
+reports `tool-bash disabled=true` and every model request still carries a `bash`
+tool. So `scripts/assemble.ts` rewrites the preset row as it seeds it, and
+throws if no preset mounted one.
+
+That is also why `scripts/e2e.ts` asserts against a captured model request
+rather than the tool registry. Three suites went green over a build that was
+still sending `bash` to the model, because all three asked the registry —
+`ctx.tools.schemas()` with no scope reports the unscoped subset, and the shell
+tool is agent-scoped. The request is the only thing that cannot be wrong about
+what the model was offered.
 
 ## The plugins this repository ships
 
@@ -176,7 +179,6 @@ way an installed plugin is. Removing one is removing a directory.
   and `sidebar.footer.action` slots rather than drawn over it.
 - `dsh-web-plugins` — installing a plugin from the browser, in the Settings
   page the surface already owns and offers no way to add to.
-- `dsh-web-jsh` — the shell above.
 
 What the app owns is the capability, published as a bridge in
 `src/host/bridges.ts`: a plugin runs outside this app's bundle graph and cannot
@@ -193,7 +195,7 @@ dsh web composes 129 rows.
   disabled by this build (6) ── web-startup, web-runtime, modules,
                                 typert-loader, sandbox, tool-bash
   replaced (5)              ── a browser row for each of the first five
-  shipped as plugins (3)    ── web-terminal, web-plugin-install, web-jsh
+  shipped as plugins (2)    ── web-terminal, web-plugin-install
   reconfigured (1)          ── agent-presets
 117 of 129 rows compose exactly as `dsh web` composes them.
 ```
@@ -203,6 +205,8 @@ parsing a command line, binding a port and serving `dist/`, scanning plugin
 packages on disk, reading Typert artifacts from disk, and an OS process sandbox.
 The sixth, `tool-bash`, is not a capability gap but a truthfulness one, and
 [the section above](#the-shell-the-model-is-told-about) is the argument for it.
+It is also disabled a second time, in the agent presets, for the reason given
+there.
 
 Nothing in this repository is a copy of dsh. The packages come from npm at
 install time, `scripts/assemble.ts` derives the roster, the client bundles, and
@@ -273,8 +277,10 @@ npx tsx scripts/plugin-e2e.ts                           # community plugin compa
 
 `scripts/e2e.ts` asserts jsh's silent failures on purpose — that `$(…)` still
 expands to nothing and still exits 0. A day when one of those starts working is
-a day `packages/dsh-web-jsh` needs its description rewritten, and the suite says
-so in the failure message.
+a day `src/host/jsh-tool.ts` needs its description rewritten, and the suite says
+so in the failure message. It also captures a real model request (with a
+placeholder key, which the provider rejects only after the body is built) and
+asserts the model was offered `jsh` and no `bash`.
 
 Upgrading the harness is a dependency bump: change the `@deepseek-ai/*` versions
 in `package.json`, run `npm run assemble`, and rebuild. Nothing here is

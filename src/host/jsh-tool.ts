@@ -12,19 +12,22 @@
  * writes `n=$(ls | wc -l); echo $n`, reads `[exit code: 0]` and an empty line,
  * and concludes the directory is empty. Nothing errors. Nothing retries.
  *
- * There are two honest ways out, and dsh's plugin seam is what makes it a
- * choice rather than a fork: implement a shell that behaves as the model
+ * There are two honest ways out: implement a shell that behaves as the model
  * expects (which this repository does, in `src/shell/`), or run the shell the
  * machine actually has and describe it exactly. This is the second. It swaps
  * both halves together — the interpreter commands are handed to, and the tool
  * description the model plans against — because swapping either one alone is
  * how the confident wrong answer happens.
  *
- * It *replaces* the shipped bash tool rather than adding one beside it: the
- * `tool-bash` row is disabled and this one takes its place, so the model is
- * offered exactly one shell and that shell is `jsh`. Leaving a `bash` tool in
- * the roster — even one that ran jsh underneath — would be an invitation to
- * write bash, which is the habit this plugin exists to break.
+ * It *replaces* the shipped bash tool, and the replacement happens where that
+ * tool is actually mounted: the agent presets. `tool-bash` appears twice in
+ * this composition — once in the host plane, which `browser.patch.yml`
+ * disables, and once in each preset's `agent.cordis.yml`, which is a separate
+ * composition a host patch layer never sees. Disabling only the first is what
+ * a whole afternoon looked like: the loader reported `tool-bash disabled=true`
+ * while every request still carried a `bash` tool. `scripts/assemble.ts`
+ * rewrites the preset row to name this module instead, so the model is offered
+ * exactly one shell and it is `jsh`.
  *
  * Everything else about a command is unchanged: `ctx.shell` still resolves the
  * timeout, still confines the command under the sandbox policy, still spills
@@ -114,17 +117,6 @@ function jshDescription(background: boolean): string {
       ? 'Set `run_in_background: true` for long-running commands: the call returns a job id immediately; read its output with `job_output` and stop it with `job_kill`.'
       : 'Background execution is not available; long-running commands must finish within the timeout.',
   ].join('\n')
-}
-
-/** The runtime capability the page publishes, as much of it as this plugin uses. */
-interface RuntimeBridge {
-  shellMode(): string
-  setShellMode(mode: string): void
-}
-
-/** Read the bridge the page published. */
-function bridge(): RuntimeBridge | undefined {
-  return (globalThis as Record<string, unknown>).__DSH_WEB_RUNTIME__ as RuntimeBridge | undefined
 }
 
 /** One collected stream, with its truncation notice folded into the text. */
@@ -224,19 +216,6 @@ function resolveWorkdir(workdir: string | undefined, root: string | undefined): 
  * @param ctx - the plugin's context.
  */
 export function apply(ctx: Context): void {
-  const runtime = bridge()
-  // The switch and the description are set together and torn down together. A
-  // composition that loaded one without the other is the failure this plugin
-  // exists to prevent, so neither half is left standing alone — and an effect
-  // is how cordis says "and put it back when this row goes away".
-  ctx.effect(() => {
-    const previous = runtime?.shellMode()
-    runtime?.setShellMode('jsh')
-    return () => {
-      if (previous !== undefined) runtime?.setShellMode(previous)
-    }
-  })
-
   const shell = ctx.shell as unknown as {
     sandboxMode?: string
     resolve(request: Record<string, unknown>): Record<string, unknown>

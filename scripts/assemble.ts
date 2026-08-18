@@ -215,16 +215,52 @@ function emitSeed(): { files: [string, string][], specifiers: Set<string> } {
   // Agent presets shipped by the CLI package.
   const presets = join(scope, 'dsh', 'config', 'agent-presets')
   if (existsSync(presets)) {
-    for (const [path, contents] of collectTree(presets, `${DEPLOY_ROOT}/config/agent-presets`)) {
+    let replaced = 0
+    for (const [path, original] of collectTree(presets, `${DEPLOY_ROOT}/config/agent-presets`)) {
+      const contents = path.endsWith('.cordis.yml') ? replaceBashTool(path, original) : original
+      if (contents !== original) replaced++
       files.push([path, contents])
       // Only composition files carry plugin rows; `preset.yml` carries display metadata.
       if (path.endsWith('.cordis.yml')) for (const name of specifiersIn(contents)) specifiers.add(name)
     }
+    // Loud, because a preset that quietly kept `tool-bash` puts a shell tool in
+    // front of the model that this machine cannot honour.
+    if (replaced === 0) throw new Error('assemble: no agent preset mounted tool-bash; the shell replacement did not apply')
+    console.log(`[assemble] ${String(replaced)} agent preset(s) now mount the jsh shell tool`)
   } else {
     console.warn('[assemble] @deepseek-ai/dsh is not installed; no agent presets will ship')
   }
 
   return { files, specifiers }
+}
+
+/**
+ * The preset row that mounts the model's shell tool, and what to mount instead.
+ *
+ * `tool-bash` appears in two different compositions. The host plane's copy is
+ * disabled by `src/host/browser.patch.yml`; this is the other one, in each
+ * agent preset's `agent.cordis.yml` — a composition no host patch layer sees.
+ * Disabling only the first leaves the loader reporting `tool-bash
+ * disabled=true` while every model request still carries a `bash` tool, which
+ * is exactly what happened.
+ *
+ * So the row is rewritten here, at the point the preset is seeded. See
+ * `src/host/jsh-tool.ts` for why the shell tool has to be replaced rather than
+ * left alone.
+ */
+const BASH_ROW = /^(\s*)- id: tool-bash\n\s*name: '@deepseek-ai\/dsh-tool-bash'\n(?:\s*disabled:[^\n]*\n)?/m
+
+/**
+ * Swap a preset's bash tool for this deployment's jsh tool.
+ * @param path - the seeded path, for the error message.
+ * @param contents - the preset composition.
+ * @returns the same composition with the shell row replaced.
+ */
+function replaceBashTool(path: string, contents: string): string {
+  if (!BASH_ROW.test(contents)) return contents
+  return contents.replace(BASH_ROW, (_match, indent: string) =>
+    `${indent}# Replaced by scripts/assemble.ts: this machine's shell is jsh, not bash.\n`
+    + `${indent}- id: tool-jsh\n${indent}  name: 'browser:jsh'\n`)
 }
 
 /** Write a generated module with a do-not-edit banner. */
