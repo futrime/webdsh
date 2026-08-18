@@ -286,10 +286,12 @@ const scenarios: Scenario[] = [
       })
       expect(presets.length > 1, `expected the shipped presets, got ${JSON.stringify(presets)}`)
 
-      const silent: string[] = []
       for (const preset of presets) {
         const { names, tools } = await offeredTools(page, preset)
-        if (tools === undefined) { silent.push(preset); continue }
+        // A preset that never reaches the model is as unusable as one that
+        // offers the wrong shell, and it fails silently — `cordis` did, for as
+        // long as its skills directory hung the discovery that precedes a turn.
+        expect(tools !== undefined, `the ${preset} preset started no turn: no model request was sent`)
         // Code Mode presents its tools as an SDK rather than as wire tools, so a
         // preset may legitimately offer no shell tool by name; what it may not
         // do is offer one that is not this machine's.
@@ -299,11 +301,6 @@ const scenarios: Scenario[] = [
           `the ${preset} preset offers the model a ${foreign.join(', ')} tool this deployment has no interpreter for`
             + ' — scripts/assemble.ts must rewrite every shape a preset mounts a shell with',
         )
-      }
-      // Reported rather than asserted: a preset that never starts a turn is a
-      // real defect, and a different one from the tool this case is about.
-      if (silent.length > 0) {
-        process.stdout.write(`    note: no model request from ${silent.join(', ')} — that preset starts no turn here\n`)
       }
     },
   },

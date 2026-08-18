@@ -193,9 +193,177 @@ export class WritableStreamShim extends StreamEmitter {
   setDefaultEncoding(): this { return this }
 }
 
+/**
+ * `stream.Readable`, as a subclass author expects it.
+ *
+ * The stdio shim above is a push-only pipe: whoever owns the process pushes
+ * bytes in and a consumer reads them out. That is not what a library
+ * subclassing `Readable` gets on Node — it implements `_read()`, pushes objects
+ * rather than bytes, and signals the end with `push(null)`. Handing such a
+ * library the pipe silently breaks it in the worst way: `push(null)` looked
+ * like an empty chunk and was dropped, `_read()` was never called, and the
+ * stream simply never produced or ended.
+ *
+ * That is not hypothetical. `readdirp` is exactly such a subclass, `chokidar`
+ * walks a directory through it, and `skill-filesystem` awaits chokidar's
+ * `ready` before a session may start — so the `cordis` preset, the one preset
+ * whose skills directory exists, started a turn and then waited forever, with
+ * no error anywhere.
+ */
+class NodeReadable extends StreamEmitter {
+  readable = true
+  readableEnded = false
+  destroyed = false
+  readonly #objectMode: boolean
+  #encoding: string | undefined
+  readonly #queue: unknown[] = []
+  #ended = false
+  #flowing = false
+  #reading = false
+  readonly #waiters: (() => void)[] = []
+
+  constructor(options: { objectMode?: boolean, encoding?: string, read?: (this: NodeReadable, size: number) => void } = {}) {
+    super()
+    this.#objectMode = options.objectMode === true
+    this.#encoding = options.encoding
+    if (typeof options.read === 'function') this._read = options.read
+  }
+
+  /**
+   * Produce more data. Subclasses override this; the base does nothing, which
+   * is correct for a stream fed entirely by `push` from outside.
+   * @param _size - the consumer's advisory byte count.
+   */
+  _read(_size: number): void {}
+
+  /**
+   * Offer a value to consumers, or end the stream with `null`.
+   * @param chunk - the value, or `null`/`undefined` for end-of-stream.
+   * @returns whether more data is wanted right now.
+   */
+  push(chunk: unknown): boolean {
+    this.#reading = false
+    if (chunk === null || chunk === undefined) {
+      this.#ended = true
+      this.#drain()
+      return false
+    }
+    this.#queue.push(this.#objectMode ? chunk : toBytes(chunk as Uint8Array | string))
+    this.#drain()
+    return !this.#ended
+  }
+
+  /** Hand one queued value to a consumer, decoded when an encoding is set. */
+  #take(): unknown {
+    const value = this.#queue.shift()
+    if (this.#objectMode || value === undefined) return value
+    const bytes = value as Uint8Array
+    return this.#encoding === undefined ? Buffer.from(bytes) : Buffer.from(bytes).toString(this.#encoding as BufferEncoding)
+  }
+
+  /** Emit what is queued, end when the producer said so, and wake any waiters. */
+  #drain(): void {
+    if (this.listenerCount('data') > 0) this.#flowing = true
+    if (this.#flowing) {
+      while (this.#queue.length > 0) this.emit('data', this.#take())
+      if (this.#ended && !this.readableEnded) {
+        this.readableEnded = true
+        this.readable = false
+        this.emit('end')
+        this.emit('close')
+      }
+    }
+    while (this.#waiters.length > 0) this.#waiters.shift()!()
+    // A flowing consumer with nothing left is the moment Node asks for more.
+    if (this.#flowing && !this.#ended && this.#queue.length === 0) this.#pull()
+  }
+
+  /** Ask the subclass for more, once at a time, as Node's contract requires. */
+  #pull(): void {
+    if (this.#reading || this.#ended || this.destroyed) return
+    this.#reading = true
+    try {
+      this._read(this.#objectMode ? 16 : 65536)
+    } catch (error) {
+      this.#reading = false
+      this.destroy(error instanceof Error ? error : new Error(String(error)))
+    }
+  }
+
+  on(event: string, listener: (...args: unknown[]) => void): this {
+    super.on(event, listener)
+    if (event === 'data') queueMicrotask(() => { this.#drain() })
+    if (event === 'end' && this.readableEnded) queueMicrotask(() => { this.emit('end') })
+    return this
+  }
+
+  setEncoding(encoding: string): this {
+    this.#encoding = encoding
+    return this
+  }
+
+  resume(): this {
+    this.#flowing = true
+    this.#drain()
+    return this
+  }
+
+  pause(): this {
+    this.#flowing = false
+    return this
+  }
+
+  destroy(error?: Error): this {
+    if (this.destroyed) return this
+    this.destroyed = true
+    this.#ended = true
+    this.readable = false
+    if (error !== undefined) this.emit('error', error)
+    this.emit('close')
+    while (this.#waiters.length > 0) this.#waiters.shift()!()
+    return this
+  }
+
+  /** `stream.pipe(writable)`. */
+  pipe<T extends { write(chunk: unknown): unknown, end?: () => void }>(destination: T): T {
+    this.on('data', (chunk: unknown) => { destination.write(chunk) })
+    this.on('end', () => { destination.end?.() })
+    return destination
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<unknown> {
+    for (;;) {
+      while (this.#queue.length > 0) yield this.#take()
+      if (this.#ended || this.destroyed) return
+      // Each pull is one `_read()`; the producer wakes this loop by pushing.
+      this.#pull()
+      if (this.#queue.length > 0 || this.#ended || this.destroyed) continue
+      await new Promise<void>(resolve => { this.#waiters.push(resolve) })
+    }
+  }
+
+  /**
+   * `Readable.from`, for the callers that build a stream out of an iterable.
+   * @param source - the values to emit.
+   * @returns a stream over them.
+   */
+  static from(source: Iterable<unknown> | AsyncIterable<unknown>): NodeReadable {
+    const stream = new NodeReadable({ objectMode: true })
+    void (async () => {
+      try {
+        for await (const value of source as AsyncIterable<unknown>) stream.push(value)
+        stream.push(null)
+      } catch (error) {
+        stream.destroy(error instanceof Error ? error : new Error(String(error)))
+      }
+    })()
+    return stream
+  }
+}
+
 /** The `node:stream` module face. */
 export const streamModule = {
-  Readable: ReadableStreamShim,
+  Readable: NodeReadable,
   Writable: WritableStreamShim,
   Duplex: ReadableStreamShim,
   Transform: ReadableStreamShim,
