@@ -101,9 +101,28 @@ export function setShellMode(next: ShellMode): void {
  * @param runtime - the booted container.
  */
 async function installShell(runtime: WebContainer): Promise<void> {
+  await ensureStaging(runtime)
+  await runtime.fs.writeFile(`${PRIVATE_DIR}/sh.cjs`, CONTAINER_SHELL)
+}
+
+/**
+ * Put back the two directories every command depends on.
+ *
+ * They are created at boot and nothing here owns them afterwards: the container
+ * is a real machine and the agent has a shell on it, so `rm -rf ~/…` in the
+ * home directory, or a snapshot mounted over the tree, takes the staging
+ * directory with it. Without it `runtime.fs.writeFile` cannot place a script,
+ * and because the directory was only ever created once, every command for the
+ * rest of the page's life fails the same way — `ENOENT … open
+ * '/home/dsh/.dsh/run-7.sh'`, with no way back short of a reload.
+ *
+ * So it is asserted rather than assumed, at each of the two moments it can be
+ * gone: after the workspace is mounted, and after a write has just failed.
+ * @param runtime - the booted container.
+ */
+async function ensureStaging(runtime: WebContainer): Promise<void> {
   await runtime.fs.mkdir(PRIVATE_DIR, { recursive: true })
   await runtime.fs.mkdir(toContainerPath(WORKSPACE), { recursive: true })
-  await runtime.fs.writeFile(`${PRIVATE_DIR}/sh.cjs`, CONTAINER_SHELL)
 }
 
 /**
@@ -223,6 +242,11 @@ export async function bootRuntime(onProgress?: (step: string) => void): Promise<
     // user's work — which is not a limitation to accept in a harness.
     const restored = await restoreWorkspace(booted)
     if (restored) onProgress?.('Restored your workspace')
+    // A mount writes a tree into the container, and a snapshot taken by an
+    // older layout can carry the whole working directory rather than the
+    // workspace inside it. Re-asserting costs two idempotent calls and covers
+    // the case where the first command would otherwise have nowhere to stage.
+    await ensureStaging(booted)
     durability = persistWorkspace(booted)
     return booted
   })()).catch((error: unknown) => {
@@ -314,7 +338,16 @@ export async function execute(script: string, options: RunOptions = {}): Promise
   // — `sed 's/a/\n/'` loses its escape and the command quietly does the wrong
   // thing. A file's bytes survive intact.
   const scriptFile = `${PRIVATE_DIR}/run-${String(runCounter++)}.sh`
-  await runtime.fs.writeFile(scriptFile, script)
+  try {
+    await runtime.fs.writeFile(scriptFile, script)
+  } catch {
+    // The staging directory is gone — see `ensureStaging`. Putting it back and
+    // writing again turns a session that fails every command until reload into
+    // one command that took a moment longer, and restores the shell program
+    // beside it, which a tree-wide clobber would have taken too.
+    await installShell(runtime)
+    await runtime.fs.writeFile(scriptFile, script)
+  }
   // `$0` and the positional parameters follow the script, as they do for
   // `sh -c`. They travel as argv rather than in the file, so a backslash in one
   // is subject to the runtime's unescaping — the script itself is not.

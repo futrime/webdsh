@@ -216,6 +216,24 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    // The container is a real machine with a shell on it, so the directory the
+    // harness stages command scripts in is inside something the agent can
+    // delete. It was created once at boot: after `rm -rf ~/.dsh` every command
+    // for the rest of the page's life failed with `ENOENT … run-N.sh`, which is
+    // a session with no shell and no way back short of a reload.
+    name: 'shell-staging',
+    async run(page) {
+      await waitForShell(page)
+      expect((await shell(page, 'echo before')).stdout.includes('before'), 'the runtime shell did not answer')
+      await shell(page, 'rm -rf /home/dsh/.dsh')
+      const after = await shell(page, 'echo after')
+      expect(
+        after.status === 0 && after.stdout.includes('after'),
+        `the shell did not recover from losing its staging directory: ${JSON.stringify(after)}`,
+      )
+    },
+  },
+  {
     name: 'model-request',
     async run(page) {
       await waitForShell(page)
