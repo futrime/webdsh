@@ -6,7 +6,7 @@
  * exactly as `ui-cordis` and the community panels do. Nothing about the web
  * surface is modified to make room for it.
  *
- * The machine it attaches to is a page-level capability the app publishes, not
+ * The runtime it attaches to is a page-level capability the app publishes, not
  * something this plugin boots: the agent's own tools run in the same one, and
  * two containers in a tab would be two different machines.
  */
@@ -18,15 +18,14 @@ import type { Context } from '@deepseek-ai/cordis'
 interface RuntimeBridge {
   /** Start an interactive shell sized to the given grid. */
   startShell(size: { cols: number, rows: number }): Promise<{
-    output: ReadableStream<Uint8Array>
-    write(data: string): void
-    resize(size: { cols: number, rows: number }): void
-    kill(signal?: string): void
+    output: ReadableStream<string>
+    input: WritableStream<string>
     exit: Promise<number>
+    resize(size: { cols: number, rows: number }): void
   }>
-  /** Boot the machine, reporting progress. */
+  /** Boot the runtime, reporting progress. */
   boot(onProgress?: (step: string) => void): Promise<unknown>
-  /** Why the machine cannot start here, when it cannot. */
+  /** Why the runtime cannot start here, when it cannot. */
   unavailable(): string | undefined
   /** The terminal emulator and its fit addon, supplied by the app's bundle. */
   terminal(): Promise<{ Terminal: new (options: unknown) => XTerm, FitAddon: new () => FitAddon, styles: string }>
@@ -73,7 +72,7 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
     const reason = runtime.unavailable()
     if (reason !== undefined) {
       setMessage(
-        `${reason}. The machine needs SharedArrayBuffer, which a browser grants only a `
+        `${reason}. The runtime needs SharedArrayBuffer, which a browser grants only a `
         + 'cross-origin isolated page; reloading usually fixes it, because the worker that '
         + 'adds the required headers only controls the page after its first load.',
       )
@@ -93,9 +92,9 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
         document.head.append(style)
       }
       terminal = new Terminal({
-        // No `convertEol`: this is a real pseudoterminal, so the container's own
-        // line discipline has already turned every newline into CRLF, and
-        // converting again would double it.
+        // The shell is not behind a line discipline, so a bare newline arrives
+        // without the carriage return a tty would have added.
+        convertEol: true,
         cursorBlink: true,
         fontSize: 12.5,
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
@@ -105,7 +104,6 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
       terminal.loadAddon(fit)
       terminal.open(host.current!)
       fit.fit()
-      let session: { write(data: string): void } | undefined
       ;(globalThis as Record<string, unknown>).__DSH_TERMINAL__ = {
         text: () => {
           const buffer = terminal!.buffer.active
@@ -113,21 +111,19 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
           for (let i = 0; i < buffer.length; i++) lines.push(buffer.getLine(i)?.translateToString(true) ?? '')
           return lines.join('\n')
         },
-        send: (text: string) => { session?.write(text) },
+        send: (text: string) => { void writer?.write(text) },
       }
 
-      terminal.write('[38;5;108mStarting the machine…[0m\r\n')
+      terminal.write('[38;5;108mStarting the runtime…[0m\r\n')
+      let writer: WritableStreamDefaultWriter<string> | undefined
       try {
         await runtime.boot(step => { terminal!.write(`[38;5;244m${step}…[0m\r\n`) })
         const shell = await runtime.startShell({ cols: terminal.cols, rows: terminal.rows })
-        session = shell
-        const decoder = new TextDecoder()
-        void shell.output.pipeTo(new WritableStream<Uint8Array>({
-          // Decoded as a stream: a UTF-8 character can arrive split across two
-          // reads, and half of one is a replacement character on the screen.
-          write(chunk) { terminal!.write(decoder.decode(chunk, { stream: true })) },
+        void shell.output.pipeTo(new WritableStream<string>({
+          write(chunk) { terminal!.write(chunk) },
         })).catch(() => undefined)
-        terminal.onData(data => { shell.write(data) })
+        writer = shell.input.getWriter()
+        terminal.onData(data => { void writer?.write(data) })
         terminal.onResize(size => { shell.resize(size) })
         const resize = (): void => { fit.fit() }
         window.addEventListener('resize', resize)
@@ -151,7 +147,7 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
     <div className="dsh-web-terminal" data-open="">
       <div className="dsh-web-terminal-bar">
         <span className="dsh-web-terminal-title">Terminal</span>
-        <span className="dsh-web-terminal-hint">the same machine the agent runs in</span>
+        <span className="dsh-web-terminal-hint">the same runtime the agent runs in</span>
         <button type="button" onClick={onClose}>Close</button>
       </div>
       {message === undefined

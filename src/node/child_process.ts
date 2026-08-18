@@ -1,19 +1,21 @@
 /**
- * `node:child_process` over the machine.
+ * `node:child_process` over the in-browser shell.
  *
  * dsh's `dsh-subprocess-local` is kept as the real subprocess provider — with
  * its stdio dispositions, collect-with-spill buffering, grace escalation, and
  * tree-liveness observation intact — and only the OS primitive underneath it is
- * swapped. `spawn('bash', ['-c', script])` therefore runs the script in the
- * container, and every layer above (`bash-sandbox`, `tool-bash`, `ctx.shell`)
- * behaves as it does on a real machine — because underneath it is one.
+ * swapped. `spawn('bash', ['-c', script])` therefore runs the script through
+ * {@link runShell}, and every layer above (`bash-sandbox`, `tool-bash`,
+ * `ctx.shell`) behaves as it does on a real machine.
  *
  * The pid registry is load-bearing: `spawn.ts` probes `process.kill(-pid, 0)`
  * to decide whether a process tree is still alive, so a shim that always
  * reported success would leave its observer spinning forever.
  */
 
-import { execute as executeInRuntime, runtimeFailure, runtimeReady } from '../runtime/container.ts'
+import { runShell } from '../shell/index.ts'
+import { execute as executeInRuntime, runtimeAvailable, runtimeReady } from '../runtime/webcontainer.ts'
+import { isRipgrep, ripgrep } from '../runtime/ripgrep.ts'
 import { ReadableStreamShim, StreamEmitter, WritableStreamShim } from './streams.ts'
 import { Buffer, toText } from './binary.ts'
 import { process as processShim, setProcessTable } from './process.ts'
@@ -109,6 +111,22 @@ export class ChildProcessShim extends StreamEmitter {
   }
 
   private async execute(): Promise<void> {
+    // The search tools spawn ripgrep by path and parse its output. The runtime
+    // is Node rather than a distribution, so there is no such binary; the
+    // implementation over the runtime's own filesystem stands in for it, and
+    // has to be reached before the argv is turned into a shell command line.
+    if (runtimeAvailable() && isRipgrep(this.command)) {
+      try {
+        const result = await ripgrep(this.args, this.options.cwd)
+        if (result.stdout !== '') this.stdout?.push(result.stdout)
+        if (result.stderr !== '') this.stderr?.push(result.stderr)
+        this.settle(result.status, null)
+      } catch (error) {
+        this.stderr?.push(`${describe(error)}\n`)
+        this.settle(2, null)
+      }
+      return
+    }
     const script = buildScript(this.command, this.args)
     if (script === undefined) {
       livePids.delete(this.pid)
@@ -123,22 +141,30 @@ export class ChildProcessShim extends StreamEmitter {
       return
     }
     const cwd = this.options.cwd ?? processShim.cwd()
-    // The machine is where the terminal runs, so it is where a tool call has to
-    // run too — otherwise the agent and the user are on different machines, and
-    // a file one of them creates does not exist for the other.
-    if (!await runtimeReady()) {
-      this.stderr?.push(
-        `this browser cannot run the machine commands execute in: ${runtimeFailure() ?? 'unavailable'}\n`,
-      )
-      this.settle(126, null)
-      return
-    }
     try {
-      const result = await executeInRuntime(script.source, {
+      // The runtime is where the terminal runs, so it is where a tool call has
+      // to run too — otherwise the agent and the user are on different
+      // machines, and a file one of them creates does not exist for the other.
+      // The in-page shell remains the fallback for a browser that cannot host
+      // the runtime at all.
+      if (await runtimeReady()) {
+        const result = await executeInRuntime(script.source, {
+          cwd,
+          env: (this.options.env ?? processShim.env) as Record<string, string | undefined>,
+          stdin: this.stdinClosed ? this.stdinBuffer : '',
+          ...(script.name === undefined ? {} : { name: script.name }),
+          args: script.args,
+          signal: this.abort.signal,
+          onStdout: chunk => { this.stdout?.push(chunk) },
+          onStderr: chunk => { this.stderr?.push(chunk) },
+        })
+        this.settle(result.status, null)
+        return
+      }
+      const result = await runShell(script.source, {
         cwd,
-        env: (this.options.env ?? processShim.env) as Record<string, string | undefined>,
+        env: this.options.env ?? processShim.env,
         stdin: this.stdinClosed ? this.stdinBuffer : '',
-        ...(script.name === undefined ? {} : { name: script.name }),
         args: script.args,
         signal: this.abort.signal,
         onStdout: chunk => { this.stdout?.push(chunk) },
@@ -330,18 +356,11 @@ export function fork(): never {
   throw Object.assign(new Error('child_process.fork is unavailable in the browser host'), { code: 'ENOSYS' })
 }
 
-/**
- * Resolve an executable name, for the callers that check before they spawn.
- *
- * `dsh-bash-sandbox` looks the shell up through the subprocess seam and refuses
- * the tool when it cannot find one, and this seam is synchronous while the
- * machine is not. So the answer comes from the page's own skeleton, which
- * `src/host/seed.ts` keeps in step with what the container actually ships.
- * @param command - a name or a path.
- * @returns where it is, or undefined.
- */
+/** Resolve an executable name the way the shell's PATH lookup does. */
 export function whichExecutable(command: string): string | undefined {
   if (command.includes('/')) return volume.exists(command) ? command : undefined
+  const known = new Set(['bash', 'sh', 'env', 'node', 'git'])
+  if (known.has(command)) return `/usr/bin/${command}`
   for (const directory of (processShim.env.PATH ?? '').split(':')) {
     const candidate = `${directory}/${command}`
     const node = volume.lookup(candidate)

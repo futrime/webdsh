@@ -8,12 +8,13 @@
  *
  * Only capabilities go through here, never UI: the terminal plugin owns how a
  * terminal looks and where it lives, and this owns only the fact that there is
- * a machine to attach one to. The machine in particular has to be shared
- * rather than booted per consumer, because two of them in a tab would be two
- * different machines and the whole point is that there is one.
+ * a runtime to attach one to. The runtime in particular has to be shared
+ * rather than booted per consumer, because two containers in a tab would be
+ * two different machines and the whole point is that there is one.
  */
 
-import { bootRuntime, runtimeSupported, startShell } from '../runtime/container.ts'
+import { bootRuntime, runtimeSupported, startShell } from '../runtime/webcontainer.ts'
+import { ripgrep } from '../runtime/ripgrep.ts'
 import type { PluginManager } from '../plugins/manager.ts'
 import { volume } from '../vfs/volume.ts'
 import { dirname } from '../node/path.ts'
@@ -22,7 +23,7 @@ import { dirname } from '../node/path.ts'
 const UPLOAD_DIR = '/tmp/dsh-plugin-uploads'
 
 /**
- * Publish the machine, for whoever draws a terminal on it.
+ * Publish the runtime, for whoever draws a terminal on it.
  *
  * The emulator travels with the capability rather than with the plugin: it is
  * a large dependency, the app already bundles it, and a plugin shipping its
@@ -36,6 +37,9 @@ export function publishRuntimeBridge(): void {
       const support = runtimeSupported()
       return support.ok ? undefined : support.reason ?? 'the runtime is unavailable'
     },
+    // The search backend, published so a test can exercise the same code the
+    // `grep` and `glob` tools reach through the subprocess seam.
+    search: (args: string[], cwd?: string) => ripgrep(args, cwd),
     terminal: async () => {
       const [{ Terminal }, { FitAddon }, styles] = await Promise.all([
         import('@xterm/xterm'),

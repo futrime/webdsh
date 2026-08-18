@@ -8,13 +8,13 @@
  * agent's `grep` and `glob` tools fail on every call.
  *
  * The consumer only ever uses `rgPath` as `argv[0]` of a spawn, and this host's
- * subprocess seam runs that argv in the container. The container has ripgrep —
- * `container/Dockerfile` installs it for exactly this reason — so naming where
- * Debian puts it is all that is needed for the tools to work as they do on a
- * real machine.
+ * subprocess seam resolves argv through the in-browser shell's command
+ * registry. So naming the shell's own `rg` implementation is all that is needed
+ * for the tools to work exactly as they do on a real machine.
+ * @see src/shell/ripgrep.ts
  */
 
-/** Where ripgrep lives in the machine. */
+/** Where the shell's ripgrep lives, as far as a spawning caller is concerned. */
 export const rgPath = '/usr/bin/rg'
 
 export default { rgPath }

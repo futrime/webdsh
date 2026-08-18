@@ -33,8 +33,8 @@ export function apply(ctx: Context): void {
     // After the persona and the runtime context, before anything task-shaped.
     order: 60,
     text:
-      'The user has an interactive terminal open on this same workspace, on the '
-      + 'same machine your Bash tool runs on. Files you create are visible to them '
+      'The user has an interactive terminal open on this same workspace, running the '
+      + 'same runtime your Bash tool runs in. Files you create are visible to them '
       + 'immediately, and files they create are visible to you.',
   })
 }

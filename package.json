@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Pure-static, browser-only build of DeepSeek Harness (dsh web) — no server, deployable to GitHub Pages",
+  "description": "Pure-static, browser-only build of DeepSeek Harness (dsh web) \u2014 no server, deployable to GitHub Pages",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "assemble": "npm run build:plugins && tsx scripts/assemble.ts",
+    "assemble": "npm run build:plugins && npm run build:shell && tsx scripts/assemble.ts",
     "dev": "npm run assemble && vite",
     "build": "npm run assemble && vite build",
     "preview": "vite preview --port 4173",
@@ -17,11 +17,12 @@
     "test:runtime": "tsx scripts/runtime-e2e.ts",
     "test:ui": "tsx scripts/ui-e2e.ts",
     "test:task": "tsx scripts/task-e2e.ts",
+    "test:fallback": "tsx scripts/fallback-e2e.ts",
+    "test:shell": "node scripts/shell-diff.mjs",
     "build:plugins": "node scripts/build-plugins.mjs",
-    "build:container": "node scripts/build-container.mjs"
+    "build:shell": "node scripts/build-container-shell.mjs"
   },
   "dependencies": {
-    "@bjorn3/browser_wasi_shim": "^0.4.2",
     "@bokuweb/zstd-wasm": "^0.0.27",
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/cordis-plugin-group": "1.0.1",
@@ -207,6 +208,7 @@
     "@deepseek-ai/node-addon-landlock-run": "0.1.1",
     "@deepseek-ai/node-addon-landlock-run-linux-x64": "0.1.1",
     "@deepseek-ai/schemastery": "3.18.1",
+    "@webcontainer/api": "^1.6.4",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "buffer": "^6.0.3",

@@ -32,29 +32,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The machine the agent's commands run on. It is 400 MB of converted
-      # container and it changes only when `container/` does, so it is cached on
-      # a hash of its own sources and only built when that misses. A miss is a
-      # long job: the converter compiles Bochs, wasi-vfs, and wizer from source.
-      - name: Restore the machine
-        id: machine
-        uses: actions/cache@v4
-        with:
-          path: public/container
-          key: machine-${{ hashFiles('container/**', 'scripts/build-container.mjs') }}
-
-      - name: Free disk space for the conversion
-        if: steps.machine.outputs.cache-hit != 'true'
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
-          df -h /
-
-      - name: Build the machine
-        if: steps.machine.outputs.cache-hit != 'true'
-        timeout-minutes: 90
-        run: npm run build:container
-
       - name: Build
         # `npm run build` runs scripts/assemble.ts first, which derives the
         # plugin roster, the client bundles, and the host module map from the
@@ -63,13 +40,12 @@ jobs:
         run: npm run build
 
       - name: Report the artifact size
-        # Most of it is the machine. GitHub Pages publishes up to 1 GB.
-        run: du -sh dist dist/container
+        run: du -sh dist
 
       - name: Verify the build actually boots
         # A static build can be produced from a broken tree, so the artifact is
         # only published after a real browser has booted it, materialized the
-        # whole client plugin roster, and run a command in the container.
+        # whole client plugin roster, and run the in-browser shell.
         run: |
           npx playwright install --with-deps chromium
           node scripts/serve.mjs 4173 &

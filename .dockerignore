@@ -1,7 +1,0 @@
-# The image only needs the two programs in `container/`. Without this the whole
-# checkout is sent to the daemon as build context on every build — most of it
-# `node_modules` and, once it has been built, a few hundred megabytes of
-# converted machine.
-*
-!container/dsh-mux
-!container/dsh-fsd

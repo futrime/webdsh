@@ -103,10 +103,12 @@ const scenarios: Scenario[] = [
     name: 'shell',
     async run(page) {
       await waitForShell(page)
-      // A tool call runs in the container's own bash, on a Debian userland.
-      // Every construct below is one an agent writes without thinking about it,
-      // and the point of checking them here is that none of them is
-      // reimplemented: what answers is the program Debian ships.
+      // A tool call runs in the shell this build installs in the container, not
+      // in the container's own `jsh` — which has no `for`, `if`, `while`, `case`,
+      // functions, heredocs or `<`, and whose command substitution expands to
+      // the empty string while reporting success. Every construct below is one
+      // an agent writes without thinking about it, and several of them used to
+      // return a confident wrong answer rather than an error.
       const cases: [string, RegExp][] = [
         ['echo hello', /hello/],
         ['mkdir -p t && cd t && echo one > a.txt && cat a.txt', /one/],
@@ -129,9 +131,9 @@ const scenarios: Scenario[] = [
         ['greet() { echo "fn-$1"; }; greet ok', /fn-ok/],
         ["cat <<'HERE'\nheredoc-body\nHERE", /heredoc-body/],
         ['printf "one\\ntwo\\n" > lines.txt && wc -l < lines.txt', /\b2\b/],
-        // Backslashes survive the trip into the container. The script travels
-        // as a framed payload rather than as an argument, so `sed 's/x/\\n/'`
-        // arrives as the bytes the agent wrote.
+        // Backslashes survive the trip into the container: they are unescaped
+        // out of argv, so a script that travels as an argument arrives changed
+        // and `sed 's/x/\\n/'` quietly stops meaning what it says.
         ['printf "a\\tb\\n"', /a\tb/],
         ["echo hello | sed 's/hello/replaced/'", /replaced/],
         ["printf '3 4\\n' | awk '{print $1+$2}'", /\b7\b/],
@@ -142,21 +144,16 @@ const scenarios: Scenario[] = [
         ['rm -rf unpack && mkdir unpack && tar -xzf arc.tgz -C unpack && cat unpack/arc/sub/p.txt', /packed/],
         ['echo zipped > z.txt && gzip z.txt && zcat z.txt.gz', /zipped/],
         ['printf hello | base64 | base64 -d', /hello/],
-        // git, and the rest of the toolchain: the real programs, installed by
-        // `container/Dockerfile`.
+        ['file arc.tgz', /gzip compressed/],
+        // git: the container ships none, so this is the only one there is.
         ['git --version', /git version/],
         ['rm -rf r && mkdir r && cd r && git init 2>&1', /Initialized empty Git repository/],
         ['cd r && echo tracked > f.txt && git add f.txt && git status', /new file:\s+f\.txt/],
-        // No `-c user.email=…`: the image configures a placeholder identity, so
-        // an agent asked to commit is not stopped by a question it cannot answer.
         ['cd r && git commit -m first 2>&1 && git log 2>&1', /commit [0-9a-f]{7}/],
         ['cd r && echo more >> f.txt && git diff 2>&1', /\+more/],
+        // The real toolchain, not an emulation of it.
         ['python3 -c "print(6*7)"', /42/],
-        ['python3 -m venv --help >/dev/null && pip --version', /pip \d+/],
-        ['node -p "process.version"', /^v\d+/m],
-        ['rg --version', /ripgrep \d+/],
-        // Real processes with real signals, which the page had no way to model.
-        ['sleep 30 & kill -TERM $!; wait $!; echo "status=$?"', /status=143/],
+        ['npm --version', /\d+\.\d+\.\d+/],
       ]
       for (const [script, matcher] of cases) {
         const result = await shell(page, script)
@@ -244,7 +241,7 @@ const scenarios: Scenario[] = [
         ['bash', ['-c', '--', 'echo c-ok'], /c-ok/],
         ['bash', ['-lc', 'echo plain-ok'], /plain-ok/],
         ['bash', ['--noprofile', '--norc', '-c', 'echo longopts-ok'], /longopts-ok/],
-        ['/bin/bash', ['-lc', '--', 'ls -1 / | sort | head -n 4'], /bin[\s\S]*dev/],
+        ['/bin/bash', ['-lc', '--', 'ls -la / | head -n 2'], /bin|dev|home/],
         // POSIX puts `$0` after the script and the parameters after that.
         ['bash', ['-c', 'echo "0=$0 1=$1"', 'myname', 'first'], /0=myname 1=first/],
       ]
