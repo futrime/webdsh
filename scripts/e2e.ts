@@ -177,10 +177,12 @@ const scenarios: Scenario[] = [
     name: 'jsh-plugin',
     async run(page) {
       await waitForShell(page)
-      // The plugin owns the model's shell tool outright: `bash` is gone, `jsh`
-      // is what the model sees, and its description is what it plans against.
-      // A build that ran jsh while still advertising bash would pass every
-      // other test in this file.
+      // The plugin REPLACES the shell tool; it does not add one. There is
+      // exactly one, it keeps the name a model reaches for on its own, and its
+      // description is what corrects the assumption that name carries. A build
+      // that registered `jsh` beside `bash`, or instead of it, would leave the
+      // model calling a tool that is not there — which is what this asserts
+      // against, because it is what actually happened.
       const composition = await page.evaluate(() => {
         const tools = globalThis.dsh.ctx.get('tools') as {
           schemas(): { name: string }[]
@@ -189,13 +191,26 @@ const scenarios: Scenario[] = [
         const runtime = (globalThis as { __DSH_WEB_RUNTIME__?: { shellMode(): string } }).__DSH_WEB_RUNTIME__
         return {
           names: (tools?.schemas() ?? []).map(tool => tool.name).sort(),
-          description: tools?.get('jsh')?.description ?? '',
+          description: tools?.get('bash')?.description ?? '',
           mode: runtime?.shellMode(),
         }
       })
-      expect(composition.names.includes('jsh'), `the jsh tool is not registered: ${composition.names.join(', ')}`)
-      expect(!composition.names.includes('bash'), 'the bash tool is still registered beside jsh')
+      const shells = composition.names.filter(name => name === 'bash' || name === 'jsh')
+      expect(
+        shells.length === 1 && shells[0] === 'bash',
+        `expected exactly one shell tool named bash; the roster is ${composition.names.join(', ')}`,
+      )
       expect(composition.mode === 'jsh', `commands do not run in jsh: mode is ${String(composition.mode)}`)
+      // The name says bash, so the description has to be where the model finds
+      // out otherwise — and it has to say so before anything else.
+      expect(
+        composition.description.startsWith('Execute a command'),
+        'the bash tool is the shipped one, not the replacement',
+      )
+      expect(
+        /does NOT run bash/.test(composition.description),
+        'the tool description does not tell the model its name is wrong',
+      )
       for (const claim of ['$(...)', 'for', 'heredocs', 'node -e', 'python3 -c']) {
         expect(composition.description.includes(claim), `the tool description does not mention ${claim}`)
       }

@@ -132,11 +132,13 @@ is what runs when the runtime cannot start at all.
 
 `packages/dsh-web-jsh/` is the second, and it is what the shipped composition
 mounts: **run the shell the machine actually has, and describe it exactly.** The
-plugin disables `tool-bash` and registers a `jsh` tool whose description is the
-measured capability matrix — which constructs fail silently, which fail loudly,
-which commands exist, and what to use instead:
+plugin disables `tool-bash` and registers its replacement — one shell tool, not
+two — whose description is the measured capability matrix: which constructs fail
+silently, which fail loudly, which commands exist, and what to use instead.
 
 ```
+This tool does NOT run bash. The shell is `jsh` …
+
 NEVER use these. jsh accepts them, expands them to the empty string, and exits 0:
   `$(...)` and backticks   command substitution
   `$((...))`               arithmetic
@@ -145,6 +147,14 @@ NEVER use these. jsh reports a syntax error and the command does nothing:
 Available commands, and no others: alias cat cd chmod … node npm npx python3 …
 Do anything else in a language: `node -e '...'`, `python3 -c '...'`, `jq`.
 ```
+
+The replacement keeps the name `bash`, which is worth being explicit about. A
+model reaches for a tool called `bash` whether or not the roster offers one — it
+is the strongest prior any of them has about a shell. Registering the
+replacement as `jsh` and removing `bash` was tried first, and what happened is
+what that sentence predicts: the model went on emitting `bash` calls, and they
+now matched nothing at all. So the plugin takes the slot the model will use and
+spends the description's first line saying the name is wrong.
 
 It swaps both halves together — the interpreter commands are handed to, and the
 description the model plans against — because swapping either one alone is how
