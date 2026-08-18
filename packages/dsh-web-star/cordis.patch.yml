@@ -1,0 +1,14 @@
+# The repository link, as a profile bundle layer.
+#
+# The surface it sits in is free software someone has to maintain, and the page
+# is the only place its visitors ever see it — there is no README in front of
+# them, no install step, no repository URL anywhere in the tab. So the ask goes
+# where the surface already keeps its foot actions, beside Settings and the
+# terminal, and it is a link rather than a banner: it occupies one row, it is
+# never modal, and a visitor who does not want it never has to dismiss it.
+#
+# The node half is a plain host row; the `dsh.client` declaration in
+# package.json is what puts the browser half in the client roster.
+- insert:
+    - id: web-star
+      name: '@dsh-web/star'

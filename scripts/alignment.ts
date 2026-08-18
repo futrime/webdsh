@@ -97,7 +97,7 @@ const upstream = [
 ].map(load)
 
 const overlay = readFileSync(join(root, 'src/host/browser.patch.yml'), 'utf8')
-const shipped = ['dsh-web-terminal', 'dsh-web-plugins']
+const shipped = ['dsh-web-terminal', 'dsh-web-plugins', 'dsh-web-star']
   .map(name => join(root, 'packages', name, 'cordis.patch.yml'))
   .filter(existsSync)
   .map(path => readFileSync(path, 'utf8'))

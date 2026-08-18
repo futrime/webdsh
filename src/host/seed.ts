@@ -15,6 +15,7 @@ import { env } from '../node/process.ts'
 import browserPatchSource from './browser.patch.yml?raw'
 import terminalPatchSource from '../../packages/dsh-web-terminal/cordis.patch.yml?raw'
 import installPatchSource from '../../packages/dsh-web-plugins/cordis.patch.yml?raw'
+import starPatchSource from '../../packages/dsh-web-star/cordis.patch.yml?raw'
 
 /**
  * Bundle layers for the plugins this repository ships.
@@ -26,6 +27,7 @@ import installPatchSource from '../../packages/dsh-web-plugins/cordis.patch.yml?
 const SHIPPED_PLUGIN_PATCHES: Record<string, string> = {
   'web-terminal': terminalPatchSource,
   'web-plugin-install': installPatchSource,
+  'web-star': starPatchSource,
 }
 
 /** The bundle layers this build lays down, in application order. */

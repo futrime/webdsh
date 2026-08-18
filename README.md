@@ -47,7 +47,7 @@ What it adds is the platform underneath:
 | `src/net` | The page's `fetch` and `WebSocket` routed into an in-page virtual server, so `/api` runs through dsh's own bridge, trust fence, and Typert gateway. |
 | `src/host` | The boot, plus browser rows for the handful of capabilities a page cannot have. |
 | `src/plugins` | Plugin installation from the npm registry, a tarball URL, a GitHub repository, or a path in this filesystem, with an ES-module loader that binds installed packages to this app's single cordis instance. |
-| `packages/` | The plugins this repository ships: the terminal, the plugin installer, and the shell the model is told about. |
+| `packages/` | The plugins this repository ships: the terminal, the plugin installer, the repository link at the sidebar foot, and the shell the model is told about. |
 
 Five composition rows are swapped, each because the shipped one names a host
 capability a page does not have; `src/host/browser.patch.yml` is the complete
@@ -179,6 +179,11 @@ way an installed plugin is. Removing one is removing a directory.
   and `sidebar.footer.action` slots rather than drawn over it.
 - `dsh-web-plugins` — installing a plugin from the browser, in the Settings
   page the surface already owns and offers no way to add to.
+- `dsh-web-star` — a link to this repository at the sidebar foot, in the same
+  `sidebar.footer.action` slot, with the star count GitHub reports. The page is
+  the only place most visitors ever see this project, so it is the only place
+  the ask can be made; it is one row beside Settings, never modal, and it yields
+  the row entirely when the column is folded to the icon rail.
 
 What the app owns is the capability, published as a bridge in
 `src/host/bridges.ts`: a plugin runs outside this app's bundle graph and cannot
