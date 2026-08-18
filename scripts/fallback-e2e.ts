@@ -77,6 +77,17 @@ async function main(): Promise<void> {
     }))
     expect(composed.credentials, 'the credential store did not mount without a runtime')
 
+    console.log('▶ the first command does not appear frozen')
+    // A command issued before the failing boot gives up has to wait for it, or
+    // the shell and the runtime would disagree about what is on disk. That wait
+    // is bounded, and the bound is what separates "slow" from "broken" — it was
+    // ninety seconds once, which reads as a hang.
+    const started = Date.now()
+    await shell(page, 'true')
+    const waited = Math.round((Date.now() - started) / 1000)
+    console.log(`  waited ${String(waited)}s for the runtime to give up`)
+    expect(waited < 45, `the first command waited ${String(waited)}s, which reads as a freeze`)
+
     console.log('▶ the shell falls back to the page')
     // Deliberately not a trivial command: the fallback is a different shell, and
     // it has to be the same shell.

@@ -104,8 +104,17 @@ export function runtimeSupported(): { ok: boolean, reason?: string } {
 let container: Promise<WebContainer> | undefined
 let durability: RuntimePersistence | undefined
 
-/** How long the container gets to start before it is treated as unavailable. */
-const BOOT_TIMEOUT_MS = 90_000
+/**
+ * How long the container gets to start before it is treated as unavailable.
+ *
+ * A working boot takes a few seconds; this is the budget for one that never
+ * answers. It is also, on a browser that cannot run the container at all, how
+ * long the first command waits before falling back — so it is kept short enough
+ * to read as slow rather than as frozen, and long enough that a real boot over
+ * a slow connection is not cut off. Most of it elapses during onboarding,
+ * because the boot starts with the page.
+ */
+const BOOT_TIMEOUT_MS = 30_000
 
 /**
  * Fail a boot that never finishes.
@@ -122,7 +131,9 @@ async function withDeadline(attempt: Promise<WebContainer>): Promise<WebContaine
     return await Promise.race([
       attempt,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => { reject(new Error('the runtime did not start within 90 seconds')) }, BOOT_TIMEOUT_MS)
+        timer = setTimeout(() => {
+          reject(new Error(`the runtime did not start within ${String(BOOT_TIMEOUT_MS / 1000)} seconds`))
+        }, BOOT_TIMEOUT_MS)
       }),
     ])
   } finally {
