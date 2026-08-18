@@ -248,13 +248,28 @@ These are the honest limits. Everything else behaves as `dsh web` does.
 - **Network reach is the browser's, and CORS is the whole rule.** A host answers
   only if it sends CORS headers: the npm registry does, so `npm install` works,
   and so do most JSON APIs; `example.com` and `en.wikipedia.org` do not, and a
-  request to either fails with `fetch failed`. StackBlitz's own CORS proxy is a
-  stackblitz.com project feature (a `.stackblitzrc` plus a paid plan) and has no
-  effect on a self-hosted embed — measured, not assumed. `BootOptions.coep` does
-  not help either: `credentialless` relaxes what the page may embed, while a
-  cross-origin response still has to pass CORS to be *readable*, which is what
-  the container needs. Universal reach would take a proxy this deployment runs
-  itself, which is a server, which is the one thing this build does not have.
+  request to either fails with `fetch failed`.
+
+  There is no way to fix that from here, and the reason is worth recording. The
+  container's requests come out of StackBlitz's own worker: a patched
+  `window.fetch` sees none of them, and neither does `public/sw.js` — both were
+  measured, and both see zero. So a "retry through a proxy when CORS blocks it"
+  rule cannot be implemented in this app at all; it can only be something the
+  model is told to do, which is what `src/host/jsh-tool.ts` does. StackBlitz's
+  own CORS proxy is no help either: it is a stackblitz.com project feature (a
+  `.stackblitzrc` plus a paid plan) with no effect on a self-hosted embed, which
+  was also measured. `BootOptions.coep` cannot help by construction —
+  `credentialless` relaxes what the page may embed, while a cross-origin
+  response still has to pass CORS to be *readable*.
+
+  Of the public CORS proxies tried from inside the container, one answered:
+  `proxy.cors.sh`. `allorigins`, `codetabs`, `cors.isomorphic-git.org` and
+  `corsproxy.io` were unreachable or refused a non-localhost origin. The tool
+  description names it as a fallback after a real failure, for public URLs only,
+  and tells the model never to send a credential through it — it is a third
+  party that sees every byte routed through it. Removing that is deleting one
+  constant.
+
   The `curl` in the container is a stub — prefer `node -e "fetch(...)"`.
 - **No listening port.** Nothing can bind, so a plugin whose contract is a
   local server or an stdio child process cannot work here.

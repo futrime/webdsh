@@ -60,6 +60,23 @@ const COMMANDS = [
   'xxd', 'yarn',
 ].join(' ')
 
+/**
+ * The one public CORS proxy that answers from inside this container.
+ *
+ * The container's network cannot be intercepted from the page: its requests
+ * come out of StackBlitz's own worker, which neither a patched `window.fetch`
+ * nor `public/sw.js` ever sees — both were measured, and both see nothing. So
+ * the fallback cannot be automatic; it can only be something the model is told
+ * to try, which is why it lives in the description rather than in code.
+ *
+ * `allorigins`, `codetabs`, `cors.isomorphic-git.org` and `corsproxy.io` were
+ * all tried from in there and all failed — unreachable, or answering 403 for a
+ * non-localhost origin. This one is a third party seeing every byte routed
+ * through it, which is why the description bounds it to public URLs and to a
+ * retry after a real failure.
+ */
+const CORS_PROXY = 'https://proxy.cors.sh/'
+
 /** What a model reaches for first and will not find. */
 const MISSING = 'grep, sed, awk, find, wc, printf, cut, tr, diff, patch, tar, gzip, git, date, seq, tee, basename, dirname, xargs, test'
 
@@ -110,10 +127,13 @@ function jshDescription(background: boolean): string {
     'command — they are faster here and they do not go through jsh at all.',
     '',
     'The network is the browser\'s, so a host only answers if it sends CORS headers. The npm',
-    'registry does, so `npm install` works. Many public sites do not, and a request to one fails',
-    'with `fetch failed` — that is the host\'s policy, not a bug in the command, so do not retry it',
-    'another way. Use `node -e "fetch(...)"` rather than `curl`: the `curl` here is a stub that',
-    'takes a URL and little else.',
+    'registry does, so `npm install` works, and so do most JSON APIs. Many public sites do not,',
+    'and a direct request to one fails with `fetch failed` — that is the host\'s policy, not a bug',
+    `in the command. When that happens and the URL is public, retry it once through ${CORS_PROXY}<url>;`,
+    'if that also fails, stop and say so. Never send a request carrying a credential — an API key,',
+    'a token, a cookie — through the proxy: it is a third party and it sees the whole request.',
+    'Use `node -e "fetch(...)"` rather than `curl`: the `curl` here is a stub that takes a URL and',
+    'little else.',
     '',
     'Each call runs in a fresh shell: no state (cwd, variables) persists between calls — pass',
     '`workdir` instead of using `cd`. Non-zero exits are reported as `[exit code: N]`; check the',
