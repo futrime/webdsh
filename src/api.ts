@@ -9,8 +9,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { runShell, type RunResult } from './shell/index.ts'
-import { execute as executeInRuntime, runtimeReady, runtimePersistence } from './runtime/webcontainer.ts'
+import { execute as executeInRuntime, runtimeFailure, runtimeReady, runtimePersistence } from './runtime/container.ts'
 import { volume } from './vfs/volume.ts'
 import { toBytes, toText } from './node/binary.ts'
 import type { PersistenceHandle } from './vfs/persist.ts'
@@ -22,8 +21,8 @@ import { WORKSPACE_ROOT } from './host/seed.ts'
 export interface DshWindowApi {
   /** The settled host context (advanced use; the UI never needs it). */
   ctx: Context
-  /** Run a shell script against the virtual filesystem. */
-  shell(script: string, options?: { cwd?: string }): Promise<RunResult>
+  /** Run a shell script on the machine. */
+  shell(script: string, options?: { cwd?: string }): Promise<{ status: number, stdout: string, stderr: string }>
   /** Force every pending virtual-filesystem write to reach durable storage. */
   flush(): Promise<void>
   /** Read a file out of the virtual filesystem. */
@@ -54,14 +53,12 @@ export function installWindowApi(ctx: Context, persistence: PersistenceHandle): 
     ctx,
 
     async shell(script, options) {
-      // The same routing a tool call takes, so what this surface reports is
-      // what the agent would actually see — running it against the in-page
-      // shell while tool calls ran in the runtime would make it a liar.
-      if (await runtimeReady()) {
-        const result = await executeInRuntime(script, { cwd: options?.cwd ?? WORKSPACE_ROOT })
-        return { status: result.status, stdout: result.stdout, stderr: result.stderr, truncated: false }
+      // The same path a tool call takes, so what this surface reports is what
+      // the agent would actually see.
+      if (!await runtimeReady()) {
+        throw new Error(`the machine is unavailable: ${runtimeFailure() ?? 'unsupported browser'}`)
       }
-      return runShell(script, { cwd: options?.cwd ?? WORKSPACE_ROOT })
+      return executeInRuntime(script, { cwd: options?.cwd ?? WORKSPACE_ROOT })
     },
 
     async flush() {

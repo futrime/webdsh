@@ -4,7 +4,7 @@
  * `process.env`, and `process.cwd()` at load time.
  *
  * `platform` reports `linux` so the shipped compositions take their POSIX
- * branches (bash over pwsh) — the in-browser shell is a POSIX shell.
+ * branches (bash over pwsh) — the machine runs Debian, and its shell is bash.
  */
 
 import { setCwdProvider, resolve } from '../vfs/path.ts'
@@ -132,7 +132,7 @@ const built = {
   argv0: 'node',
   execPath: '/usr/bin/node',
   execArgv: [] as string[],
-  /** The shipped compositions branch on this; the in-browser shell is POSIX. */
+  /** The shipped compositions branch on this; the machine is Linux. */
   platform: 'linux' as NodeJS.Platform,
   arch: 'wasm32' as NodeJS.Architecture,
   pid: 1,

@@ -37,11 +37,10 @@ export const DEPLOY_ROOT = '/opt/dsh'
 /**
  * Where the user's files live.
  *
- * This is the runtime's own working directory, not a path invented for it: the
- * container roots every path at that directory, so a workspace anywhere else
- * ends up nested inside it and its snapshot cannot be addressed. It sits
- * directly under the home the picker opens at, so a first-time visitor sees it
- * without navigating anywhere.
+ * The same absolute path inside the container and on this page, which is what
+ * lets a tool call and a terminal command name one file. It sits directly under
+ * the home the picker opens at, so a first-time visitor sees it without
+ * navigating anywhere.
  */
 export const WORKSPACE_ROOT = '/home/dsh/workspace'
 
@@ -53,12 +52,17 @@ const SKELETON = [
 
 
 /**
- * A stub executable for each command the shell implements internally. `bash`
- * exists as a real file because `dsh-bash-sandbox` resolves the executable
- * through the subprocess seam before spawning it, and an absent `/bin/bash`
- * would refuse the tool rather than run it.
+ * A marker file for each program the machine ships.
+ *
+ * Commands run in the container, not here, so these are not the programs — but
+ * `dsh-bash-sandbox` resolves an executable through the subprocess seam before
+ * it spawns anything, and that seam is synchronous while the machine is not. An
+ * absent `/bin/bash` would refuse the Bash tool rather than run it.
+ *
+ * The list is what `container/Dockerfile` installs. Adding a program there and
+ * not here costs nothing until something looks it up first.
  */
-const SHELL_STUBS = ['sh', 'bash', 'env', 'node', 'git']
+const SHELL_STUBS = ['sh', 'bash', 'env', 'node', 'npm', 'npx', 'git', 'python3', 'pip', 'rg']
 
 /** Files that belong to the build and are refreshed on every boot. */
 function writeDeploymentFiles(): void {
@@ -88,7 +92,7 @@ function writeSkeleton(): void {
     if (volume.exists(path)) continue
     volume.writeFile(
       path,
-      toBytes(`#!/bin/sh\n# ${name} is implemented by the in-browser shell; this file exists so executable lookup succeeds.\n`),
+      toBytes(`#!/bin/sh\n# ${name} runs in the container, not here; this file exists so executable lookup succeeds.\n`),
       0o755,
     )
     if (!volume.exists(`/usr/bin/${name}`)) volume.symlink(`/bin/${name}`, `/usr/bin/${name}`)
@@ -103,23 +107,29 @@ function writeSkeleton(): void {
 /** The starter file a first-time visitor finds in the default workspace. */
 const WORKSPACE_README = `# Workspace
 
-This is a virtual filesystem that lives in your browser. Files you and the agent
-create here persist across reloads (they are stored in IndexedDB for this
-origin) and are private to this browser — nothing is uploaded anywhere.
+This directory lives inside a Debian container running in this browser tab, on
+an emulated x86-64 CPU. Files you and the agent create here persist across
+reloads (they are stored in IndexedDB for this origin) and are private to this
+browser — nothing is uploaded anywhere.
 
-The agent and the terminal share this directory: a file either of them creates,
-the other sees immediately.
+The agent and the terminal share this directory and that container: a file
+either of them creates, the other sees immediately.
 
-Things that work here:
+What is installed:
 
-- reading, writing, searching, and editing files
-- Node and npm — install a package from the registry and import it
-- a shell for running them, and the common file commands
+- bash, coreutils, and the rest of a Debian userland
+- git
+- Python 3, with pip
+- Node LTS, with npm and npx
+- ripgrep, which the search tools use
 
-Things that do not:
+What is different from a laptop:
 
-- native toolchains (a compiler, python, a system package manager)
-- listening on a port, or reaching a host that refuses cross-origin reads
+- an emulated CPU is slow. A shell command takes about a second; starting Node
+  or npm takes several
+- there is no network by default, so \`npm install\`, \`pip install\` and
+  \`git clone\` cannot reach a registry
+- nothing can listen on a port that a browser tab could reach
 `
 
 /** Populate the virtual filesystem. Safe to call once per boot. */

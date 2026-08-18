@@ -1,30 +1,43 @@
 /**
  * Keeping the workspace across reloads.
  *
- * The runtime's filesystem lives in memory: close the tab and the work is
- * gone. That is fine for a playground and not fine for a harness, where the
- * whole point is that the agent and the user are building something together.
+ * The machine's filesystem is a disk image in WASM memory: close the tab and
+ * the work is gone. That is fine for a playground and not fine for a harness,
+ * where the point is that the agent and the user are building something
+ * together.
  *
- * The container can hand over a snapshot of a directory and take one back, so
- * persistence is those two calls plus somewhere to put the bytes. IndexedDB is
+ * A container knows how to hand over a directory — `tar` — so persistence is
+ * that, a channel to carry the bytes, and somewhere to put them. IndexedDB is
  * that somewhere, for the same reason the rest of this app uses it: it is the
- * only browser store that holds megabytes without asking.
+ * only browser store that holds megabytes without asking. The archive is
+ * compressed by the page rather than by the guest, because `CompressionStream`
+ * is native code and `gzip` in there is an emulated CPU.
  *
  * Snapshots are taken on a debounce and on `pagehide`, because a snapshot per
- * write would copy the whole workspace on every keystroke of an agent's edit,
- * and because `pagehide` is the last moment a page reliably gets.
+ * write would archive the whole workspace on every keystroke of an agent's
+ * edit, and because `pagehide` is the last moment a page reliably gets.
  */
 
-import type { WebContainer } from '@webcontainer/api'
-import { toContainerPath, WORKSPACE } from './webcontainer.ts'
+import type { Mux } from './mux.ts'
+import type { Machine } from './container.ts'
 
 /** The database and record the snapshot lives in. */
 const DB_NAME = 'dsh-runtime-workspace'
 const STORE = 'snapshots'
 const KEY = 'workspace'
 
-/** How long to wait after a change before snapshotting. */
-const DEBOUNCE_MS = 4_000
+/**
+ * How long to wait after a change before snapshotting.
+ *
+ * Longer than it would be over a native filesystem: archiving the workspace
+ * costs emulated CPU that the user's next command wants, so the debounce is
+ * set to outlast a burst of edits rather than to follow each one.
+ */
+const DEBOUNCE_MS = 10_000
+
+/** Where the workspace lives inside the machine, split for `tar`'s two arguments. */
+const PARENT = '/home/dsh'
+const NAME = 'workspace'
 
 /** Open the snapshot database. */
 async function open(): Promise<IDBDatabase | undefined> {
@@ -65,6 +78,15 @@ async function save(bytes: Uint8Array): Promise<void> {
   })
 }
 
+/** Run a stream through a transform the browser implements natively. */
+async function through(bytes: Uint8Array, transform: 'gzip' | 'gunzip'): Promise<Uint8Array> {
+  const stream = transform === 'gzip'
+    ? new CompressionStream('gzip')
+    : new DecompressionStream('gzip')
+  const source = new Blob([bytes as BlobPart]).stream().pipeThrough(stream as unknown as ReadableWritablePair)
+  return new Uint8Array(await new Response(source).arrayBuffer())
+}
+
 /** Control over the workspace's durability. */
 export interface RuntimePersistence {
   /** Snapshot now and wait for it to be stored. */
@@ -76,15 +98,45 @@ export interface RuntimePersistence {
 }
 
 /**
- * Restore a previously stored workspace into a freshly booted container.
- * @param runtime - the booted container.
+ * Run one command and collect its bytes, rather than its text.
+ *
+ * `execute` decodes as it goes, which is right for a command whose output a
+ * model reads and wrong for an archive.
+ * @param mux - the machine's channels.
+ * @param script - what to run.
+ * @param stdin - bytes to feed it.
+ * @returns the exit status and the raw output.
+ */
+async function collect(mux: Mux, script: string, stdin?: Uint8Array): Promise<{ status: number, bytes: Uint8Array }> {
+  return new Promise((resolve) => {
+    const chunks: Uint8Array[] = []
+    let size = 0
+    const channel = mux.open({ kind: 'exec', script, cwd: PARENT }, {
+      onData: (bytes) => { chunks.push(bytes); size += bytes.byteLength },
+      onExit: (status) => {
+        const bytes = new Uint8Array(size)
+        let at = 0
+        for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.byteLength }
+        resolve({ status, bytes })
+      },
+    })
+    if (stdin !== undefined && stdin.byteLength > 0) channel.write(stdin)
+    channel.end()
+  })
+}
+
+/**
+ * Restore a previously stored workspace into a freshly started machine.
+ * @param mux - the machine's channels.
  * @returns whether anything was restored.
  */
-export async function restoreWorkspace(runtime: WebContainer): Promise<boolean> {
-  const snapshot = await load()
-  if (snapshot === undefined || snapshot.byteLength === 0) return false
+export async function restoreWorkspace(mux: Mux): Promise<boolean> {
+  const stored = await load()
+  if (stored === undefined || stored.byteLength === 0) return false
   try {
-    await runtime.mount(snapshot, { mountPoint: toContainerPath(WORKSPACE) })
+    const archive = await through(stored, 'gunzip')
+    const { status } = await collect(mux, `mkdir -p ${PARENT} && exec tar -C ${PARENT} -xf -`, archive)
+    if (status !== 0) throw new Error(`tar exited ${String(status)}`)
     return true
   } catch (error) {
     // A snapshot from an incompatible version is worth discarding rather than
@@ -96,17 +148,23 @@ export async function restoreWorkspace(runtime: WebContainer): Promise<boolean> 
 
 /**
  * Start snapshotting the workspace.
- * @param runtime - the booted container.
+ * @param machine - the running machine.
  * @returns the durability handle.
  */
-export function persistWorkspace(runtime: WebContainer): RuntimePersistence {
+export function persistWorkspace(machine: Machine): RuntimePersistence {
   let timer: ReturnType<typeof setTimeout> | undefined
   let inFlight: Promise<void> | undefined
 
   const snapshot = async (): Promise<void> => {
     try {
-      const bytes = await runtime.export(toContainerPath(WORKSPACE), { format: 'binary', excludes: ['node_modules'] })
-      await save(bytes as Uint8Array)
+      // `node_modules` is excluded for the same reason a backup would exclude
+      // it: it is large, it is derived, and `npm install` puts it back.
+      const { status, bytes } = await collect(
+        machine.mux,
+        `exec tar -C ${PARENT} --exclude=node_modules --exclude=.dsh-partial -cf - ${NAME}`,
+      )
+      if (status !== 0) throw new Error(`tar exited ${String(status)}`)
+      await save(await through(bytes, 'gzip'))
     } catch (error) {
       console.warn('[runtime] the workspace could not be snapshotted:', error)
     }

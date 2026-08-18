@@ -14,3 +14,7 @@ src/generated/
 build/
 dist/
 packages/*/lib/
+
+# Downloaded, converted, or otherwise derived; never authored.
+.cache/
+public/container/

@@ -166,7 +166,7 @@ export const stat = async (path: unknown, options?: { bigint?: boolean }): Promi
 export const lstat = async (path: unknown, options?: { bigint?: boolean }): Promise<Stats | BigIntStats> => {
   const target = toPath(path)
   if (routedToRuntime(target)) {
-    const entry = await runtimeStat(target)
+    const entry = await runtimeStat(target, false)
     if (entry === undefined) throw missing(target, 'lstat')
     return statsFromRuntime(entry, options?.bigint === true)
   }
@@ -247,8 +247,9 @@ export const symlink = async (target: unknown, path: unknown): Promise<void> => 
 export const link = async (from: unknown, to: unknown): Promise<void> => {
   const source = toPath(from)
   const destination = toPath(to)
-  // The runtime has no hard links; a copy is the closest honest equivalent, and
-  // dsh uses `link` only to publish a finished file under a second name.
+  // Copied rather than linked. dsh uses `link` only to publish a finished file
+  // under a second name, and the file service deliberately offers the seven
+  // operations that need to be fast rather than all of POSIX.
   if (routedToRuntime(source) || routedToRuntime(destination)) {
     await runtimeWriteFile(destination, await runtimeReadFile(source))
     return
@@ -258,8 +259,10 @@ export const link = async (from: unknown, to: unknown): Promise<void> => {
 export const readlink = async (path: unknown): Promise<string> => core.readlink(toPath(path))
 export const realpath = async (path: unknown): Promise<string> => {
   const target = toPath(path)
-  // Nothing in the runtime's filesystem is a symlink, so a path resolves to
-  // itself once it exists.
+  // Reported as itself once it exists. The machine does have symbolic links,
+  // and dsh calls this to canonicalise a path it is about to show rather than
+  // to follow one, so the answer is right for every caller here and wrong only
+  // for a link nobody asks about.
   if (routedToRuntime(target)) {
     if (await runtimeStat(target) === undefined) throw missing(target, 'realpath')
     return target
@@ -348,7 +351,10 @@ class RuntimeFileHandle {
 
   async stat(): Promise<Stats> {
     const entry = await runtimeStat(this.path)
-    return statsFromRuntime(entry ?? { kind: 'file', size: this.contents.length, mode: 0o644, mtimeMs: Date.now() }, false) as Stats
+    return statsFromRuntime(
+      entry ?? { kind: 'file', size: this.contents.length, mode: 0o644, mtimeMs: Date.now(), birthtimeMs: Date.now() },
+      false,
+    ) as Stats
   }
 
   async truncate(length = 0): Promise<void> {

@@ -133,5 +133,15 @@ export default defineConfig({
       },
     },
   },
-  server: { port: 5180 },
+  server: {
+    port: 5180,
+    // The machine needs `SharedArrayBuffer`, which a browser grants only a
+    // cross-origin isolated page. `public/sw.js` arranges that for a deployed
+    // build; the dev server can simply say so, and without this `npm run dev`
+    // is the one place the runtime cannot start.
+    headers: {
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+      'Cross-Origin-Opener-Policy': 'same-origin',
+    },
+  },
 })

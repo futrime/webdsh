@@ -1,14 +1,17 @@
 /**
- * Real-workload test for the runtime.
+ * Real-workload test for the machine.
  *
- * The runtime is only worth having if it does the things a developer machine is
- * for, so this does them: runs modern Node, installs a package from the registry
- * and imports it, runs a package script, uses the shell, and — the part that
- * matters most — checks that the agent and the terminal are the same machine
- * rather than two that look alike.
+ * The machine is only worth having if it does the things a developer machine is
+ * for, so this does them: runs bash, git, Python, and Node; uses a real
+ * pseudoterminal; and — the part that matters most — checks that the agent and
+ * the terminal are the same machine rather than two that look alike.
  *
  * It drives the terminal rather than calling the runtime directly, because the
  * terminal is what a user has.
+ *
+ * Nothing here reaches the network: the container has no route out, which
+ * `README.md` states plainly, and a test that pretended otherwise would fail
+ * for a reason that is not this build's fault.
  *
  * Usage: `npx tsx scripts/runtime-e2e.ts [--url <url>] [--headed]`
  */
@@ -114,53 +117,79 @@ interface Workload {
 }
 
 const WORKLOADS: Workload[] = [
-  { name: 'identity', script: 'node -p "[process.version, process.arch, process.platform].join(\' \')"', expect: /v\d+\.\d+.* x64 linux/ },
+  { name: 'identity', script: 'uname -sm; id -un', expect: /Linux x86_64[\s\S]*root/ },
+  { name: 'the distribution', script: 'cat /etc/os-release | head -2', expect: /Debian/ },
   { name: 'shell', script: 'pwd; echo shell-ok', expect: /shell-ok/ },
   { name: 'files', script: 'mkdir -p sub && echo written > sub/f.txt && cat sub/f.txt', expect: /written/ },
+  {
+    name: 'bash is bash',
+    script: 'echo "${BASH_VERSION%%.*}-$(echo inner)-$((6*7))"',
+    expect: /5-inner-42/,
+  },
+  {
+    name: 'control flow',
+    script: 'for i in 1 2; do if [ $i -lt 2 ]; then echo "low-$i"; else echo "high-$i"; fi; done',
+    expect: /low-1[\s\S]*high-2/,
+  },
   {
     name: 'node runs a program',
     script: 'node -e "console.log(\'sum\', [1,2,3].reduce((a,b)=>a+b,0))"',
     expect: /sum 6/,
-  },
-  {
-    name: 'npm install from the registry',
-    script: 'npm init -y >/dev/null 2>&1; npm install is-odd 2>&1 | tail -n 3',
-    expect: /added \d+ package/,
-    timeoutMs: 300_000,
-  },
-  {
-    name: 'the installed package is importable',
-    script: 'node -e "import(\'is-odd\').then(m => console.log(\'is-odd(3) =\', m.default(3)))"',
-    expect: /is-odd\(3\) = true/,
-  },
-  {
-    name: 'npm run',
-    script: `node -e "const p=require('./package.json'); p.scripts={say:'echo script-ran'}; require('fs').writeFileSync('package.json', JSON.stringify(p))" && npm run say 2>&1 | tail -n 3`,
-    expect: /script-ran/,
     timeoutMs: 180_000,
   },
   {
     name: 'esm and async',
     script: `node --input-type=module -e "const {setTimeout:sleep}=await import('node:timers/promises'); await sleep(10); console.log('esm-ok')"`,
     expect: /esm-ok/,
+    timeoutMs: 180_000,
+  },
+  {
+    name: 'node writes and reads a file',
+    script: `node -e "require('fs').writeFileSync('by-node.txt','node-wrote-this')" && cat by-node.txt`,
+    expect: /node-wrote-this/,
+    timeoutMs: 180_000,
+  },
+  {
+    name: 'python',
+    script: 'python3 -c "import json,platform; print(json.dumps({\'py\': platform.python_version()[:1]}))"',
+    expect: /"py": "3"/,
+    timeoutMs: 180_000,
+  },
+  {
+    name: 'a python virtualenv',
+    script: 'rm -rf venv && python3 -m venv venv && ./venv/bin/python -c "print(\'venv-ok\')"',
+    expect: /venv-ok/,
+    // Minutes, not seconds: creating a virtualenv copies an interpreter and
+    // unpacks pip, and every instruction of that is emulated.
+    timeoutMs: 900_000,
+  },
+  {
+    name: 'git',
+    script: 'rm -rf repo && mkdir repo && cd repo && git init -q && echo one > a.txt && git add a.txt'
+      + ' && git -c user.email=a@b -c user.name=t commit -qm first && git log --oneline && git status --short; cd ..',
+    // `--oneline` decorates the tip, so the subject is not the second field.
+    expect: /[0-9a-f]{7} .*first/,
+    timeoutMs: 180_000,
+  },
+  {
+    name: 'ripgrep',
+    script: 'rg --line-number one repo/a.txt',
+    expect: /1:one/,
+  },
+  {
+    name: 'signals reach the process tree',
+    script: 'sleep 30 & kill -TERM $!; wait $!; echo "status=$?"',
+    expect: /status=143/,
+  },
+  {
+    name: 'the terminal is a real pty',
+    script: 'tty; stty size',
+    expect: /\/dev\/pts\/\d[\s\S]*\d+ \d+/,
   },
   {
     name: 'workspace write',
     script: 'echo persisted-by-runtime > marker.txt && cat marker.txt',
     expect: /persisted-by-runtime/,
-  },
-  // The terminal runs the same shell the agent's tool calls do. These are the
-  // constructs the container's own `jsh` cannot do — and command substitution,
-  // which it does silently and wrongly, expanding to nothing while succeeding.
-  {
-    name: 'command substitution',
-    script: 'echo "sub=$(echo inner)"',
-    expect: /sub=inner/,
-  },
-  {
-    name: 'control flow',
-    script: 'for i in 1 2; do if [ $i -lt 2 ]; then echo "low-$i"; else echo "high-$i"; fi; done',
-    expect: /low-1[\s\S]*high-2/,
   },
   {
     name: 'a session keeps its state',
@@ -194,7 +223,9 @@ async function main(): Promise<void> {
     const started = Date.now()
     await openTerminal(page)
     await page.waitForFunction(
-      () => /[❯$]\s*$/m.test((globalThis as { __DSH_TERMINAL__?: { text(): string } }).__DSH_TERMINAL__?.text() ?? ''),
+      // `#` because the container's shell runs as root, which is what a
+      // single-user machine in a tab should be.
+      () => /[❯$#]\s*$/m.test((globalThis as { __DSH_TERMINAL__?: { text(): string } }).__DSH_TERMINAL__?.text() ?? ''),
       undefined,
       { timeout: 300_000 },
     )

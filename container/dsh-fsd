@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""File operations, without a process per operation.
+
+The agent's Read, Write, and Edit tools go through `node:fs/promises`, and the
+files they name live in the container. Each of those calls could be a shell
+command — `cat`, `mkdir -p`, a redirect — but a command under an emulated CPU
+costs a fork, an exec, and a dynamic link, and the tools make a lot of calls.
+
+So this runs once, on a channel of its own, and answers requests on a pipe. It
+is not a filesystem protocol; it is exactly the seven operations
+`src/runtime/fs-bridge.ts` needs, and nothing else.
+
+    request:  <json>\\n[payload bytes]
+    response: <json>\\n[payload bytes]
+
+`bytes` in the JSON header, when present, is how many raw bytes follow it — so
+file contents travel as themselves rather than as base64, and a request is
+framed without any byte being special.
+"""
+
+import errno
+import json
+import os
+import shutil
+import stat as statmod
+import sys
+
+IN = sys.stdin.buffer
+OUT = sys.stdout.buffer
+
+
+def read_exactly(count):
+    """Read exactly `count` bytes, or die trying — a short read desynchronises."""
+    chunks = []
+    while count > 0:
+        chunk = IN.read(count)
+        if not chunk:
+            raise EOFError
+        chunks.append(chunk)
+        count -= len(chunk)
+    return b"".join(chunks)
+
+
+def reply(payload=b"", **fields):
+    if payload:
+        fields["bytes"] = len(payload)
+    OUT.write(json.dumps(fields).encode() + b"\n")
+    if payload:
+        OUT.write(payload)
+    OUT.flush()
+
+
+def fail(error):
+    code = errno.errorcode.get(getattr(error, "errno", None), "EIO")
+    reply(error=str(error), code=code)
+
+
+def kind_of(mode):
+    if statmod.S_ISDIR(mode):
+        return "dir"
+    if statmod.S_ISLNK(mode):
+        return "link"
+    return "file"
+
+
+def op_stat(request, _payload):
+    follow = request.get("follow", True)
+    info = os.stat(request["path"]) if follow else os.lstat(request["path"])
+    reply(
+        kind=kind_of(info.st_mode),
+        size=info.st_size,
+        mode=statmod.S_IMODE(info.st_mode),
+        mtimeMs=info.st_mtime * 1000,
+        birthtimeMs=info.st_ctime * 1000,
+    )
+
+
+def op_read(_request, _payload, path=None):
+    with open(path, "rb") as handle:
+        reply(handle.read())
+
+
+def op_write(request, payload):
+    path = request["path"]
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    # Written whole and moved into place, so a reader never sees half a file —
+    # the same guarantee dsh's own atomic write gives on a machine.
+    temporary = path + ".dsh-partial"
+    with open(temporary, "wb") as handle:
+        handle.write(payload)
+    os.replace(temporary, path)
+    reply()
+
+
+def op_readdir(request, _payload):
+    entries = []
+    with os.scandir(request["path"]) as scan:
+        for entry in scan:
+            try:
+                if entry.is_symlink():
+                    kind = "link"
+                elif entry.is_dir():
+                    kind = "dir"
+                else:
+                    kind = "file"
+            except OSError:
+                kind = "file"
+            entries.append({"name": entry.name, "kind": kind})
+    reply(entries=entries)
+
+
+def op_mkdir(request, _payload):
+    if request.get("recursive"):
+        os.makedirs(request["path"], exist_ok=True)
+    else:
+        os.mkdir(request["path"])
+    reply()
+
+
+def op_rm(request, _payload):
+    path = request["path"]
+    try:
+        if os.path.isdir(path) and not os.path.islink(path):
+            if request.get("recursive"):
+                shutil.rmtree(path)
+            else:
+                os.rmdir(path)
+        else:
+            os.remove(path)
+    except FileNotFoundError:
+        if not request.get("force"):
+            raise
+    reply()
+
+
+def op_rename(request, _payload):
+    destination = request["to"]
+    parent = os.path.dirname(destination)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    os.replace(request["from"], destination)
+    reply()
+
+
+HANDLERS = {
+    "stat": op_stat,
+    "write": op_write,
+    "readdir": op_readdir,
+    "mkdir": op_mkdir,
+    "rm": op_rm,
+    "rename": op_rename,
+}
+
+
+def main():
+    reply(ready=True)
+    while True:
+        line = IN.readline()
+        if not line:
+            return
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            request = json.loads(line)
+        except ValueError:
+            continue
+        payload = read_exactly(request["bytes"]) if request.get("bytes") else b""
+        try:
+            if request.get("op") == "read":
+                op_read(request, payload, request["path"])
+            else:
+                handler = HANDLERS.get(request.get("op"))
+                if handler is None:
+                    reply(error="unsupported operation %r" % request.get("op"), code="ENOSYS")
+                else:
+                    handler(request, payload)
+        except OSError as error:
+            fail(error)
+        except Exception as error:  # noqa: BLE001 - a bad request must not end the service
+            reply(error=str(error), code="EIO")
+
+
+if __name__ == "__main__":
+    main()
