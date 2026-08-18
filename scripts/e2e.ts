@@ -458,6 +458,55 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    // The picker opens on Home and offers a New folder button, so the workspace
+    // is whichever directory the user made — not the one directory the runtime
+    // happened to be given. While only `/home/dsh/workspace` was carried into
+    // the container, any other choice produced a session where every command
+    // failed with `no such file or directory`, the file tools read a different
+    // filesystem than the shell wrote to, and nothing was ever snapshotted.
+    name: 'workspace-anywhere',
+    async run(page) {
+      await waitForShell(page)
+      const elsewhere = '/home/dsh/elsewhere'
+      const wrote = await page.evaluate(async (cwd: string) => {
+        try {
+          return JSON.stringify(await globalThis.dsh.shell('echo carried > mark.txt; pwd', { cwd }))
+        } catch (error) {
+          return `THREW ${error instanceof Error ? error.message : String(error)}`
+        }
+      }, elsewhere)
+      expect(wrote.includes(elsewhere), `a workspace outside the default one could not run a command: ${wrote}`)
+
+      // The agent's Read and Write go through the fs service; if they see a
+      // different filesystem than the shell, the two are not one machine.
+      const seen = await page.evaluate(async (cwd: string) => {
+        const fs = globalThis.dsh.ctx.get('fs') as {
+          resolve(path: string): Promise<object>
+          readText(target: object): Promise<string>
+        } | undefined
+        if (fs === undefined) return 'the fs service is not mounted'
+        try {
+          return (await fs.readText(await fs.resolve(`${cwd}/mark.txt`))).trim()
+        } catch (error) {
+          return `THREW ${error instanceof Error ? error.message : String(error)}`
+        }
+      }, elsewhere)
+      expect(seen === 'carried', `the file tools did not see what the shell wrote: ${seen}`)
+
+      await page.evaluate(async () => { await globalThis.dsh.flush() })
+      await page.reload({ waitUntil: 'domcontentloaded' })
+      await waitForShell(page)
+      const survived = await page.evaluate(async (cwd: string) => {
+        try {
+          return JSON.stringify(await globalThis.dsh.shell('cat mark.txt', { cwd }))
+        } catch (error) {
+          return `THREW ${error instanceof Error ? error.message : String(error)}`
+        }
+      }, elsewhere)
+      expect(survived.includes('carried'), `a workspace outside the default one did not survive a reload: ${survived}`)
+    },
+  },
+  {
     // The workspace surviving a reload is only half of what a returning visitor
     // comes back to; the other half is the transcript. Session logs are written
     // zstd — this deployment's default, the same as `dsh web`'s — and the

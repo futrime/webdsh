@@ -16,12 +16,45 @@
  */
 
 import type { WebContainer } from '@webcontainer/api'
-import { toContainerPath, WORKSPACE } from './webcontainer.ts'
+import { HARNESS_DIR, toContainerPath, WORKSPACE } from './webcontainer.ts'
 
 /** The database and record the snapshot lives in. */
 const DB_NAME = 'dsh-runtime-workspace'
 const STORE = 'snapshots'
-const KEY = 'workspace'
+
+/**
+ * The record holding everything the user has: the whole working directory.
+ *
+ * A workspace is whichever directory the user picked, and the picker opens on
+ * Home — so snapshotting only `workspace` meant a workspace made anywhere else
+ * was never stored, and came back empty after a reload.
+ */
+const KEY = 'home'
+
+/**
+ * The record written while only `workspace` was kept.
+ *
+ * Still read, once: a returning visitor's work is in it, and mounting it where
+ * it came from is the only way to give it back. The next snapshot is written
+ * in the current shape, so this runs at most once per browser.
+ */
+const LEGACY_KEY = 'workspace'
+
+/**
+ * What never belongs in a snapshot.
+ *
+ * `node_modules` because it is reinstallable and enormous; the harness's own
+ * directory because in the container it holds staged command scripts and the
+ * shell program, which the boot writes fresh and which are not the user's work.
+ *
+ * Read through a function because this module and `webcontainer.ts` import each
+ * other: at module-init time the constant over there has not been assigned yet,
+ * and reading it eagerly throws before the page has drawn anything.
+ * @returns the exclusion list for `export`.
+ */
+function excludes(): string[] {
+  return ['node_modules', HARNESS_DIR]
+}
 
 /** How long to wait after a change before snapshotting. */
 const DEBOUNCE_MS = 4_000
@@ -39,12 +72,16 @@ async function open(): Promise<IDBDatabase | undefined> {
   })
 }
 
-/** Read the stored snapshot, if there is one. */
-async function load(): Promise<Uint8Array | undefined> {
+/**
+ * Read a stored snapshot, if there is one.
+ * @param key - which record to read.
+ * @returns the bytes, or nothing when the record or the store is absent.
+ */
+async function load(key: string): Promise<Uint8Array | undefined> {
   const db = await open()
   if (db === undefined) return undefined
   return new Promise((resolve) => {
-    const request = db.transaction(STORE, 'readonly').objectStore(STORE).get(KEY)
+    const request = db.transaction(STORE, 'readonly').objectStore(STORE).get(key)
     request.onsuccess = () => {
       const value: unknown = request.result
       resolve(value instanceof Uint8Array ? value : value instanceof ArrayBuffer ? new Uint8Array(value) : undefined)
@@ -81,17 +118,27 @@ export interface RuntimePersistence {
  * @returns whether anything was restored.
  */
 export async function restoreWorkspace(runtime: WebContainer): Promise<boolean> {
-  const snapshot = await load()
-  if (snapshot === undefined || snapshot.byteLength === 0) return false
-  try {
-    await runtime.mount(snapshot, { mountPoint: toContainerPath(WORKSPACE) })
-    return true
-  } catch (error) {
-    // A snapshot from an incompatible version is worth discarding rather than
-    // failing the boot over; the workspace simply starts empty.
-    console.warn('[runtime] the stored workspace could not be restored:', error)
-    return false
+  // Current shape first: the whole working directory, mounted where it was
+  // taken from. The older record held only `workspace`, and mounting that at
+  // the root would move a returning visitor's files, so each shape is mounted
+  // at its own point.
+  const current = await load(KEY)
+  const candidates: { bytes: Uint8Array | undefined, mountPoint: string }[] = [
+    { bytes: current, mountPoint: '.' },
+    ...(current === undefined ? [{ bytes: await load(LEGACY_KEY), mountPoint: toContainerPath(WORKSPACE) }] : []),
+  ]
+  for (const { bytes, mountPoint } of candidates) {
+    if (bytes === undefined || bytes.byteLength === 0) continue
+    try {
+      await runtime.mount(bytes, { mountPoint })
+      return true
+    } catch (error) {
+      // A snapshot from an incompatible version is worth discarding rather than
+      // failing the boot over; the workspace simply starts empty.
+      console.warn('[runtime] the stored workspace could not be restored:', error)
+    }
   }
+  return false
 }
 
 /**
@@ -105,7 +152,7 @@ export function persistWorkspace(runtime: WebContainer): RuntimePersistence {
 
   const snapshot = async (): Promise<void> => {
     try {
-      const bytes = await runtime.export(toContainerPath(WORKSPACE), { format: 'binary', excludes: ['node_modules'] })
+      const bytes = await runtime.export('.', { format: 'binary', excludes: excludes() })
       await save(bytes as Uint8Array)
     } catch (error) {
       console.warn('[runtime] the workspace could not be snapshotted:', error)
@@ -139,7 +186,9 @@ export function persistWorkspace(runtime: WebContainer): RuntimePersistence {
       if (db === undefined) return
       await new Promise<void>((resolve) => {
         const transaction = db.transaction(STORE, 'readwrite')
-        transaction.objectStore(STORE).delete(KEY)
+        // Both records: a reset that left the older one behind would restore it
+        // on the next boot, which is the opposite of what was asked for.
+        for (const key of [KEY, LEGACY_KEY]) transaction.objectStore(STORE).delete(key)
         transaction.oncomplete = () => { resolve() }
         transaction.onerror = () => { resolve() }
       })

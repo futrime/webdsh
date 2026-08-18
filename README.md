@@ -111,8 +111,13 @@ Two things follow from `SharedArrayBuffer`, which the runtime needs:
 - The page must be cross-origin isolated, and isolation is requested through
   headers a static host cannot be told to send. `public/sw.js` adds them, and
   the first load reloads once through the worker to pick them up.
-- The filesystem is in memory, so the workspace is snapshotted to IndexedDB on a
-  debounce and on `pagehide`, and restored at boot.
+- The filesystem is in memory, so it is snapshotted to IndexedDB on a debounce
+  and on `pagehide`, and restored at boot. The whole working directory is kept,
+  not one directory inside it: the picker opens on Home and offers a New folder
+  button, so the workspace is wherever the user made it, and everything under
+  that directory — bar the harness's own `.dsh` — is theirs. It is also the
+  subtree the agent's file tools are routed into, which is what makes the
+  commands it runs and the files it reads the same machine.
 
 ## The shell the model is told about
 

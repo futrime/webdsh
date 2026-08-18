@@ -47,8 +47,17 @@ export const WORKDIR = '/home/dsh'
  */
 export const WORKSPACE = `${WORKDIR}/workspace`
 
-/** Where the harness keeps its own files, relative to the working directory. */
-const PRIVATE_DIR = '.dsh'
+/**
+ * Where the harness keeps its own files, relative to the working directory.
+ *
+ * Exported because the filesystem bridge has to know it too: everything else
+ * under the working directory is the user's and belongs to the container, and
+ * this one directory is not.
+ */
+export const HARNESS_DIR = '.dsh'
+
+/** The same, under the name the rest of this file uses. */
+const PRIVATE_DIR = HARNESS_DIR
 
 /** Where the shell program lives, as the container itself addresses it. */
 const SHELL_PATH = `${WORKDIR}/${PRIVATE_DIR}/sh.cjs`
@@ -362,10 +371,14 @@ export async function execute(script: string, options: RunOptions = {}): Promise
   const argv = mode === 'jsh'
     ? ['jsh', [`${WORKDIR}/${scriptFile}`]] as const
     : ['node', [SHELL_PATH, `${WORKDIR}/${scriptFile}`, ...positional]] as const
-  const process = await runtime.spawn(argv[0], [...argv[1]], {
-    cwd: toContainerPath(options.cwd ?? WORKSPACE),
-    env,
-  })
+  // A workspace the user picked exists wherever they made it, and the container
+  // only has what someone put there. Creating it on the way in is what keeps
+  // "the agent and the terminal are one machine" true for a workspace that is
+  // not the default one — the alternative is every command in that session
+  // failing with `no such file or directory` and nothing saying which one.
+  const workdir = toContainerPath(options.cwd ?? WORKSPACE)
+  await ensureDirectory(runtime, workdir)
+  const process = await runtime.spawn(argv[0], [...argv[1]], { cwd: workdir, env })
 
   let output = ''
   void process.output.pipeTo(new WritableStream<string>({
@@ -392,6 +405,28 @@ export async function execute(script: string, options: RunOptions = {}): Promise
   // cheapest place to notice: the snapshot itself is debounced.
   durability?.touch()
   return { status, stdout: output, stderr: '' }
+}
+
+/**
+ * Directories this page has already made sure of, so the common case costs one
+ * `Set` lookup rather than a call into the container per command.
+ */
+const ensured = new Set<string>()
+
+/**
+ * Make sure a working directory exists in the container.
+ *
+ * Cheap and unconditional rather than a retry after a failure: a missing cwd
+ * does not fail the spawn, it fails the process after it has started, which
+ * arrives as a bare `no such file or directory` with nothing to catch it around
+ * and no way to tell it from the command's own error.
+ * @param runtime - the booted container.
+ * @param workdir - the directory, as the container names it.
+ */
+async function ensureDirectory(runtime: WebContainer, workdir: string): Promise<void> {
+  if (workdir === '.' || ensured.has(workdir)) return
+  await runtime.fs.mkdir(workdir, { recursive: true }).catch(() => undefined)
+  ensured.add(workdir)
 }
 
 /**

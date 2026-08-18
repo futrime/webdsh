@@ -16,10 +16,40 @@
  * read rather than a process.
  */
 
-import { runtimeAvailable, runtimeFs, runtimePersistence, toContainerPath, WORKSPACE } from './webcontainer.ts'
+import { HARNESS_DIR, runtimeAvailable, runtimeFs, runtimePersistence, toContainerPath, WORKDIR } from './webcontainer.ts'
 
-/** Paths at or below this belong to the runtime; everything else to the host. */
-const ROUTED_ROOTS = [WORKSPACE]
+/**
+ * Paths at or below this belong to the runtime; everything else to the host.
+ *
+ * The runtime's working directory, not the workspace inside it, because the
+ * workspace is whichever directory the user picked and the picker opens on the
+ * whole of Home. Routing only one fixed directory made every other choice a
+ * silently split machine: the agent's commands ran in the container while its
+ * Read and Write went to the page's filesystem, so `glob` found nothing the
+ * shell had just written, and a workspace the container had never heard of
+ * failed every command with `no such file or directory`.
+ */
+const ROUTED_ROOT = WORKDIR
+
+/**
+ * The one subtree under it that stays with the page.
+ *
+ * `$DSH_HOME` — settings, credentials, session logs, presets — is read
+ * synchronously all over dsh and is not the user's data. The container keeps
+ * its own directory of the same name for staged command scripts, and the two
+ * are meant to be different things in different filesystems.
+ */
+const HOST_ONLY = `${WORKDIR}/${HARNESS_DIR}`
+
+/**
+ * Whether a path is at or below a directory.
+ * @param path - an absolute path.
+ * @param root - the directory to test against.
+ * @returns true when `path` is `root` or inside it.
+ */
+function within(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}/`)
+}
 
 /**
  * Whether a path belongs to the runtime.
@@ -28,7 +58,7 @@ const ROUTED_ROOTS = [WORKSPACE]
  */
 export function routedToRuntime(path: string): boolean {
   if (!runtimeAvailable()) return false
-  return ROUTED_ROOTS.some(root => path === root || path.startsWith(`${root}/`))
+  return within(path, ROUTED_ROOT) && !within(path, HOST_ONLY)
 }
 
 /** What a stat needs to report, in the shape the shim's `Stats` is built from. */
