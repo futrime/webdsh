@@ -461,6 +461,71 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    // The workspace surviving a reload is only half of what a returning visitor
+    // comes back to; the other half is the transcript. Session logs are written
+    // zstd — this deployment's default, the same as `dsh web`'s — and the
+    // reader asks `zlib.createZstdDecompress` for a stream before falling back
+    // to the one-shot codec. While that call threw, every stored session came
+    // back as `Failed to load history: … zstd is unavailable`, and no suite
+    // noticed, because the persistence case reads files rather than history.
+    name: 'session-history',
+    async run(page) {
+      await waitForShell(page)
+      // The host settles after the shell paints, and a prompt sent before it
+      // has one creates no session to read back.
+      await page.waitForTimeout(3000)
+      const written = await page.evaluate(async () => {
+        try {
+          await globalThis.dsh.promptOnce('sk-not-a-real-key', 'remember this line')
+        } catch {
+          // The key is a placeholder; the prompt is in the log either way.
+        }
+        const proxy = globalThis.dsh.ctx.get('apiProxy') as {
+          sessions: { list(request: { rpcId: string, payload: Record<string, unknown> }): Promise<{ result: { value?: { items?: unknown[] } } }> }
+        } | undefined
+        const listed = await proxy?.sessions.list({ rpcId: crypto.randomUUID(), payload: {} })
+        return listed?.result.value?.items?.length ?? 0
+      })
+      expect(written > 0, 'the prompt wrote no session to read back')
+      await page.evaluate(async () => { await globalThis.dsh.flush() })
+      await page.reload({ waitUntil: 'domcontentloaded' })
+      await waitForShell(page)
+
+      const outcome = await page.evaluate(async () => {
+        const proxy = globalThis.dsh.ctx.get('apiProxy') as {
+          sessions: {
+            list(request: { rpcId: string, payload: Record<string, unknown> }): Promise<{ result: { value?: { items?: { sessionId: string }[] } } }>
+            history(request: { rpcId: string, payload: Record<string, unknown> }): Promise<{
+              result: { ok: boolean, error?: unknown, value?: { events?: unknown[] } }
+            }>
+          }
+        } | undefined
+        if (proxy === undefined) return { reason: 'the apiProxy service is not mounted' }
+        // The store loads out of IndexedDB after the shell paints, so the list
+        // is polled rather than sampled at whatever instant this ran.
+        let sessions: { sessionId: string }[] = []
+        for (let attempt = 0; attempt < 20 && sessions.length === 0; attempt++) {
+          const listed = await proxy.sessions.list({ rpcId: crypto.randomUUID(), payload: {} })
+          sessions = listed.result.value?.items ?? []
+          if (sessions.length === 0) await new Promise(resolve => setTimeout(resolve, 500))
+        }
+        if (sessions.length === 0) return { reason: 'no session survived the reload' }
+        const history = await proxy.sessions.history({
+          rpcId: crypto.randomUUID(),
+          payload: { sessionId: sessions[0].sessionId },
+        })
+        return {
+          ok: history.result.ok,
+          error: JSON.stringify(history.result.error ?? null),
+          events: history.result.value?.events?.length ?? 0,
+        }
+      })
+      expect(outcome.reason === undefined, `${String(outcome.reason)}`)
+      expect(outcome.ok === true, `the stored transcript could not be read back: ${String(outcome.error)}`)
+      expect((outcome.events ?? 0) > 0, 'the restored session reported no events')
+    },
+  },
+  {
     name: 'plugin-command',
     async run(page) {
       await waitForShell(page)

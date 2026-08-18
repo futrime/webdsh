@@ -621,6 +621,49 @@ dnsModule.default = dnsModule
 
 // ---- node:zlib -------------------------------------------------------------
 
+/**
+ * `zlib.createZstdCompress` and `createZstdDecompress`, as far as a page can
+ * honestly go.
+ *
+ * There is no streaming zstd here: the codec is a wasm build with a one-shot
+ * face, and `node:stream`'s `Transform` in this host is a placeholder. What
+ * reaches for these is the session log's reader, and it does not actually
+ * stream through them — it asks for one, probes it for Node's *private* stream
+ * internals (`_handle.writeSync`, `_writeState`, `_defaultFlushFlag`), and,
+ * finding none, closes it and decodes each frame through `zstdDecompressSync`,
+ * which this file does implement.
+ *
+ * Throwing here took that probe with it. Every session log is written zstd —
+ * it is this deployment's default, the same as `dsh web`'s — so every stored
+ * session came back as `Failed to load history: … zstd is unavailable`, from a
+ * codec that was sitting right there. The object below fails the probe by
+ * construction, which is the answer the reader is written to handle.
+ *
+ * It refuses to pretend to be a stream. A caller that pipes through one of
+ * these gets an error rather than bytes that are quietly the wrong ones.
+ * @param kind - which direction the caller asked for, for the refusal message.
+ * @returns the probe-failing, closeable stand-in.
+ */
+function zstdStreamStub(kind: 'compress' | 'decompress'): Record<string, unknown> {
+  const refuse = (): never => {
+    throw new Error(`zlib: streaming zstd ${kind} is unavailable in the browser host; use the one-shot API`)
+  }
+  const stub: Record<string, unknown> = {
+    close: (): void => {},
+    destroy: (): void => {},
+    write: refuse,
+    end: refuse,
+    pipe: refuse,
+    // An error listener is what a careful caller attaches first; refusing that
+    // would fail the very code being careful.
+    on: (): unknown => stub,
+    once: (): unknown => stub,
+    off: (): unknown => stub,
+    removeListener: (): unknown => stub,
+  }
+  return stub
+}
+
 /** `node:zlib`, backed by fflate. Only the sync forms dsh's export path uses. */
 export const zlibModule = {
   gzipSync: (data: Uint8Array | string): Buffer => Buffer.from(gzipSync(toBytes(data))),
@@ -637,15 +680,12 @@ export const zlibModule = {
     Z_BEST_COMPRESSION: 9, Z_DEFAULT_COMPRESSION: -1, Z_NO_COMPRESSION: 0,
     ZSTD_c_compressionLevel: 100, ZSTD_CLEVEL_DEFAULT: 3,
   },
-  // Zstd has no pure-JS implementation in this build. Callers reach it only
-  // through optional content-encoding negotiation, so a loud throw is right:
-  // silently returning the compressed bytes would corrupt the payload.
   zstdCompressSync,
   zstdDecompressSync,
   zstdCompress,
   zstdDecompress,
-  createZstdCompress: (): never => { throw new Error('zlib: zstd is unavailable in the browser host') },
-  createZstdDecompress: (): never => { throw new Error('zlib: zstd is unavailable in the browser host') },
+  createZstdCompress: () => zstdStreamStub('compress'),
+  createZstdDecompress: () => zstdStreamStub('decompress'),
   createGzip: (): never => { throw new Error('zlib: streaming gzip is unavailable in the browser host') },
   createGunzip: (): never => { throw new Error('zlib: streaming gzip is unavailable in the browser host') },
   default: undefined as unknown,
