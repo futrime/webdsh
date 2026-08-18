@@ -20,14 +20,11 @@
  * description the model plans against — because swapping either one alone is
  * how the confident wrong answer happens.
  *
- * It *replaces* the shipped bash tool rather than adding one beside it, and
- * keeps its name. That is not a cosmetic choice. A model reaches for a tool
- * called `bash` whether or not the roster offers one — it is the strongest
- * prior any of them has about a shell — so a correctly-named `jsh` tool is one
- * the model does not call, while it keeps emitting `bash` calls that now match
- * nothing at all. Registering under the name it will use, and spending the
- * first line of the description saying the name is wrong, is what makes the
- * correction arrive at the moment it is needed.
+ * It *replaces* the shipped bash tool rather than adding one beside it: the
+ * `tool-bash` row is disabled and this one takes its place, so the model is
+ * offered exactly one shell and that shell is `jsh`. Leaving a `bash` tool in
+ * the roster — even one that ran jsh underneath — would be an invitation to
+ * write bash, which is the habit this plugin exists to break.
  *
  * Everything else about a command is unchanged: `ctx.shell` still resolves the
  * timeout, still confines the command under the sandbox policy, still spills
@@ -77,9 +74,9 @@ function jshDescription(background: boolean): string {
   return [
     'Execute a command in this machine\'s shell and return its output.',
     '',
-    'This tool does NOT run bash. The shell is `jsh`, and `/bin/bash`, `/bin/sh` and `/bin/zsh`',
-    'are all `jsh` here — so a command written for bash gets jsh\'s answer, not bash\'s. Read',
-    'this before writing one.',
+    'This is the only shell tool in this session; there is no `bash` tool. The shell is `jsh`, a',
+    'JavaScript shell, and it is not POSIX. `/bin/bash`, `/bin/sh` and `/bin/zsh` are all the same',
+    '`jsh` program, so naming one of them changes nothing. Read this before writing a command.',
     '',
     'NEVER use these. jsh accepts them, expands them to the empty string, and exits 0 — a wrong',
     'answer that looks like a right one:',
@@ -260,30 +257,26 @@ export function apply(ctx: Context): void {
   const background = jobs !== undefined
 
   ctx.systemPrompt.section({
-    name: 'tool:bash',
+    name: 'tool:jsh',
     // The same slot the shipped bash section takes, because it is the same
     // advice and the model should not receive both.
     order: 105,
     text:
-      'The `bash` tool does not run bash. This machine\'s shell is `jsh`: `$(...)`, `$((...))`, '
-      + '`for`, `if`, `while`, `case`, functions, heredocs, `<`, and `[ ]` do not work, and the '
-      + 'first two fail silently by expanding to nothing. Use `node -e` or `python3 -c` for '
-      + 'anything with logic in it, and check the [exit code: N] marker on every result.',
+      'There is no `bash` tool in this session. The only shell is the `jsh` tool, and `jsh` is '
+      + 'not a POSIX shell: `$(...)`, `$((...))`, `for`, `if`, `while`, `case`, functions, '
+      + 'heredocs, `<`, and `[ ]` do not work, and the first two fail silently by expanding to '
+      + 'nothing. Use `node -e` or `python3 -c` for anything with logic in it, and check the '
+      + '[exit code: N] marker on every result.',
   })
 
   ctx.tools.register(defineTool({
-    // Named `bash`, deliberately. This plugin replaces that tool rather than
-    // adding one beside it: a model reaches for `bash` whatever the roster
-    // says, and a shell tool under a name it has never seen is a tool it keeps
-    // failing to call. The name is the slot; the description below is the
-    // contract, and its first line is that this is not bash.
-    name: 'bash',
+    name: 'jsh',
     description: jshDescription(background),
     parameters: {
       command: {
         type: 'string',
         required: true,
-        description: 'The command to execute. It runs under `jsh`, not bash — see the tool description for what jsh does and does not accept.',
+        description: 'The command to execute, in `jsh` — see the tool description for what jsh does and does not accept.',
       },
       description: {
         type: 'string',
@@ -387,7 +380,7 @@ export function apply(ctx: Context): void {
         return {
           kind: 'background' as const,
           jobId: jobs.start({
-            kind: 'bash',
+            kind: 'jsh',
             label: command,
             ...(exec.agent === undefined ? {} : { owner: exec.agent }),
             run: () => {

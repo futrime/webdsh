@@ -177,43 +177,42 @@ const scenarios: Scenario[] = [
     name: 'jsh-plugin',
     async run(page) {
       await waitForShell(page)
-      // The plugin REPLACES the shell tool; it does not add one. There is
-      // exactly one, it keeps the name a model reaches for on its own, and its
-      // description is what corrects the assumption that name carries. A build
-      // that registered `jsh` beside `bash`, or instead of it, would leave the
-      // model calling a tool that is not there — which is what this asserts
-      // against, because it is what actually happened.
-      const composition = await page.evaluate(() => {
+      // The plugin REPLACES the shell tool. The model must be offered exactly
+      // one shell, it must be `jsh`, and — the part that actually went wrong —
+      // nothing anywhere in the assembled prompt may advertise a `bash` tool.
+      // A model told it has one will call it, and there is nothing to answer.
+      const composition = await page.evaluate(async () => {
         const tools = globalThis.dsh.ctx.get('tools') as {
           schemas(): { name: string }[]
           get(name: string): { description?: string } | undefined
         } | undefined
+        const prompt = globalThis.dsh.ctx.get('systemPrompt') as {
+          assemble(): Promise<unknown>
+        } | undefined
         const runtime = (globalThis as { __DSH_WEB_RUNTIME__?: { shellMode(): string } }).__DSH_WEB_RUNTIME__
         return {
           names: (tools?.schemas() ?? []).map(tool => tool.name).sort(),
-          description: tools?.get('bash')?.description ?? '',
+          description: tools?.get('jsh')?.description ?? '',
+          assembly: JSON.stringify(await prompt?.assemble() ?? {}),
           mode: runtime?.shellMode(),
         }
       })
-      const shells = composition.names.filter(name => name === 'bash' || name === 'jsh')
-      expect(
-        shells.length === 1 && shells[0] === 'bash',
-        `expected exactly one shell tool named bash; the roster is ${composition.names.join(', ')}`,
-      )
+      expect(composition.names.includes('jsh'), `the jsh tool is not registered: ${composition.names.join(', ')}`)
+      expect(!composition.names.includes('bash'), 'a bash tool is registered; the model must only see jsh')
       expect(composition.mode === 'jsh', `commands do not run in jsh: mode is ${String(composition.mode)}`)
-      // The name says bash, so the description has to be where the model finds
-      // out otherwise — and it has to say so before anything else.
-      expect(
-        composition.description.startsWith('Execute a command'),
-        'the bash tool is the shipped one, not the replacement',
-      )
-      expect(
-        /does NOT run bash/.test(composition.description),
-        'the tool description does not tell the model its name is wrong',
-      )
       for (const claim of ['$(...)', 'for', 'heredocs', 'node -e', 'python3 -c']) {
         expect(composition.description.includes(claim), `the tool description does not mention ${claim}`)
       }
+
+      // Saying "there is no bash tool" is the one way the words may appear;
+      // anything else that names one is a prompt telling the model to call
+      // something that does not exist. `web-terminal` used to do exactly that.
+      const remaining = composition.assembly.replace(/is no `?bash`? tool/gi, '')
+      const offenders = [...remaining.matchAll(/.{60}bash tool.{60}/gi)].map(match => match[0])
+      expect(
+        offenders.length === 0,
+        `the assembled prompt advertises a bash tool:\n    ${offenders.join('\n    ')}`,
+      )
     },
   },
   {

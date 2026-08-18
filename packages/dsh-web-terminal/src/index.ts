@@ -34,8 +34,8 @@ export function apply(ctx: Context): void {
     order: 60,
     text:
       'The user has an interactive terminal open on this same workspace, running the '
-      + 'same runtime your Bash tool runs in. Files you create are visible to them '
-      + 'immediately, and files they create are visible to you.',
+      + 'same runtime and the same shell your own shell tool runs in. Files you create '
+      + 'are visible to them immediately, and files they create are visible to you.',
   })
 }
 
