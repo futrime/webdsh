@@ -245,9 +245,17 @@ These are the honest limits. Everything else behaves as `dsh web` does.
   host over one IndexedDB, with no coordination between them.
 - **Storage has no quota handling.** Nothing requests persistence or reacts to
   eviction.
-- **Network reach is the browser's.** A request only succeeds if the origin
-  permits cross-origin reads. The DeepSeek API does; many hosts do not. The
-  container's own `npm install` goes through StackBlitz's proxy and works.
+- **Network reach is the browser's, and CORS is the whole rule.** A host answers
+  only if it sends CORS headers: the npm registry does, so `npm install` works,
+  and so do most JSON APIs; `example.com` and `en.wikipedia.org` do not, and a
+  request to either fails with `fetch failed`. StackBlitz's own CORS proxy is a
+  stackblitz.com project feature (a `.stackblitzrc` plus a paid plan) and has no
+  effect on a self-hosted embed — measured, not assumed. `BootOptions.coep` does
+  not help either: `credentialless` relaxes what the page may embed, while a
+  cross-origin response still has to pass CORS to be *readable*, which is what
+  the container needs. Universal reach would take a proxy this deployment runs
+  itself, which is a server, which is the one thing this build does not have.
+  The `curl` in the container is a stub — prefer `node -e "fetch(...)"`.
 - **No listening port.** Nothing can bind, so a plugin whose contract is a
   local server or an stdio child process cannot work here.
 - **`AsyncLocalStorage` is approximate.** A page cannot intercept `await`, so
