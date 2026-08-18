@@ -162,6 +162,14 @@ reports `tool-bash disabled=true` and every model request still carries a `bash`
 tool. So `scripts/assemble.ts` rewrites the preset row as it seeds it, and
 throws if no preset mounted one.
 
+Presets do not agree on how they mount a shell, either. Three carry a
+`tool-bash` row; `minimal` builds a persistent one out of a PTY registry, a bash
+backend, and `dsh-tool-bash-persistent` in a realm of its own, and the
+row-shaped rewrite never touched it — so that preset kept handing the model a
+`bash` whose description promises apt and pip. Both shapes are rewritten now,
+and the seeding step refuses to ship a preset that still names any bash-backed
+shell, because the next shape will not be one either rewrite knows.
+
 That is also why `scripts/e2e.ts` asserts against a captured model request
 rather than the tool registry. Three suites went green over a build that was
 still sending `bash` to the model, because all three asked the registry —

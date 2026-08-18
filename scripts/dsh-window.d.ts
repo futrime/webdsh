@@ -11,7 +11,7 @@ declare global {
     readFile(path: string): string
     writeFile(path: string, contents: string): void
     reset(): Promise<void>
-    promptOnce(apiKey: string, text: string): Promise<string>
+    promptOnce(apiKey: string, text: string, agentPreset?: string): Promise<string>
     plugins: {
       install(spec: string): Promise<{ name: string, version: string, hasClient: boolean, patch?: string }>
       list(): { name: string, version: string, enabled: boolean, hasClient: boolean }[]

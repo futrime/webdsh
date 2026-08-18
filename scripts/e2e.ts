@@ -52,6 +52,48 @@ function expect(condition: boolean, message: string): void {
   if (!condition) throw new Error(`assertion failed: ${message}`)
 }
 
+/**
+ * Drive one turn with a dummy key and read the tools off the request it sent.
+ *
+ * The provider rejects the key, but the request is built and sent first, and
+ * that request is the only thing that cannot be wrong about what the model was
+ * offered — a registry answers about the unscoped subset, and the shell tool is
+ * agent-scoped.
+ * @param page - the loaded app.
+ * @param agentPreset - the preset to compose the session from, or the default.
+ * @returns the offered tools, their names sorted, and the raw bodies they came from.
+ */
+async function offeredTools(page: Page, agentPreset?: string): Promise<{
+  names: string[]
+  /** Absent when the turn sent no request at all — a preset that never starts one. */
+  tools?: { function?: { name?: string } }[]
+  bodies: string[]
+}> {
+  await page.evaluate(() => { (globalThis as { __SENT__?: string[] }).__SENT__ = [] })
+  await page.evaluate(async (preset: string | undefined) => {
+    // Bounded, because what is wanted is the request bytes and they are on the
+    // wire long before the turn ends — and a preset that never starts a turn
+    // must cost this check seconds, not the caller's whole timeout.
+    await Promise.race([
+      globalThis.dsh.promptOnce('sk-not-a-real-key', 'List the files here.', preset)
+        .catch(() => undefined),
+      new Promise(resolve => setTimeout(resolve, 25_000)),
+    ])
+  }, agentPreset).catch(() => undefined)
+  await page.waitForTimeout(4000)
+
+  const bodies = await page.evaluate(() => (globalThis as { __SENT__?: string[] }).__SENT__ ?? [])
+  const request = bodies.map((body) => {
+    try {
+      return JSON.parse(body) as { tools?: { function?: { name?: string } }[] }
+    } catch {
+      return undefined
+    }
+  }).find(parsed => Array.isArray(parsed?.tools) && parsed.tools.length > 0)
+  const tools = request?.tools
+  return { names: (tools ?? []).map(tool => tool.function?.name ?? '?').sort(), tools, bodies }
+}
+
 const scenarios: Scenario[] = [
   {
     name: 'boot',
@@ -177,28 +219,8 @@ const scenarios: Scenario[] = [
     name: 'model-request',
     async run(page) {
       await waitForShell(page)
-      // Drive one real turn with a dummy key: the provider rejects it, but the
-      // request is built and sent first, and that request IS the trajectory.
-      await page.evaluate(async () => {
-        try {
-          await globalThis.dsh.promptOnce('sk-not-a-real-key', 'List the files here.')
-        } catch {
-          // Expected — the key is a placeholder. The body was already captured.
-        }
-      }).catch(() => undefined)
-      await page.waitForTimeout(4000)
-
-      const bodies = await page.evaluate(() => (globalThis as { __SENT__?: string[] }).__SENT__ ?? [])
-      const request = bodies.map((body) => {
-        try {
-          return JSON.parse(body) as { tools?: { function?: { name?: string } }[] }
-        } catch {
-          return undefined
-        }
-      }).find(parsed => Array.isArray(parsed?.tools) && parsed.tools.length > 0)
-      expect(request !== undefined, `no model request was captured (${String(bodies.length)} bodies seen)`)
-
-      const names = (request?.tools ?? []).map(tool => tool.function?.name ?? '?').sort()
+      const { names, tools, bodies } = await offeredTools(page)
+      expect(tools !== undefined, `no model request was captured (${String(bodies.length)} bodies seen)`)
       expect(names.includes('jsh'), `the model was not offered the jsh tool: ${names.join(', ')}`)
       expect(
         !names.includes('bash'),
@@ -217,7 +239,7 @@ const scenarios: Scenario[] = [
 
       // The description the model plans against, read off the wire rather than
       // out of a registry.
-      const described = JSON.stringify((request?.tools ?? []).find(tool => tool.function?.name === 'jsh'))
+      const described = JSON.stringify((tools ?? []).find(tool => tool.function?.name === 'jsh'))
       for (const claim of ['$(...)', 'heredocs', 'node -e', 'python3 -c', 'there is no `bash` tool']) {
         expect(described.includes(claim), `the jsh tool description does not mention ${claim}`)
       }
@@ -225,6 +247,46 @@ const scenarios: Scenario[] = [
       const mode = await page.evaluate(() =>
         (globalThis as { __DSH_WEB_RUNTIME__?: { shellMode(): string } }).__DSH_WEB_RUNTIME__?.shellMode())
       expect(mode === 'jsh', `commands do not run in jsh: mode is ${String(mode)}`)
+    },
+  },
+  {
+    // The default preset is not the only composition a user can pick, and the
+    // presets do not agree on how they mount a shell: three carry a `tool-bash`
+    // row, and `minimal` builds a persistent one out of a PTY registry, a bash
+    // backend, and `dsh-tool-bash-persistent` in a realm of its own. A rewrite
+    // that knows one shape leaves the other shipping a `bash` tool to a machine
+    // with no bash, which is what happened — so this asks every preset the
+    // deployment ships, on the wire, one at a time.
+    name: 'preset-shell-tools',
+    async run(page) {
+      await waitForShell(page)
+      // The roster the picker reads, not a directory listing: `ls` runs in the
+      // container, and the presets are seeded into the page's own filesystem.
+      const presets = await page.evaluate(async () => {
+        const service = globalThis.dsh.ctx.get('agentPresets') as { list(): Promise<{ id: string }[]> } | undefined
+        return service === undefined ? [] : (await service.list()).map(preset => preset.id)
+      })
+      expect(presets.length > 1, `expected the shipped presets, got ${JSON.stringify(presets)}`)
+
+      const silent: string[] = []
+      for (const preset of presets) {
+        const { names, tools } = await offeredTools(page, preset)
+        if (tools === undefined) { silent.push(preset); continue }
+        // Code Mode presents its tools as an SDK rather than as wire tools, so a
+        // preset may legitimately offer no shell tool by name; what it may not
+        // do is offer one that is not this machine's.
+        const foreign = names.filter(name => /^(bash|sh|zsh|pwsh|powershell)$/.test(name))
+        expect(
+          foreign.length === 0,
+          `the ${preset} preset offers the model a ${foreign.join(', ')} tool this deployment has no interpreter for`
+            + ' — scripts/assemble.ts must rewrite every shape a preset mounts a shell with',
+        )
+      }
+      // Reported rather than asserted: a preset that never starts a turn is a
+      // real defect, and a different one from the tool this case is about.
+      if (silent.length > 0) {
+        process.stdout.write(`    note: no model request from ${silent.join(', ')} — that preset starts no turn here\n`)
+      }
     },
   },
   {

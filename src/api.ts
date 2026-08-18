@@ -36,8 +36,13 @@ export interface DshWindowApi {
   importFs(data: ArrayBuffer, prefix?: string): number
   /** Erase all browser-stored state and reload. */
   reset(): Promise<void>
-  /** Send one prompt through a fresh session and return the assistant's reply text. */
-  promptOnce(apiKey: string, text: string): Promise<string>
+  /**
+   * Send one prompt through a fresh session and return the assistant's reply
+   * text. `agentPreset` composes that session from a named preset rather than
+   * the deployment's default — which is how a check can ask what a preset
+   * other than the default one puts in front of the model.
+   */
+  promptOnce(apiKey: string, text: string, agentPreset?: string): Promise<string>
 }
 
 /** Files that belong to the build rather than the user; excluded from exports. */
@@ -107,8 +112,8 @@ export function installWindowApi(ctx: Context, persistence: PersistenceHandle): 
       location.reload()
     },
 
-    async promptOnce(apiKey, text) {
-      return promptOnce(ctx, apiKey, text)
+    async promptOnce(apiKey, text, agentPreset) {
+      return promptOnce(ctx, apiKey, text, agentPreset)
     },
   }
 
@@ -127,9 +132,10 @@ export function installWindowApi(ctx: Context, persistence: PersistenceHandle): 
  * @param ctx - the settled host context.
  * @param apiKey - a DeepSeek API key, stored in the managed credential document.
  * @param text - the prompt to send.
+ * @param agentPreset - the preset to compose the session from; the deployment's default when absent.
  * @returns the concatenated assistant text.
  */
-async function promptOnce(ctx: Context, apiKey: string, text: string): Promise<string> {
+async function promptOnce(ctx: Context, apiKey: string, text: string, agentPreset?: string): Promise<string> {
   const credentials = ctx.get('credentials')
   if (credentials === undefined) throw new Error('credentials service unavailable')
   await (credentials as { set(reference: string, value: string): Promise<void> }).set('DEEPSEEK_API_KEY', apiKey)
@@ -145,7 +151,10 @@ async function promptOnce(ctx: Context, apiKey: string, text: string): Promise<s
   } | undefined
   if (proxy === undefined) throw new Error('apiProxy service unavailable')
 
-  const created = await proxy.sessions.create({ rpcId: crypto.randomUUID(), payload: {} })
+  const created = await proxy.sessions.create({
+    rpcId: crypto.randomUUID(),
+    payload: agentPreset === undefined ? {} : { agentPreset },
+  })
   if (!created.result.ok || created.result.value === undefined) {
     throw new Error(`session.create failed: ${JSON.stringify(created.result.error)}`)
   }

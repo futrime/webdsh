@@ -217,15 +217,25 @@ function emitSeed(): { files: [string, string][], specifiers: Set<string> } {
   if (existsSync(presets)) {
     let replaced = 0
     for (const [path, original] of collectTree(presets, `${DEPLOY_ROOT}/config/agent-presets`)) {
-      const contents = path.endsWith('.cordis.yml') ? replaceBashTool(path, original) : original
-      if (contents !== original) replaced++
+      const contents = path.endsWith('.cordis.yml')
+        ? replaceBashTool(original)
+        : path.endsWith('preset.yml') ? describeWithoutBash(original) : original
+      if (path.endsWith('.cordis.yml')) {
+        if (contents !== original) replaced++
+        // The guard, not the rewrite: whatever shapes the rewrite knows about,
+        // what ships must mount no bash at all. A preset that keeps one puts a
+        // shell tool in front of the model that this machine cannot honour, and
+        // the only reliable moment to notice is before it is seeded.
+        for (const forbidden of BASH_BACKED) {
+          if (!contents.includes(`name: '${forbidden}'`)) continue
+          throw new Error(`assemble: ${path} still mounts ${forbidden}; the model would be offered a bash tool this deployment has no bash for`)
+        }
+        // Only composition files carry plugin rows; `preset.yml` carries display metadata.
+        for (const name of specifiersIn(contents)) specifiers.add(name)
+      }
       files.push([path, contents])
-      // Only composition files carry plugin rows; `preset.yml` carries display metadata.
-      if (path.endsWith('.cordis.yml')) for (const name of specifiersIn(contents)) specifiers.add(name)
     }
-    // Loud, because a preset that quietly kept `tool-bash` puts a shell tool in
-    // front of the model that this machine cannot honour.
-    if (replaced === 0) throw new Error('assemble: no agent preset mounted tool-bash; the shell replacement did not apply')
+    if (replaced === 0) throw new Error('assemble: no agent preset mounted a bash tool; the shell replacement did not apply')
     console.log(`[assemble] ${String(replaced)} agent preset(s) now mount the jsh shell tool`)
   } else {
     console.warn('[assemble] @deepseek-ai/dsh is not installed; no agent presets will ship')
@@ -251,16 +261,62 @@ function emitSeed(): { files: [string, string][], specifiers: Set<string> } {
 const BASH_ROW = /^(\s*)- id: tool-bash\n\s*name: '@deepseek-ai\/dsh-tool-bash'\n(?:\s*disabled:[^\n]*\n)?/m
 
 /**
- * Swap a preset's bash tool for this deployment's jsh tool.
- * @param path - the seeded path, for the error message.
- * @param contents - the preset composition.
- * @returns the same composition with the shell row replaced.
+ * The other shape, and the reason this file grew a second pattern.
+ *
+ * `minimal` mounts no `tool-bash` row at all. It builds a persistent shell out
+ * of three rows in a realm of its own — a PTY registry, a bash backend, and
+ * `dsh-tool-bash-persistent`, which is the tool the model sees — and calls it
+ * `bash`, complete with a description promising apt and pip. The row-shaped
+ * rewrite above never touched it, so that preset kept handing the model a bash
+ * this machine does not have.
+ *
+ * The whole group goes, because every row in it exists to back that one tool
+ * and none of them can work here. What replaces it is the same jsh row the
+ * other presets get: the preset stays what it advertises, a shell and an
+ * editor, and the shell is the one the machine actually runs.
  */
-function replaceBashTool(path: string, contents: string): string {
-  if (!BASH_ROW.test(contents)) return contents
-  return contents.replace(BASH_ROW, (_match, indent: string) =>
-    `${indent}# Replaced by scripts/assemble.ts: this machine's shell is jsh, not bash.\n`
-    + `${indent}- id: tool-jsh\n${indent}  name: 'browser:jsh'\n`)
+const PERSISTENT_SHELL_GROUP = /(?:^#[^\n]*\n)*^- id: persistent-shell\n(?:.*\n)*?(?=^[#-])/m
+
+/** The same claim, made in prose at the top of that preset's composition. */
+const PERSISTENT_SHELL_PROSE = /persistent `bash` and `str_replace_editor`/
+
+/** Shell tools this deployment has no interpreter for, in preset row form. */
+const BASH_BACKED = [
+  '@deepseek-ai/dsh-tool-bash',
+  '@deepseek-ai/dsh-tool-bash-persistent',
+  '@deepseek-ai/dsh-terminal-bash',
+]
+
+/**
+ * Swap a preset's bash tool for this deployment's jsh tool.
+ * @param contents - the preset composition.
+ * @returns the same composition with the shell rows replaced.
+ */
+function replaceBashTool(contents: string): string {
+  return contents
+    .replace(BASH_ROW, (_match, indent: string) =>
+      `${indent}# Replaced by scripts/assemble.ts: this machine's shell is jsh, not bash.\n`
+      + `${indent}- id: tool-jsh\n${indent}  name: 'browser:jsh'\n`)
+    .replace(PERSISTENT_SHELL_GROUP,
+      '# Replaced by scripts/assemble.ts: this machine\'s shell is jsh, and there is\n'
+      + '# no bash here to hold a session open between calls. The preset keeps its\n'
+      + '# shape — one shell, one editor — with the shell this machine has.\n'
+      + '- id: tool-jsh\n  name: \'browser:jsh\'\n\n')
+    .replace(PERSISTENT_SHELL_PROSE, '`jsh` and `str_replace_editor`')
+}
+
+/**
+ * Keep a preset's own description honest about the shell it just lost.
+ *
+ * `minimal` describes itself, in the picker the user reads, as the preset that
+ * offers a persistent bash. After the swap it offers jsh, which holds nothing
+ * open between calls, and a description naming bash would be the same lie in a
+ * different place.
+ * @param contents - the preset's display metadata.
+ * @returns the metadata with any bash promise rewritten.
+ */
+function describeWithoutBash(contents: string): string {
+  return contents.replace(/^(description:.*?)持久 bash(.*)$/m, '$1 jsh$2').replace(/^(description: +)/m, 'description: ')
 }
 
 /** Write a generated module with a do-not-edit banner. */
