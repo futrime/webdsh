@@ -23,6 +23,16 @@
 /** A frame's verb, in either direction. */
 type Verb = 'open' | 'data' | 'err' | 'eof' | 'exit' | 'signal' | 'resize' | 'close' | 'ready' | 'fatal'
 
+/**
+ * The verbs the machine sends.
+ *
+ * Checked rather than assumed. Before the multiplexer starts, the console
+ * carries whatever the kernel and the emulator have to say, and a line of that
+ * which happened to read as `<word> <int> <int>` would otherwise be taken as a
+ * header — and a header with a large length swallows every frame after it.
+ */
+const INBOUND: ReadonlySet<string> = new Set(['data', 'err', 'exit', 'ready', 'fatal'])
+
 /** How a channel's process is started. */
 export interface OpenRequest {
   kind: 'pty' | 'exec'
@@ -222,8 +232,10 @@ export class Mux {
         // band — a kernel message on the console before the multiplexer is up,
         // most often — and is not worth failing the stream over.
         if (verb === undefined || channel === undefined || length === undefined) continue
+        if (!INBOUND.has(verb)) continue
         const size = Number(length)
         if (!Number.isInteger(size) || size < 0) continue
+        if (!Number.isInteger(Number(channel))) continue
         this.pending = { verb: verb as Verb, channel: Number(channel), length: size }
       }
       if (this.buffer.byteLength < this.pending.length) return

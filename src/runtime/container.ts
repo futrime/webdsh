@@ -212,13 +212,19 @@ export async function bootRuntime(onProgress?: (step: string) => void): Promise<
 
     worker.addEventListener('message', (event: MessageEvent<{ type: string, code?: number, message?: string }>) => {
       const report = event.data
-      if (report.type === 'started') onProgress?.('Starting Linux')
-      else if (report.type === 'exit') {
-        finished = true
+      if (report.type === 'started') {
+        onProgress?.('Starting Linux')
+        return
+      }
+      finished = true
+      // Terminated either way. The emulator holds the whole disk image in its
+      // linear memory, and a worker that has stopped emulating is several
+      // hundred megabytes of a browser's memory doing nothing.
+      worker.terminate()
+      if (report.type === 'exit') {
         mux.fail(new Error('the machine halted'))
         halt(report.code ?? 0)
-      } else if (report.type === 'failed') {
-        finished = true
+      } else {
         mux.fail(new Error(report.message ?? 'the machine failed to start'))
         halt(1)
       }
