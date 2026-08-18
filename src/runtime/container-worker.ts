@@ -90,6 +90,17 @@ class ConsoleOut extends Fd {
   }
 }
 
+/**
+ * Somewhere to sleep.
+ *
+ * A subscription with no descriptor in it is the guest asking to be woken in
+ * n nanoseconds, and the honest way to serve that is to wait on something
+ * nothing will ever notify. Waiting on the console instead would return the
+ * moment there were bytes in it that the guest had not read yet, which is a
+ * spin exactly when the machine is busiest.
+ */
+const IDLE = new Int32Array(new SharedArrayBuffer(4))
+
 /** Bytes per subscription and per event in the `poll_oneoff` arrays. */
 const SUBSCRIPTION_BYTES = 48
 const EVENT_BYTES = 32
@@ -141,11 +152,12 @@ function pollOneoff(wasi: WASI, ring: Ring) {
       }
     }
 
-    const readable = waitingOnInput
-      ? ring.waitForData(hasClock ? timeoutNs / 1e6 : Infinity)
-      // A pure clock subscription is a sleep; the ring is a convenient thing to
-      // sleep on, and nothing will ever notify it before the timeout.
-      : (ring.waitForData(timeoutNs / 1e6), false)
+    let readable = false
+    if (waitingOnInput) {
+      readable = ring.waitForData(hasClock ? timeoutNs / 1e6 : Infinity)
+    } else if (hasClock) {
+      Atomics.wait(IDLE, 0, 0, timeoutNs / 1e6)
+    }
 
     let written = 0
     const emit = (userdata: bigint, variant: number): void => {
