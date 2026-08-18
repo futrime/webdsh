@@ -1,0 +1,15 @@
+# The shell the model is told about, as a profile bundle layer.
+#
+# `tool-bash` is disabled rather than reconfigured because the thing that has
+# to change is its description, and a description is not configuration: it is
+# the tool's contract with the model. A tool called `bash` whose `for` loops
+# fail and whose `$(…)` expands to nothing is worse than no tool — the model
+# writes bash, reads `exit code: 0`, and believes the empty answer.
+#
+# So this replaces it: one row that runs `jsh` and describes `jsh`.
+- id: tool-bash
+  disabled: true
+
+- insert:
+    - id: web-jsh
+      name: '@dsh-web/jsh'

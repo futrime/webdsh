@@ -1,0 +1,17 @@
+{
+  "name": "@dsh-web/jsh",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Run the agent's commands in the container's own jsh, and tell the model what jsh is",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

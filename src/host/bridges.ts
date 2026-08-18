@@ -13,7 +13,7 @@
  * two different machines and the whole point is that there is one.
  */
 
-import { bootRuntime, runtimeSupported, startShell } from '../runtime/webcontainer.ts'
+import { bootRuntime, runtimeSupported, setShellMode, shellMode, startShell, type ShellMode } from '../runtime/webcontainer.ts'
 import { ripgrep } from '../runtime/ripgrep.ts'
 import type { PluginManager } from '../plugins/manager.ts'
 import { volume } from '../vfs/volume.ts'
@@ -40,6 +40,11 @@ export function publishRuntimeBridge(): void {
     // The search backend, published so a test can exercise the same code the
     // `grep` and `glob` tools reach through the subprocess seam.
     search: (args: string[], cwd?: string) => ripgrep(args, cwd),
+    // Which shell a command's script is handed to. A plugin may swap it — see
+    // `packages/dsh-web-jsh` — and the runtime is a page capability, so the
+    // choice has to be reachable from outside this bundle.
+    shellMode: (): ShellMode => shellMode(),
+    setShellMode: (next: ShellMode): void => { setShellMode(next) },
     terminal: async () => {
       const [{ Terminal }, { FitAddon }, styles] = await Promise.all([
         import('@xterm/xterm'),

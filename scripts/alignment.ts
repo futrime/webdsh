@@ -97,7 +97,7 @@ const upstream = [
 ].map(load)
 
 const overlay = readFileSync(join(root, 'src/host/browser.patch.yml'), 'utf8')
-const shipped = ['dsh-web-terminal', 'dsh-web-plugins']
+const shipped = ['dsh-web-terminal', 'dsh-web-plugins', 'dsh-web-jsh']
   .map(name => join(root, 'packages', name, 'cordis.patch.yml'))
   .filter(existsSync)
   .map(path => readFileSync(path, 'utf8'))
@@ -116,10 +116,15 @@ for (const source of upstream) {
 
 const { inserted: added, patched: changed } = readRows(overlay)
 const shippedRows = shipped.flatMap(source => readRows(source).inserted)
+// A shipped plugin may turn a row off as well as add one — `@dsh-web/jsh`
+// disables `tool-bash` because it replaces the model's shell tool outright.
+// Counting only the overlay's own patches would report that row as composing
+// exactly as upstream does, which is the one thing this script exists to catch.
+const shippedPatches = shipped.flatMap(source => readRows(source).patched)
 
-const disabled = changed.filter(row => row.disabled === true)
+const disabled = [...changed, ...shippedPatches].filter(row => row.disabled === true)
 const reconfigured = changed.filter(row => row.disabled !== true)
-const unknown = changed.filter(row => !composed.has(row.id))
+const unknown = [...changed, ...shippedPatches].filter(row => !composed.has(row.id))
 
 process.stdout.write(`dsh web composes ${String(composed.size)} rows.\n\n`)
 

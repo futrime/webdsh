@@ -103,13 +103,14 @@ const scenarios: Scenario[] = [
     name: 'shell',
     async run(page) {
       await waitForShell(page)
-      // A tool call runs in the shell this build installs in the container, not
-      // in the container's own `jsh` — which has no `for`, `if`, `while`, `case`,
-      // functions, heredocs or `<`, and whose command substitution expands to
-      // the empty string while reporting success. Every construct below is one
-      // an agent writes without thinking about it, and several of them used to
-      // return a confident wrong answer rather than an error.
+      // The shell a tool call reaches is the container's own `jsh`, because
+      // `@dsh-web/jsh` is composed. These cases are the contract that plugin
+      // makes with the model: the first group is what jsh does, the second is
+      // what it does *wrongly and silently*, and the third is the way out.
+      // If any of them changes, the tool description is a lie and the model
+      // will act on it.
       const cases: [string, RegExp][] = [
+        // What jsh has.
         ['echo hello', /hello/],
         ['mkdir -p t && cd t && echo one > a.txt && cat a.txt', /one/],
         ['cd t && echo x > b.txt && echo y >> b.txt && cat b.txt', /x[\s\S]*y/],
@@ -118,47 +119,85 @@ const scenarios: Scenario[] = [
         ['false || echo fallback', /fallback/],
         ['echo one; echo two', /one[\s\S]*two/],
         ['X=42; echo "val=$X"', /val=42/],
+        ['X=abc; echo "${X}def"', /abcdef/],
         ['cd t && cat a.txt | head -n 1', /one/],
         ['ls /', /home/],
+        ['false; echo "status=$?"', /status=1/],
+        ['echo one > lines.txt && sort lines.txt', /one/],
+        ['ls *.txt', /lines\.txt/],
+        ['(echo inside)', /inside/],
+        ['echo before # trailing', /before/],
+        // The escape hatches the description points at, which have to work
+        // because everything the model cannot do in jsh is sent to them.
         ['node -e "console.log(6*7)"', /42/],
-        // The shell language itself.
-        ['echo "sub=$(echo inner)"', /sub=inner/],
-        ['echo "arith=$((6*7))"', /arith=42/],
-        ['for i in a b; do echo "item-$i"; done', /item-a[\s\S]*item-b/],
-        ['if [ -d / ]; then echo branch-taken; fi', /branch-taken/],
-        ['i=0; while [ $i -lt 2 ]; do echo "n=$i"; i=$((i+1)); done', /n=0[\s\S]*n=1/],
-        ['case abc in a*) echo pattern-matched;; esac', /pattern-matched/],
-        ['greet() { echo "fn-$1"; }; greet ok', /fn-ok/],
-        ["cat <<'HERE'\nheredoc-body\nHERE", /heredoc-body/],
-        ['printf "one\\ntwo\\n" > lines.txt && wc -l < lines.txt', /\b2\b/],
-        // Backslashes survive the trip into the container: they are unescaped
-        // out of argv, so a script that travels as an argument arrives changed
-        // and `sed 's/x/\\n/'` quietly stops meaning what it says.
-        ['printf "a\\tb\\n"', /a\tb/],
-        ["echo hello | sed 's/hello/replaced/'", /replaced/],
-        ["printf '3 4\\n' | awk '{print $1+$2}'", /\b7\b/],
-        ['grep -c . lines.txt', /\b2\b/],
-        // Archives and encodings: pure computation, so their absence was a gap
-        // in this build rather than a limit of running in a page.
-        ['mkdir -p arc/sub && echo packed > arc/sub/p.txt && tar -czf arc.tgz arc && tar -tzf arc.tgz', /arc\/sub\/p\.txt/],
-        ['rm -rf unpack && mkdir unpack && tar -xzf arc.tgz -C unpack && cat unpack/arc/sub/p.txt', /packed/],
-        ['echo zipped > z.txt && gzip z.txt && zcat z.txt.gz', /zipped/],
-        ['printf hello | base64 | base64 -d', /hello/],
-        ['file arc.tgz', /gzip compressed/],
-        // git: the container ships none, so this is the only one there is.
-        ['git --version', /git version/],
-        ['rm -rf r && mkdir r && cd r && git init 2>&1', /Initialized empty Git repository/],
-        ['cd r && echo tracked > f.txt && git add f.txt && git status', /new file:\s+f\.txt/],
-        ['cd r && git commit -m first 2>&1 && git log 2>&1', /commit [0-9a-f]{7}/],
-        ['cd r && echo more >> f.txt && git diff 2>&1', /\+more/],
-        // The real toolchain, not an emulation of it.
+        ['node -e "let s=0; for (const n of [1,2,3]) s+=n; console.log(s)"', /\b6\b/],
         ['python3 -c "print(6*7)"', /42/],
+        ['python3 -c "import json; print(json.dumps({\'a\': 1}))"', /\{"a": 1\}/],
         ['npm --version', /\d+\.\d+\.\d+/],
+        ['jq --version', /jq-\d/],
       ]
       for (const [script, matcher] of cases) {
         const result = await shell(page, script)
-        const combined = `${result.stdout}${result.stderr}`
+        // Colour stripped before matching: `node` and `npm` write SGR codes
+        // around their output, and a pattern anchored on a word boundary sees
+        // the escape's `m` as the neighbouring character.
+        const combined = `${result.stdout}${result.stderr}`.replace(/\u001b\[[0-9;]*m/g, '')
         expect(matcher.test(combined), `\`${script}\` → status ${String(result.status)}\n    ${combined.replace(/\n/g, '\n    ')}`)
+      }
+
+      // The silent failures. These are why the plugin exists, so the suite
+      // asserts them rather than hoping: jsh reports success and an empty
+      // expansion, and the tool description tells the model never to write
+      // them. A day when one of these starts working is a day the description
+      // needs rewriting.
+      const silent: [string, string][] = [
+        ['echo "sub=$(echo inner)"', 'sub='],
+        ['echo "n=$((6*7))"', 'n='],
+        ['echo "d=${UNSET:-fallback}"', 'd='],
+      ]
+      for (const [script, expected] of silent) {
+        const result = await shell(page, script)
+        const text = `${result.stdout}${result.stderr}`.replace(/\r/g, '').trim()
+        expect(
+          result.status === 0 && text === expected,
+          `jsh no longer fails silently on \`${script}\`: status ${String(result.status)}, ${JSON.stringify(text)}`
+            + ' — update the @dsh-web/jsh tool description',
+        )
+      }
+
+      // The loud failures, likewise.
+      const loud = ['for i in a b; do echo $i; done', 'if true; then echo x; fi', 'cat < lines.txt', 'grep x lines.txt']
+      for (const script of loud) {
+        const result = await shell(page, script)
+        expect(result.status !== 0, `jsh now accepts \`${script}\` — update the @dsh-web/jsh tool description`)
+      }
+    },
+  },
+  {
+    name: 'jsh-plugin',
+    async run(page) {
+      await waitForShell(page)
+      // The plugin owns the model's shell tool outright: `bash` is gone, `jsh`
+      // is what the model sees, and its description is what it plans against.
+      // A build that ran jsh while still advertising bash would pass every
+      // other test in this file.
+      const composition = await page.evaluate(() => {
+        const tools = globalThis.dsh.ctx.get('tools') as {
+          schemas(): { name: string }[]
+          get(name: string): { description?: string } | undefined
+        } | undefined
+        const runtime = (globalThis as { __DSH_WEB_RUNTIME__?: { shellMode(): string } }).__DSH_WEB_RUNTIME__
+        return {
+          names: (tools?.schemas() ?? []).map(tool => tool.name).sort(),
+          description: tools?.get('jsh')?.description ?? '',
+          mode: runtime?.shellMode(),
+        }
+      })
+      expect(composition.names.includes('jsh'), `the jsh tool is not registered: ${composition.names.join(', ')}`)
+      expect(!composition.names.includes('bash'), 'the bash tool is still registered beside jsh')
+      expect(composition.mode === 'jsh', `commands do not run in jsh: mode is ${String(composition.mode)}`)
+      for (const claim of ['$(...)', 'for', 'heredocs', 'node -e', 'python3 -c']) {
+        expect(composition.description.includes(claim), `the tool description does not mention ${claim}`)
       }
     },
   },
@@ -241,9 +280,14 @@ const scenarios: Scenario[] = [
         ['bash', ['-c', '--', 'echo c-ok'], /c-ok/],
         ['bash', ['-lc', 'echo plain-ok'], /plain-ok/],
         ['bash', ['--noprofile', '--norc', '-c', 'echo longopts-ok'], /longopts-ok/],
-        ['/bin/bash', ['-lc', '--', 'ls -la / | head -n 2'], /bin|dev|home/],
-        // POSIX puts `$0` after the script and the parameters after that.
-        ['bash', ['-c', 'echo "0=$0 1=$1"', 'myname', 'first'], /0=myname 1=first/],
+        ['/bin/bash', ['-lc', '--', 'ls / | head -n 20'], /home/],
+        // POSIX puts `$0` after the script and the parameters after that. jsh
+        // has no positional parameters at all — `$0` is `/bin/jsh` and `$1` is
+        // the script it was handed — so what this checks is that the extra argv
+        // is carried without breaking the call, not that it arrives as `$1`.
+        // Nothing model-facing passes positional parameters; the bash tool
+        // never did.
+        ['bash', ['-c', 'echo ran-anyway', 'myname', 'first'], /ran-anyway/],
       ]
       for (const [command, argv, matcher] of cases) {
         const output = await page.evaluate(async ([cmd, args]: [string, string[]]) => {

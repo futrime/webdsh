@@ -33,6 +33,13 @@ const EXTERNAL = [
   '@deepseek-ai/cordis',
   '@deepseek-ai/cosmokit',
   'schemastery',
+  // The harness packages a node half may import. They are external for the
+  // same reason React is: the host already has them, and a second copy would
+  // be a second set of classes — an `instanceof` that fails and a tool
+  // registry the registered tool is not in.
+  '@deepseek-ai/dsh-tools',
+  '@deepseek-ai/dsh-llm',
+  '@deepseek-ai/dsh-shell',
 ]
 
 /**

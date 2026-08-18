@@ -56,6 +56,34 @@ const SHELL_PATH = `${WORKDIR}/${PRIVATE_DIR}/sh.cjs`
 /** Distinguishes one command's script file from another's while both run. */
 let runCounter = 0
 
+/** Which interpreter a command's script is handed to. */
+export type ShellMode = 'harness' | 'jsh'
+
+/**
+ * The shell commands run in.
+ *
+ * `harness` is the interpreter in `src/shell/`, written because `jsh` is not
+ * one; `jsh` is the container's own shell, warts and all. The choice is a
+ * policy rather than a fact about the page, so it is settable — the
+ * `@dsh-web/jsh` plugin sets it, and pairs it with a tool description that
+ * tells the model exactly what `jsh` can and cannot do. Running one shell while
+ * describing the other is the failure mode both halves exist to prevent.
+ */
+let mode: ShellMode = 'harness'
+
+/** Which interpreter commands are currently handed to. */
+export function shellMode(): ShellMode {
+  return mode
+}
+
+/**
+ * Choose the interpreter commands are handed to.
+ * @param next - the shell to run from now on.
+ */
+export function setShellMode(next: ShellMode): void {
+  mode = next
+}
+
 /**
  * Install the shell the agent's commands run in.
  *
@@ -289,7 +317,15 @@ export async function execute(script: string, options: RunOptions = {}): Promise
   const positional = options.name === undefined && (options.args?.length ?? 0) === 0
     ? []
     : [options.name ?? 'sh', ...(options.args ?? [])]
-  const process = await runtime.spawn('node', [SHELL_PATH, `${WORKDIR}/${scriptFile}`, ...positional], {
+  // `jsh` reads a script file too, and reading one is the only safe way to
+  // hand it a script: its argument parser coerces a bare `true` or `false` into
+  // a boolean, so `jsh -c false` drops into an interactive session and never
+  // returns. It takes no positional parameters, which is one of the things the
+  // plugin's tool description says out loud.
+  const argv = mode === 'jsh'
+    ? ['jsh', [`${WORKDIR}/${scriptFile}`]] as const
+    : ['node', [SHELL_PATH, `${WORKDIR}/${scriptFile}`, ...positional]] as const
+  const process = await runtime.spawn(argv[0], [...argv[1]], {
     cwd: toContainerPath(options.cwd ?? WORKSPACE),
     env,
   })
@@ -328,10 +364,12 @@ export async function execute(script: string, options: RunOptions = {}): Promise
  */
 export async function startShell(size: { cols: number, rows: number }): Promise<WebContainerProcess> {
   const runtime = await bootRuntime()
-  // The same shell the agent's tool calls run in, so what a person types and
-  // what the model runs behave identically — and a person is not left with the
-  // container's `jsh`, whose command substitution silently expands to nothing.
-  return runtime.spawn('node', [SHELL_PATH, '-i'], {
+  // Whichever shell the agent's tool calls run in, so what a person types and
+  // what the model runs behave identically. That is the whole reason the mode
+  // is one setting rather than two: a terminal that quietly had a better shell
+  // than the agent would make every reproduction attempt a coin toss.
+  const argv: [string, string[]] = mode === 'jsh' ? ['jsh', []] : ['node', [SHELL_PATH, '-i']]
+  return runtime.spawn(argv[0], argv[1], {
     cwd: toContainerPath(WORKSPACE),
     env: { HOME: WORKDIR },
     terminal: { cols: size.cols, rows: size.rows },

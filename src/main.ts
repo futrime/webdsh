@@ -72,6 +72,12 @@ async function main(): Promise<void> {
   const progress = renderBootProgress()
   try {
     installVirtualNetwork()
+    // Before the host, not after it: a plugin reads this while it applies, and
+    // the host applying plugins is what `bootHost` does. The runtime bridge
+    // closes over nothing the host provides, so there is nothing to wait for —
+    // `@dsh-web/jsh` chooses the shell here, and a bridge published later would
+    // mean it silently chose nothing.
+    publishRuntimeBridge()
 
     progress.step('Starting the harness host')
     const { ctx, persistence, warnings } = await bootHost()
@@ -91,8 +97,9 @@ async function main(): Promise<void> {
 
     const plugins = installPluginManager(ctx)
     // The terminal and the install form are plugins, not parts of this app, so
-    // what the app owes them is the capability and nothing else.
-    publishRuntimeBridge()
+    // what the app owes them is the capability and nothing else. The installer
+    // one waits for the manager it hands out; the runtime one was published
+    // before the host, because a plugin needed it during boot.
     publishInstallerBridge(plugins)
 
     // Plugin-registered HTTP routes (a plugin serving its own assets) are only
