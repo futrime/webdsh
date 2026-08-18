@@ -182,8 +182,12 @@ way an installed plugin is. Removing one is removing a directory.
 - `dsh-web-star` — a link to this repository at the sidebar foot, in the same
   `sidebar.footer.action` slot, with the star count GitHub reports. The page is
   the only place most visitors ever see this project, so it is the only place
-  the ask can be made; it is one row beside Settings, never modal, and it yields
-  the row entirely when the column is folded to the icon rail.
+  the ask can be made; it is one row, and it is never modal.
+
+Both foot actions wear the sidebar's own Settings row — the same height, radius,
+gap, and hover, and the same 36px circle when the column folds to the icon rail
+— and each takes a line of its own above it, so the foot reads as one stack of
+rows rather than as a surface with plugins stuck to the bottom of it.
 
 What the app owns is the capability, published as a bridge in
 `src/host/bridges.ts`: a plugin runs outside this app's bundle graph and cannot

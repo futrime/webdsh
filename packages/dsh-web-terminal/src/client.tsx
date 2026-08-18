@@ -4,7 +4,9 @@
  * This is an ordinary client plugin: it injects into the surface's own slots —
  * a footer action in the sidebar to open it, and the shell overlay to draw in —
  * exactly as `ui-cordis` and the community panels do. Nothing about the web
- * surface is modified to make room for it.
+ * surface is modified to make room for it: the action wears the shape the
+ * sidebar's own Settings row has, in the sidebar's own tokens, so the foot
+ * reads as one stack of rows rather than as a plugin bolted to the bottom.
  *
  * The runtime it attaches to is a page-level capability the app publishes, not
  * something this plugin boots: the agent's own tools run in the same one, and
@@ -157,11 +159,39 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
   )
 }
 
-/** The sidebar footer action that opens it. */
-function TerminalAction({ open, onToggle }: { open: boolean, onToggle: () => void }): JSX.Element {
+/** A prompt in a window, drawn in the outline language the sidebar's icons use. */
+function TerminalIcon(): JSX.Element {
   return (
-    <button type="button" className="dsh-web-terminal-action" onClick={onToggle} title="Open a shell in this workspace">
-      {open ? '⌘ Terminal ·' : '⌘ Terminal'}
+    <svg
+      className="dsh-web-terminal-action-icon" width="16" height="16" viewBox="0 0 16 16" fill="none"
+      stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+    >
+      <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2.6" />
+      <path d="M4.8 6.3 6.9 8l-2.1 1.7" />
+      <path d="M8.8 10.2h2.6" />
+    </svg>
+  )
+}
+
+/**
+ * The sidebar footer action that opens it.
+ * @param props - the owner share of the slot plus this plugin's own open state.
+ * @returns the row, in the shape the sidebar's Settings row already has.
+ */
+function TerminalAction({ open, onToggle, wide }: { open: boolean, onToggle: () => void, wide: boolean }): JSX.Element {
+  return (
+    <button
+      type="button"
+      className="dsh-web-terminal-action"
+      {...(wide ? {} : { 'data-rail': '' })}
+      {...(open ? { 'data-open': '' } : {})}
+      aria-expanded={open}
+      aria-label="Terminal"
+      onClick={onToggle}
+      title="Open a shell in this workspace (Ctrl+`)"
+    >
+      <TerminalIcon />
+      {wide && <span className="dsh-web-terminal-action-label">Terminal</span>}
     </button>
   )
 }
@@ -177,7 +207,22 @@ const STYLE = `
  border-radius:.35rem;padding:.15rem .5rem;cursor:pointer}
 .dsh-web-terminal-screen{flex:1;min-height:0;padding:.35rem .5rem}
 .dsh-web-terminal-notice{padding:1rem;color:#9aa3b2;font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace}
-.dsh-web-terminal-action{font:inherit;background:transparent;border:0;color:inherit;cursor:pointer;padding:.25rem .5rem}
+.dsh-web-terminal-action{box-sizing:border-box;display:flex;align-items:center;gap:8px;flex:0 0 calc(100% + 8px);
+ width:calc(100% + 8px);height:34px;margin:4px -4px;padding:6px 2px 6px 10px;border:none;border-radius:12px;
+ background:0 0;color:var(--dsw-alias-label-primary,inherit);font-family:inherit;font-size:14px;line-height:22px;
+ cursor:pointer;overflow:hidden}
+.dsh-web-terminal-action:hover,.dsh-web-terminal-action[data-open]{
+ background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}
+.dsh-web-terminal-action-icon{flex:none}
+.dsh-web-terminal-action-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsh-web-terminal-action[data-rail]{flex:0 0 36px;justify-content:center;gap:0;width:36px;height:36px;
+ margin:4px 0;padding:0;border-radius:50%}
+/* The foot's action line is one nowrap row, so a second action would sit
+   beside this one. Opening the line is what puts each action on a row of its
+   own, under the terminal and above Settings — the two shapes cover the slot
+   renderer's wrapper being present or not, and nothing else in the tree has
+   this element as a child or grandchild. */
+:has(> .dsh-web-terminal-action),:has(> * > .dsh-web-terminal-action){flex-wrap:wrap}
 `
 
 /** Services this half waits for. */
@@ -234,10 +279,10 @@ export function apply(ctx: Context): void {
 
   slots.inject('sidebar.footer.action', () => slots.register(
     { name: 'sidebar.footer.action', id: 'web-terminal' },
-    function Action(): JSX.Element {
+    function Action({ wide }: { wide: boolean }): JSX.Element {
       const isOpen = useOpen()
       const toggle = useCallback(() => { setOpen(!open) }, [])
-      return <TerminalAction open={isOpen} onToggle={toggle} />
+      return <TerminalAction open={isOpen} onToggle={toggle} wide={wide} />
     },
   ))
 

@@ -3,8 +3,8 @@
  *
  * An ordinary client plugin: one registrant in the surface's own
  * `sidebar.footer.action` slot, the same hole the terminal and `ui-cordis` use,
- * so it lands beside Settings and folds with the column instead of being drawn
- * over it.
+ * wearing the shape of the Settings row it sits above and folding to the same
+ * 36px circle when the column does, so the foot reads as one stack of rows.
  *
  * The star count is a courtesy, not a feature. GitHub serves the repository
  * endpoint with CORS and rate-limits it by address, so the number is fetched
@@ -70,14 +70,14 @@ function useStarCount(): number | undefined {
   return count
 }
 
-/** GitHub's own star, at the size the sidebar's other foot icons draw. */
+/** A star, outlined at 16px like the Settings icon it sits under. */
 function StarIcon(): JSX.Element {
   return (
-    <svg className="dsh-web-star-icon" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-      <path
-        fill="currentColor"
-        d="M8 .5a.6.6 0 0 1 .54.34l1.86 3.78 4.17.6a.6.6 0 0 1 .33 1.03l-3.02 2.94.71 4.15a.6.6 0 0 1-.87.64L8 11.98l-3.72 1.96a.6.6 0 0 1-.87-.64l.71-4.15L1.1 6.25a.6.6 0 0 1 .33-1.03l4.17-.6L7.46.84A.6.6 0 0 1 8 .5Z"
-      />
+    <svg
+      className="dsh-web-star-icon" width="16" height="16" viewBox="0 0 16 16" fill="none"
+      stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" aria-hidden="true"
+    >
+      <path d="M8 1.6l1.86 3.78 4.17.6-3.02 2.94.71 4.15L8 11.13l-3.72 1.94.71-4.15L1.97 5.98l4.17-.6L8 1.6Z" />
     </svg>
   )
 }
@@ -87,13 +87,8 @@ function StarIcon(): JSX.Element {
  * @param props - the owner share of the slot; `wide` is false on the 56px rail.
  * @returns the link when the column is wide, and nothing when it is folded.
  */
-function StarAction({ wide }: { wide: boolean }): JSX.Element | null {
+function StarAction({ wide }: { wide: boolean }): JSX.Element {
   const count = useStarCount()
-  // The folded column leaves 36px of content on one shared line, and the
-  // terminal is already on it. An ask that pushes a tool the user came to use
-  // out of the column is not an ask worth making, so this one yields and comes
-  // back when the column does.
-  if (!wide) return null
   // `compact` is Intl's own abbreviation, so 1200 reads as 1.2K in every locale
   // the surface offers without this file knowing any of them.
   const reading = count === undefined
@@ -102,6 +97,7 @@ function StarAction({ wide }: { wide: boolean }): JSX.Element | null {
   return (
     <a
       className="dsh-web-star"
+      {...(wide ? {} : { 'data-rail': '' })}
       href={REPO_URL}
       target="_blank"
       rel="noreferrer noopener"
@@ -109,28 +105,44 @@ function StarAction({ wide }: { wide: boolean }): JSX.Element | null {
       aria-label={`Star ${REPO} on GitHub`}
     >
       <StarIcon />
-      <span className="dsh-web-star-label">Star on GitHub</span>
-      {reading !== undefined && <span className="dsh-web-star-count">{reading}</span>}
+      {wide && (
+        <>
+          <span className="dsh-web-star-label">Star on GitHub</span>
+          {reading !== undefined && <span className="dsh-web-star-count">{reading}</span>}
+        </>
+      )}
     </a>
   )
 }
 
 /**
- * The surface's own foot-row shape, in its own tokens: the 49px height and 12px
- * radius the other foot rows use, sized to its own content rather than to the
- * row — the foot is a shared flex line, and a registrant that takes the whole
- * width wraps the terminal beside it. The fallbacks are for a theme that has
- * not defined these, not for a different look.
+ * The sidebar's own Settings row, to the pixel: same 34px height, same 12px
+ * radius, same 8px gap, same negative margin that lets the hover highlight
+ * bleed past the column padding, and the same 36px circle when the column
+ * folds. The foot should read as one stack of rows in one style, not as a
+ * surface with plugins stuck to the bottom of it, so this file follows that row
+ * rather than inventing a look. The fallbacks are for a theme that has not
+ * defined these tokens, not for a different look.
+ *
+ * The `:has` rules open the foot's action line, which is one nowrap row: a
+ * second action would otherwise sit beside the terminal instead of under it.
+ * Both shapes are given because the slot renderer may or may not wrap a
+ * registrant in a `display: contents` div, and nothing else in the tree has
+ * this element as a child or a grandchild.
  */
 const STYLE = `
-.dsh-web-star{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:flex-start;
- flex:0 1 auto;width:auto;max-width:100%;height:49px;border-radius:12px;gap:6px;padding:0 10px;
- font:inherit;font-size:14px;cursor:pointer;color:var(--dsw-alias-label-primary,inherit);text-decoration:none}
-.dsh-web-star:hover{background:var(--dsw-alias-interactive-bg-hover-solid,rgba(127,127,127,.12))}
+.dsh-web-star{box-sizing:border-box;display:flex;align-items:center;gap:8px;flex:0 0 calc(100% + 8px);
+ width:calc(100% + 8px);height:34px;margin:4px -4px;padding:6px 2px 6px 10px;border-radius:12px;
+ color:var(--dsw-alias-label-primary,inherit);font-family:inherit;font-size:14px;line-height:22px;
+ text-decoration:none;cursor:pointer;overflow:hidden}
+.dsh-web-star:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}
 .dsh-web-star-icon{flex:none}
 .dsh-web-star-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dsh-web-star-count{flex:none;font-size:12px;line-height:16px;font-variant-numeric:tabular-nums;
- color:var(--dsw-alias-label-tertiary,inherit)}
+.dsh-web-star-count{flex:none;margin-left:auto;padding-right:6px;font-size:12px;line-height:16px;
+ font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary,inherit)}
+.dsh-web-star[data-rail]{flex:0 0 36px;justify-content:center;gap:0;width:36px;height:36px;
+ margin:4px 0;padding:0;border-radius:50%}
+:has(> .dsh-web-star),:has(> * > .dsh-web-star){flex-wrap:wrap}
 `
 
 /** Services this half waits for. */
