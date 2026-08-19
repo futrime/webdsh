@@ -42,16 +42,17 @@ jobs:
       - name: Report the artifact size
         run: du -sh dist
 
-      - name: Verify the build actually boots
-        # A static build can be produced from a broken tree, so the artifact is
-        # only published after a real browser has booted it, materialized the
-        # whole client plugin roster, and run the in-browser shell.
-        run: |
-          npx playwright install --with-deps chromium
-          node scripts/serve.mjs 4173 &
-          npx wait-on http://127.0.0.1:4173/ --timeout 60000 || sleep 5
-          npx tsx scripts/e2e.ts
-
+      # This workflow builds and publishes; it does not verify. It used to boot
+      # the artifact in a real browser first, which meant installing Chromium
+      # and its system dependencies — the better part of the deploy's wall
+      # clock — to re-run a suite `ci.yml` runs on the same commit anyway.
+      #
+      # Both workflows trigger on the same push and run side by side, so that
+      # duplication bought less than it looked like it did: it delayed every
+      # deploy by a full browser run without gating anything CI was not already
+      # gating. The check lives in `ci.yml` now, and the trade is explicit —
+      # a deploy can publish before CI has finished failing, so a red CI on
+      # `main` means look at the site, not just the badge.
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
