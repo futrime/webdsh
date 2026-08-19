@@ -12,11 +12,22 @@ permissions:
   pages: write
   id-token: write
 
-# One deployment at a time, and never cancel one mid-flight: a half-published
-# Pages site is worse than a slightly stale one.
+# One deployment at a time, and the newest push wins.
+#
+# This used to refuse to cancel, on the theory that a half-published Pages site
+# is worse than a slightly stale one. That theory does not describe what these
+# actions do: `upload-pages-artifact` writes an artifact and `deploy-pages`
+# swaps it in with a single API call, so a run cancelled at any point either
+# never swapped or already finished — the live site is the previous version
+# either way. There is no half-published state to protect.
+#
+# What refusing did cost was real: a superseded commit's deploy held the queue
+# while the commit that replaced it waited behind it, so the slowest deploy on
+# `main` set the pace for every deploy after it. Cancelling means the site
+# tracks the newest push instead of the oldest unfinished one.
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
