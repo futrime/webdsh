@@ -9,6 +9,7 @@
  */
 
 import { SEED_FILES } from '../generated/seed-files.ts'
+import { MODEL_CATALOG_PATCH } from '../generated/model-catalog.ts'
 import { volume } from '../vfs/volume.ts'
 import { toBytes } from '../node/binary.ts'
 import { env } from '../node/process.ts'
@@ -16,6 +17,7 @@ import browserPatchSource from './browser.patch.yml?raw'
 import terminalPatchSource from '../../packages/dsh-web-terminal/cordis.patch.yml?raw'
 import installPatchSource from '../../packages/dsh-web-plugins/cordis.patch.yml?raw'
 import starPatchSource from '../../packages/dsh-web-star/cordis.patch.yml?raw'
+import networkPatchSource from '../../packages/dsh-web-network/cordis.patch.yml?raw'
 
 /**
  * Bundle layers for the plugins this repository ships.
@@ -28,6 +30,7 @@ const SHIPPED_PLUGIN_PATCHES: Record<string, string> = {
   'web-terminal': terminalPatchSource,
   'web-plugin-install': installPatchSource,
   'web-star': starPatchSource,
+  'web-network': networkPatchSource,
 }
 
 /** The bundle layers this build lays down, in application order. */
@@ -69,8 +72,14 @@ function writeDeploymentFiles(): void {
     volume.writeFile(path, toBytes(contents))
   }
   // This deployment's own overlay layer, alongside the upstream bundle patches.
+  // The authored rows first, then the generated provider roster: one layer,
+  // because they are one deployment's answer, and the generated half is
+  // appended rather than interleaved so the authored file stays readable.
   volume.mkdirp(`${DEPLOY_ROOT}/bundles/browser`)
-  volume.writeFile(`${DEPLOY_ROOT}/bundles/browser/cordis.patch.yml`, toBytes(browserPatchSource))
+  volume.writeFile(
+    `${DEPLOY_ROOT}/bundles/browser/cordis.patch.yml`,
+    toBytes(`${browserPatchSource}\n${MODEL_CATALOG_PATCH}`),
+  )
   // The plugins this build ships are laid down as ordinary bundle layers, one
   // directory each, so the composition reads them exactly as it reads a plugin
   // someone installed.

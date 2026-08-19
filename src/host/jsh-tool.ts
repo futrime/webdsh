@@ -39,6 +39,7 @@ import { TOOL_ABORTED, defineTool } from '@deepseek-ai/dsh-tools'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import { parseExitStatus } from '@deepseek-ai/dsh-shell'
 import type { Context } from '@deepseek-ai/cordis'
+import { proxiedUrl, proxyConfig } from '../net/cors-proxy.ts'
 
 /** Services this row waits for before it applies. */
 export const inject = ['tools', 'shell', 'shellEnv', 'systemPrompt']
@@ -61,21 +62,47 @@ const COMMANDS = [
 ].join(' ')
 
 /**
- * The one public CORS proxy that answers from inside this container.
+ * What the model is told to do about CORS, read from the page's own policy.
  *
- * The container's network cannot be intercepted from the page: its requests
- * come out of StackBlitz's own worker, which neither a patched `window.fetch`
- * nor `public/sw.js` ever sees — both were measured, and both see nothing. So
- * the fallback cannot be automatic; it can only be something the model is told
- * to try, which is why it lives in the description rather than in code.
+ * Everywhere else this build fetches, the proxy is applied by code and the
+ * caller never learns it happened: `src/net/cors-proxy.ts` retries a refused
+ * cross-origin request through whatever Settings → Network names. The
+ * container is the one place that cannot work, and the reason is worth
+ * keeping: its requests come out of StackBlitz's own worker, which neither a
+ * patched `window.fetch` nor `public/sw.js` ever sees — both were measured,
+ * and both see nothing.
  *
- * `allorigins`, `codetabs`, `cors.isomorphic-git.org` and `corsproxy.io` were
- * all tried from in there and all failed — unreachable, or answering 403 for a
- * non-localhost origin. This one is a third party seeing every byte routed
- * through it, which is why the description bounds it to public URLs and to a
- * retry after a real failure.
+ * So here, and only here, the fallback is something the model is told rather
+ * than something the app does — and it is told the configured proxy, not a
+ * constant. Turning the proxy off in Settings removes the advice instead of
+ * leaving the model retrying through a host the user declined.
+ * @returns the paragraph, as description lines.
  */
-const CORS_PROXY = 'https://proxy.cors.sh/'
+function corsAdvice(): string[] {
+  const { enabled, template } = proxyConfig()
+  const common = [
+    'The network is the browser\'s, so a host only answers if it sends CORS headers. The npm',
+    'registry does, so `npm install` works, and so do most JSON APIs. Many public sites do not,',
+    'and a direct request to one fails with `fetch failed` — that is the host\'s policy, not a bug',
+    'in the command.',
+  ]
+  if (!enabled) {
+    return [
+      ...common,
+      'This session has no proxy configured, so there is no retry to make: when a request fails that',
+      'way, stop and say the host refuses browser requests.',
+    ]
+  }
+  // The model needs a URL it can paste, so a template is resolved against a
+  // placeholder it will replace rather than handed over with braces in it.
+  const example = proxiedUrl('<url>', template) ?? `${template}<url>`
+  return [
+    ...common,
+    `When that happens and the URL is public, retry it once as ${example}; if that also fails, stop`,
+    'and say so. Never send a request carrying a credential — an API key, a token, a cookie —',
+    'through the proxy: it is a third party and it sees the whole request.',
+  ]
+}
 
 /** What a model reaches for first and will not find. */
 const MISSING = 'grep, sed, awk, find, wc, printf, cut, tr, diff, patch, tar, gzip, git, date, seq, tee, basename, dirname, xargs, test'
@@ -126,12 +153,7 @@ function jshDescription(background: boolean): string {
     'For reading, writing, editing, and searching files, prefer the dedicated tools over any shell',
     'command — they are faster here and they do not go through jsh at all.',
     '',
-    'The network is the browser\'s, so a host only answers if it sends CORS headers. The npm',
-    'registry does, so `npm install` works, and so do most JSON APIs. Many public sites do not,',
-    'and a direct request to one fails with `fetch failed` — that is the host\'s policy, not a bug',
-    `in the command. When that happens and the URL is public, retry it once through ${CORS_PROXY}<url>;`,
-    'if that also fails, stop and say so. Never send a request carrying a credential — an API key,',
-    'a token, a cookie — through the proxy: it is a third party and it sees the whole request.',
+    ...corsAdvice(),
     'Use `node -e "fetch(...)"` rather than `curl`: the `curl` here is a stub that takes a URL and',
     'little else.',
     '',

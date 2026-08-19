@@ -17,6 +17,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { dispatchVirtualRequest } from '../node/http.ts'
 import { installRequestHostPreservation } from './request-host.ts'
 import { openVirtualWebSocket } from './virtual-websocket.ts'
+import { fetchCrossOrigin } from './cors-proxy.ts'
 
 /** Paths the interceptors claim. */
 const API_PREFIX = '/api'
@@ -61,7 +62,15 @@ export function installFetchInterceptor(): void {
     } catch {
       return original(input as RequestInfo, init)
     }
-    if (!isHostUrl(url)) return original(input as RequestInfo, init)
+    // Everything that is not this page's own host goes out to the network, and
+    // a cross-origin one goes through the CORS policy on the way — direct
+    // first, and through the configured proxy only when the browser refused
+    // the direct answer. Same-origin requests are nobody's business but the
+    // server's.
+    if (!isHostUrl(url)) {
+      if (url.origin === location.origin) return original(input as RequestInfo, init)
+      return fetchCrossOrigin(original, input, init, request, url)
+    }
     const response = await dispatchVirtualRequest(request)
     if (response !== undefined) return response
     // No virtual server is listening yet — the client's own reconnect loop

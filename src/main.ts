@@ -15,7 +15,7 @@ import { bootHost } from './host/boot.ts'
 import { disableAllPlugins, installedPluginNames, installPluginManager } from './plugins/manager.ts'
 import { installWindowApi } from './api.ts'
 import { bootRuntime } from './runtime/webcontainer.ts'
-import { publishInstallerBridge, publishRuntimeBridge } from './host/bridges.ts'
+import { publishInstallerBridge, publishNetworkBridge, publishRuntimeBridge } from './host/bridges.ts'
 import { SHELL_ENTRY, SHELL_STYLES } from './generated/shell-assets.ts'
 import { renderBootFailure, renderBootProgress, type BootRecovery } from './boot-screen.ts'
 import { attachPersistence } from './vfs/persist.ts'
@@ -78,6 +78,11 @@ async function main(): Promise<void> {
     // `@dsh-web/jsh` chooses the shell here, and a bridge published later would
     // mean it silently chose nothing.
     publishRuntimeBridge()
+    // The same reason, and one more: the CORS policy is already in force —
+    // `installVirtualNetwork` applies it to every cross-origin request — so
+    // what this publishes is the ability to see and change it, and the host's
+    // own first requests are already covered whether or not it is ever read.
+    publishNetworkBridge()
 
     progress.step('Starting the harness host')
     const { ctx, persistence, warnings } = await bootHost()

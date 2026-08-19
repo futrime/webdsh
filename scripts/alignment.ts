@@ -15,7 +15,8 @@
  * Usage: `npx tsx scripts/alignment.ts`
  */
 
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
+import { MODEL_CATALOG_PATCH } from '../src/generated/model-catalog.ts'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -96,8 +97,16 @@ const upstream = [
   join(root, 'node_modules/@deepseek-ai/dsh-web-app/cordis.patch.yml'),
 ].map(load)
 
-const overlay = readFileSync(join(root, 'src/host/browser.patch.yml'), 'utf8')
-const shipped = ['dsh-web-terminal', 'dsh-web-plugins', 'dsh-web-star']
+// The overlay layer as the boot actually lays it down: the authored rows plus
+// the provider roster `scripts/assemble.ts` derives from the installed pi-ai
+// catalog. Reading only the authored half would report `llm-pi-ai` as composing
+// exactly the way `dsh web` composes it, which is the one thing this script
+// exists to catch.
+const overlay = `${readFileSync(join(root, 'src/host/browser.patch.yml'), 'utf8')}\n${MODEL_CATALOG_PATCH}`
+// Derived from the directory, not listed: a plugin this repository ships is a
+// directory under `packages/`, and a hand-kept list is how one comes to be
+// shipped without ever appearing in this report.
+const shipped = readdirSync(join(root, 'packages'))
   .map(name => join(root, 'packages', name, 'cordis.patch.yml'))
   .filter(existsSync)
   .map(path => readFileSync(path, 'utf8'))

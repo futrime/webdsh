@@ -18,6 +18,15 @@ import { ripgrep } from '../runtime/ripgrep.ts'
 import type { PluginManager } from '../plugins/manager.ts'
 import { volume } from '../vfs/volume.ts'
 import { dirname } from '../node/path.ts'
+import {
+  ALTERNATIVE_PROXY_TEMPLATE,
+  DEFAULT_PROXY_TEMPLATE,
+  proxiedOrigins,
+  proxyConfig,
+  setProxyConfig,
+  testProxy,
+  type ProxyConfig,
+} from '../net/cors-proxy.ts'
 
 /** Where an uploaded plugin tarball is staged before the installer reads it. */
 const UPLOAD_DIR = '/tmp/dsh-plugin-uploads'
@@ -53,6 +62,28 @@ export function publishRuntimeBridge(): void {
       ])
       return { Terminal, FitAddon, styles: styles.default }
     },
+  }
+}
+
+/**
+ * Publish the page's CORS policy, for whoever offers to edit it.
+ *
+ * The policy is the app's rather than a plugin's for the same reason the
+ * runtime is: `src/net` applies it to every cross-origin request the page
+ * makes, long before any plugin has mounted, and a second copy of the setting
+ * would be a second answer to the same question. What a plugin owns is the
+ * page it is edited on.
+ */
+export function publishNetworkBridge(): void {
+  ;(globalThis as Record<string, unknown>).__DSH_WEB_NETWORK__ = {
+    config: (): ProxyConfig => proxyConfig(),
+    setConfig: (next: Partial<ProxyConfig>): ProxyConfig => setProxyConfig(next),
+    test: (template?: string) => testProxy(template),
+    defaults: { template: DEFAULT_PROXY_TEMPLATE, alternative: ALTERNATIVE_PROXY_TEMPLATE },
+    // Which origins this session actually needed the proxy for. It is the
+    // honest answer to "is it being used", and it is the only place the page
+    // reports that a request left through a third party.
+    proxied: (): string[] => proxiedOrigins(),
   }
 }
 

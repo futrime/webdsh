@@ -13,6 +13,7 @@
  * - `src/generated/client-manifest.ts`— the `window.__DSH_BOOT__` rows
  * - `src/generated/host-modules.ts`   — specifier → dynamic import, for the host module system
  * - `src/generated/seed-files.ts`     — VFS seed (bundle patches, agent presets)
+ * - `src/generated/model-catalog.ts`  — the provider routes the overlay registers
  */
 
 import { createHash } from 'node:crypto'
@@ -424,6 +425,199 @@ for (const specifier of [...specifiers].sort()) {
   else console.warn(`[assemble] composition names ${specifier}, which is not installed; it will fail to load if enabled`)
 }
 
+/** The catalog route whose free tier this build declares a keyless twin of. */
+const ZEN_PROVIDER = 'opencode'
+
+/** The route id that twin is registered under. */
+const FREE_ROUTE = 'opencode-free'
+
+/**
+ * Free models the catalog lists that the endpoint does not actually serve.
+ *
+ * pi-ai's catalog is generated from published pricing, and a price is not a
+ * promise: these two are listed at zero and answer
+ * `401 {"type":"ModelError","message":"Model … is not supported"}` to every
+ * request. Offering them would put two entries in the picker that can only
+ * ever fail, so they are subtracted — measured, not assumed, and re-checkable
+ * in one line:
+ *
+ *     curl -s -X POST https://opencode.ai/zen/v1/chat/completions \
+ *       -H 'content-type: application/json' -H 'Authorization: Bearer' \
+ *       -d '{"model":"<id>","messages":[{"role":"user","content":"hi"}],"max_tokens":8}'
+ *
+ * A 429 is not grounds for this list: three of the served models answered that
+ * while their upstream pool was spent, and they work again afterwards. Only a
+ * flat "not supported" belongs here.
+ */
+const ZEN_UNSERVED = new Set(['ling-3.0-flash-free', 'north-mini-code-free'])
+
+/** As much of a pi-ai catalog model as the roster reads. */
+interface CatalogModel {
+  id: string
+  name?: string
+  api?: string
+  baseUrl?: string
+  contextWindow?: number
+  maxTokens?: number
+  cost?: { input?: number, output?: number }
+}
+
+/**
+ * A route for the models that answer with no account at all.
+ *
+ * OpenCode Zen prices seven of its models at zero and serves them to an
+ * unauthenticated request — which is the difference between a page anyone can
+ * open and a page that asks for a key before it does anything. Getting there
+ * took finding out what actually stops it, because two different things do:
+ *
+ * - pi-ai will not dispatch without a key. A catalog route with no
+ *   `apiKeyEnv` fails `Provider is not configured` before any request is
+ *   built; a *declared* route gets further and fails `No API key for
+ *   provider`. Both measured.
+ * - That second gate is the one with a way through: pi-ai accepts a request
+ *   with no key when the profile supplies an `authorization` header, and the
+ *   OpenAI client merges `defaultHeaders` *after* its own `Authorization`, so
+ *   the profile's value is what reaches the wire.
+ *
+ * And the value has to be `Bearer` with nothing after it. Zen answers 200 to
+ * an empty bearer and 401 `Invalid API key` to any non-empty one, so a
+ * placeholder key is not a substitute for having none.
+ *
+ * The route is declared rather than configured onto `opencode` because the two
+ * are different postures: the catalog route keeps its credential reference and
+ * serves all 58 models to whoever has an account, and this one serves only the
+ * seven that need none. Sharing one route would mean the header override
+ * silently ignoring a key the user had typed.
+ * @param served - every model the catalog ships for that provider.
+ * @returns the profile rows and how many models they cover, or nothing if the
+ *   catalog no longer prices any of them at zero.
+ */
+function freeRoute(served: CatalogModel[]): { rows: string, count: number } | undefined {
+  // Free, and speaking the one protocol a declared route can name for all of
+  // its models. A zero-priced model on another protocol would need its own
+  // route, and there are none today.
+  const free = served.filter(model => model.cost?.input === 0 && model.cost?.output === 0
+    && model.api === 'openai-completions'
+    && !ZEN_UNSERVED.has(model.id))
+  if (free.length === 0) return undefined
+  const baseUrl = free[0].baseUrl
+  if (typeof baseUrl !== 'string' || baseUrl.length === 0) return undefined
+  if (!free.every(model => model.baseUrl === baseUrl)) return undefined
+
+  const models = free.map((model) => {
+    const lines = [`          - id: ${model.id}`]
+    if (model.name !== undefined) lines.push(`            name: ${JSON.stringify(model.name)}`)
+    if (model.contextWindow !== undefined) lines.push(`            contextWindow: ${String(model.contextWindow)}`)
+    if (model.maxTokens !== undefined) lines.push(`            maxTokens: ${String(model.maxTokens)}`)
+    return lines.join('\n')
+  })
+  const rows = [
+    `      ${FREE_ROUTE}:`,
+    '        displayName: OpenCode Zen (free)',
+    '        api: openai-completions',
+    `        baseURL: ${baseUrl}`,
+    // Empty on purpose: it is what makes the request unauthenticated, and it
+    // is also what gets pi-ai to dispatch one at all.
+    '        headers:',
+    '          authorization: Bearer',
+    '        models:',
+    ...models,
+  ].join('\n')
+  return { rows, count: free.length }
+}
+
+/**
+ * The provider routes this build registers by default.
+ *
+ * `dsh-llm-pi-ai` mounts dormant: it ships the whole multi-provider catalog and
+ * serves none of it until a profile names a route. On a machine that is right —
+ * a deployment configures the providers it has keys for. In a tab there is no
+ * deployment step at all, so the same posture means a first-time visitor sees
+ * one provider in the model picker and no way to learn that thirty more are
+ * already installed. So the routes are registered here, and a key typed on the
+ * Models page is all that is left to do.
+ *
+ * The roster is derived from the installed pi-ai catalog rather than written
+ * down, for the same reason nothing else in this file is written down: it is a
+ * dependency's list, it changes when the dependency is bumped, and a copy of it
+ * would be wrong the first time that happened.
+ *
+ * A route is registered when the adapter can actually serve it unattended:
+ * pi-ai offers api-key authentication for it (the only kind this adapter can
+ * obtain on its own), it ships models, and every one of those models names a
+ * concrete endpoint. That last test is what excludes Azure, Vertex and the
+ * Cloudflare gateways — their endpoints carry `{resource}`, `{location}` and
+ * `{CLOUDFLARE_ACCOUNT_ID}` placeholders that only a deployment can fill, and a
+ * route registered with one in it would be a model in the picker that cannot
+ * be called. Those stay where they were: offered by the Models page's own
+ * add-a-provider card, which asks for the endpoint.
+ * @returns the patch text, and what it covers.
+ */
+async function emitModelCatalog(): Promise<{ patch: string, providers: number, models: number }> {
+  const catalog = await import('@earendil-works/pi-ai/providers/all') as {
+    builtinProviders(): { id: string, auth?: { apiKey?: unknown } }[]
+    getBuiltinProviders(): string[]
+    getBuiltinModels(id: string): CatalogModel[]
+  }
+  const byId = new Map(catalog.builtinProviders().map(provider => [provider.id, provider]))
+  const rows: string[] = []
+  let models = 0
+  for (const id of catalog.getBuiltinProviders()) {
+    if (byId.get(id)?.auth?.apiKey === undefined) continue
+    const served = catalog.getBuiltinModels(id)
+    if (served.length === 0) continue
+    if (!served.every(model => typeof model.baseUrl === 'string' && model.baseUrl.length > 0 && !model.baseUrl.includes('{'))) continue
+    // The reference the Models page derives when a user types a key for this
+    // route. Naming the same one is what makes typing the key sufficient.
+    const reference = `${id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`
+    rows.push(`      ${id}:\n        apiKeyEnv: ${reference}`)
+    models += served.length
+  }
+
+  const free = freeRoute(catalog.getBuiltinModels(ZEN_PROVIDER))
+  if (free !== undefined) {
+    rows.push(free.rows)
+    models += free.count
+  }
+  const patch = [
+    '',
+    '# ── the installed model catalog ─────────────────────────────────────────────',
+    '#',
+    '# Generated by scripts/assemble.ts from the pi-ai catalog in node_modules.',
+    `# ${String(rows.length)} provider routes, ${String(models)} models. Do not edit here: bump the`,
+    '# dependency and re-run `npm run assemble`.',
+    '#',
+    '# Each route names the credential reference the Models page writes when a key',
+    '# is typed for it, so a provider becomes usable by supplying its key and',
+    '# nothing else. A route whose key is not stored fails its own requests with',
+    '# MISSING_CREDENTIAL and costs the others nothing.',
+    '#',
+    `# The exception is \`${FREE_ROUTE}\`, which names no reference because it needs`,
+    '# none: OpenCode Zen serves those models to an unauthenticated request, and',
+    '# the empty `authorization` header is what keeps the request that way. It is',
+    '# the deployment default, so the page is usable before anyone has a key.',
+    '#',
+    '# This is composition, not settings: a `llm-pi-ai:` section in the user\'s',
+    '# settings.yaml still overrides any of it, and the Models page still edits',
+    '# that layer rather than this one.',
+    '- id: llm-pi-ai',
+    '  config:',
+    '    providers:',
+    ...rows,
+    '',
+  ].join('\n')
+  return { patch, providers: rows.length, models }
+}
+
+const modelCatalog = await emitModelCatalog()
+writeGenerated('model-catalog.ts', `/**
+ * The \`llm-pi-ai\` provider routes this build registers, as a patch fragment
+ * appended to the browser overlay layer. Derived from the installed pi-ai
+ * catalog — see \`emitModelCatalog\` in scripts/assemble.ts.
+ */
+export const MODEL_CATALOG_PATCH = ${JSON.stringify(modelCatalog.patch)}
+`)
+
 writeGenerated('client-manifest.ts', `import type { ClientManifestRow } from '../host/client-modules-browser.ts'
 
 /** The client halves shipped as static assets beside the app. */
@@ -462,6 +656,7 @@ export const SEED_FILES: readonly (readonly [string, string])[] = ${JSON.stringi
 `)
 
 console.log(`[assemble] ${String(clientRows.length)} client bundles`)
+console.log(`[assemble] ${String(modelCatalog.providers)} default provider routes, ${String(modelCatalog.models)} models`)
 console.log(`[assemble] ${String(resolvable.length)} host module specifiers`)
 console.log(`[assemble] ${String(files.length)} seeded files`)
 console.log(`[assemble] ${String(typertPackages.length)} Typert host manifests`)

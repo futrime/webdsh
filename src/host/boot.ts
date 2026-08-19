@@ -32,6 +32,7 @@ import browserPatchSource from './browser.patch.yml?raw'
 import * as terminalPlugin from '../../packages/dsh-web-terminal/src/index.ts'
 import * as installPlugin from '../../packages/dsh-web-plugins/src/index.ts'
 import * as starPlugin from '../../packages/dsh-web-star/src/index.ts'
+import * as networkPlugin from '../../packages/dsh-web-network/src/index.ts'
 
 /** What the boot produced, for the page to wire the transport onto. */
 export interface HostBoot {
@@ -77,6 +78,7 @@ export async function bootHost(): Promise<HostBoot> {
   registerRuntimeModule('@dsh-web/terminal', terminalPlugin)
   registerRuntimeModule('@dsh-web/plugin-install', installPlugin)
   registerRuntimeModule('@dsh-web/star', starPlugin)
+  registerRuntimeModule('@dsh-web/network', networkPlugin)
 
   const ctx = new Context()
   ctx.baseUrl = pathToFileURL(`${DEPLOY_ROOT}/`).href

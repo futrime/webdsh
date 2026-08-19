@@ -335,8 +335,196 @@ const scenarios: Scenario[] = [
       })
       expect(/^my-local-plugin@9\.9\.9$/.test(local), `installing from a local directory failed: ${local}`)
 
+      // The source CORS used to close off. `codeload.github.com` answers no
+      // browser, so a GitHub reference installing at all is the trees-API route
+      // having worked.
+      const github = await page.evaluate(async () => {
+        try {
+          const entry = await globalThis.dsh.plugins.install('ccch1mneyyy/working-activity')
+          return `${entry.name}@${entry.version}`
+        } catch (error) { return `failed: ${String(error)}` }
+      })
+      expect(
+        /^[\w@/-]+@\d/.test(github),
+        'installing from a GitHub reference failed. Both routes were unavailable: the trees API'
+        + ` (60 unauthenticated calls an hour, shared by this address) and the proxied tarball: ${github}`,
+      )
+
+      // That it did not fall back to the proxy is the other half, and the one
+      // that would rot silently: the fallback would keep this suite green while
+      // routing every plugin install through a third party. It is only a fair
+      // question while GitHub is still answering — the unauthenticated
+      // allowance is 60 an hour and shared by everything on this address, so an
+      // exhausted one is a fact about the runner, not a regression.
+      const allowance = await page.evaluate(async () => {
+        try {
+          const response = await fetch('https://api.github.com/rate_limit')
+          if (!response.ok) return 0
+          const document = await response.json() as { resources?: { core?: { remaining?: number } } }
+          return document.resources?.core?.remaining ?? 0
+        } catch { return 0 }
+      })
+      const proxied = await page.evaluate(() =>
+        (globalThis as { __DSH_WEB_NETWORK__?: { proxied(): string[] } }).__DSH_WEB_NETWORK__?.proxied() ?? [])
+      if (allowance > 0) {
+        expect(
+          !proxied.includes('https://codeload.github.com'),
+          'the GitHub install fell back to the CORS proxy; the trees-API route regressed',
+        )
+      } else {
+        process.stdout.write('  note: GitHub\'s API allowance is spent, so the no-proxy assertion was skipped\n')
+      }
+
       const listed = await page.evaluate(() => globalThis.dsh.plugins.list().map(entry => entry.name))
       expect(listed.includes('my-local-plugin'), `the inventory does not show what was installed: ${listed.join(', ')}`)
+    },
+  },
+  {
+    // This case gates a deploy, so it is careful about what it blames. Two of
+    // its three assertions are about this repository's own logic and always
+    // hold; the third needs a third party to be up, and a third party being
+    // down is not a reason to stop publishing the site. So the proxy is probed
+    // first, and only a proxy that *is* answering makes the retry mandatory.
+    name: 'cors-proxy',
+    async run(page) {
+      await waitForShell(page)
+      // Half the point of the policy is what it does NOT do. A host that
+      // answers a browser must never be handed to a third party.
+      const clean = await page.evaluate(async () => {
+        await fetch('https://registry.npmjs.org/dsh-working-activity')
+        return (globalThis as { __DSH_WEB_NETWORK__?: { proxied(): string[] } }).__DSH_WEB_NETWORK__?.proxied() ?? []
+      })
+      expect(!clean.includes('https://registry.npmjs.org'), 'a CORS-clean host was routed through the proxy')
+
+      // OpenAI refuses a browser this exact request: a POST with a JSON body
+      // and an `authorization` header. With the proxy off it must fail — if it
+      // does not, the premise is gone and the rest of this case means nothing.
+      const off = await page.evaluate(async () => {
+        const network = (globalThis as { __DSH_WEB_NETWORK__?: { setConfig(next: { enabled: boolean }): unknown } }).__DSH_WEB_NETWORK__
+        network?.setConfig({ enabled: false })
+        try {
+          const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: 'Bearer sk-not-a-real-key' },
+            body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }),
+          })
+          return `reached anyway (${String(response.status)})`
+        } catch { return 'refused' }
+      })
+      expect(off === 'refused', `api.openai.com answered a browser directly, or the proxy stayed on: ${off}`)
+
+      // Now with it on. `test()` asks the proxy itself, exempt from the policy,
+      // so its answer separates "the proxy is down" from "the retry regressed".
+      const outcome = await page.evaluate(async () => {
+        const network = (globalThis as {
+          __DSH_WEB_NETWORK__?: {
+            setConfig(next: { enabled: boolean }): unknown
+            test(): Promise<{ ok: boolean, detail: string }>
+            proxied(): string[]
+          }
+        }).__DSH_WEB_NETWORK__
+        network?.setConfig({ enabled: true })
+        const reachable = await network?.test() ?? { ok: false, detail: 'no network bridge' }
+        try {
+          const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: 'Bearer sk-not-a-real-key' },
+            body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }),
+          })
+          return { reachable, status: response.status, proxied: network?.proxied() ?? [] }
+        } catch (error) { return { reachable, status: 0, error: String(error), proxied: network?.proxied() ?? [] } }
+      })
+
+      if (!outcome.reachable.ok) {
+        // The shipped default has stopped answering. That is worth acting on —
+        // it is a broken default for every visitor — but it is not a change in
+        // this repository, and it must not hold up a deploy.
+        process.stdout.write(`  note: the default CORS proxy is not answering (${outcome.reachable.detail});`
+          + ' the retry could not be exercised. Replace it in src/net/cors-proxy.ts.\n')
+        return
+      }
+      expect(
+        outcome.status === 401,
+        `the proxy answers, but the retry did not reach api.openai.com: ${JSON.stringify(outcome)}`,
+      )
+      expect(outcome.proxied.includes('https://api.openai.com'), 'the request reached OpenAI without being recorded as proxied')
+    },
+  },
+  {
+    name: 'model-catalog',
+    async run(page) {
+      await waitForShell(page)
+      // The picker is the product here: a visitor should find the providers
+      // already registered, not a dormant adapter and an empty list.
+      const catalog = await page.evaluate(async () => {
+        const llm = globalThis.dsh.ctx.get('llm') as {
+          listProviders(): { id: string }[]
+          listModels(provider: string): Promise<{ id: string }[]>
+        } | undefined
+        if (llm === undefined) return { providers: [], models: 0 }
+        const providers = llm.listProviders().map(entry => entry.id)
+        let models = 0
+        for (const provider of providers) models += (await llm.listModels(provider)).length
+        return { providers, models }
+      })
+      expect(catalog.providers.length >= 30, `only ${String(catalog.providers.length)} providers registered`)
+      expect(catalog.models >= 500, `only ${String(catalog.models)} models offered`)
+      for (const expected of ['anthropic', 'openai', 'google', 'openrouter', 'opencode', 'deepseek-official']) {
+        expect(catalog.providers.includes(expected), `${expected} is not a registered provider`)
+      }
+      // The default is the whole first-run experience: a page anyone can open
+      // has to answer before it asks for anything, so it starts on the route
+      // that needs no account.
+      const fallback = await page.evaluate(() => {
+        for (const entry of globalThis.dsh.ctx.loader?.entries() ?? []) {
+          const options = entry.options as { id?: string, config?: { provider?: string, model?: string } }
+          if (options.id === 'agent-default-model') return `${options.config?.provider ?? '?'}/${options.config?.model ?? '?'}`
+        }
+        return 'missing'
+      })
+      expect(fallback === 'opencode-free/deepseek-v4-flash-free', `the default model changed: ${fallback}`)
+      expect(catalog.providers.includes('opencode-free'), 'the keyless route is not registered')
+
+      // And it has to actually dispatch without a credential. The distinction
+      // that matters is auth versus everything else: a rate-limited free pool
+      // is the provider's business and must not fail a deploy, but an auth
+      // failure means the empty `authorization` header stopped reaching the
+      // wire — which is the one thing holding this route together.
+      const keyless = await page.evaluate(async () => {
+        const llm = globalThis.dsh.ctx.get('llm') as {
+          stream(options: Record<string, unknown>): AsyncIterable<{ type: string, text?: string, reason?: { kind?: string, failure?: { code?: string, message?: string } } }>
+        }
+        let text = ''
+        let failure: { code?: string, message?: string } | undefined
+        try {
+          for await (const chunk of llm.stream({
+            provider: 'opencode-free',
+            model: 'deepseek-v4-flash-free',
+            messages: [{ role: 'user', content: [{ type: 'text', text: 'Reply with exactly the word: pong' }] }],
+            maxTokens: 200,
+          })) {
+            if (chunk.type === 'text-delta') text += chunk.text ?? ''
+            if (chunk.type === 'finish') { failure = chunk.reason?.failure; break }
+          }
+        } catch (error) { failure = { code: 'THREW', message: String(error) } }
+        return { text, failure }
+      })
+      const code = keyless.failure?.code
+      // The signature that matters is Zen's own `Invalid API key`, which is
+      // what it answers when a non-empty bearer reaches it — the one way this
+      // route can break. Its other 401 ("Model … is not supported") is also
+      // reported as AUTH and means something completely different, so matching
+      // on the code alone would fail for the wrong reason.
+      expect(
+        !/invalid api key/i.test(keyless.failure?.message ?? ''),
+        `the keyless route was rejected for authentication, so the empty bearer did not reach the wire: ${JSON.stringify(keyless.failure)}`,
+      )
+      if (code === 'RATE_LIMIT') {
+        process.stdout.write('  note: OpenCode Zen\'s free pool is rate-limited right now; the turn reached it but returned no text\n')
+      } else {
+        expect(code === undefined, `the keyless turn failed: ${JSON.stringify(keyless.failure)}`)
+        expect(keyless.text.trim().length > 0, 'the keyless turn finished without any text')
+      }
     },
   },
   {

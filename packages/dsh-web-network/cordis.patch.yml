@@ -1,0 +1,15 @@
+# The Network settings page, as a profile bundle layer.
+#
+# `dsh web` runs on a machine, where reaching a host is a question of routing
+# and a proxy is the operating system's business. In a tab it is CORS, and CORS
+# is answered by the host being reached rather than by the page — so the page
+# needs somewhere to say what it does when the answer is no.
+#
+# The setting itself belongs to the app: `src/net/cors-proxy.ts` applies it to
+# every cross-origin request, including the ones the host makes before any
+# plugin has mounted. What this layer owns is the page it is edited on, in the
+# Settings surface the app already has, beside Models — which is where a user
+# who cannot reach a provider will actually go looking.
+- insert:
+    - id: web-network
+      name: '@dsh-web/network'

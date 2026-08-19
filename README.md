@@ -17,6 +17,8 @@ and this directory are named `webdsh`.
 - [Background](#background)
 - [Install](#install)
 - [Usage](#usage)
+- [The models it ships with](#the-models-it-ships-with)
+- [Reaching a host that refuses browsers](#reaching-a-host-that-refuses-browsers)
 - [The runtime](#the-runtime)
 - [The shell the model is told about](#the-shell-the-model-is-told-about)
 - [The plugins this repository ships](#the-plugins-this-repository-ships)
@@ -44,10 +46,10 @@ What it adds is the platform underneath:
 | `src/node` | `node:*` implemented over it — fs, path, os, crypto, child_process, worker_threads, http, stream, zlib, sqlite, async_hooks — plus `node-pty` and `sharp` replacements, so the real subprocess and attachment providers load unchanged. |
 | `src/shell` | A POSIX shell over that filesystem, used when the runtime cannot start — a browser without cross-origin isolation still boots, and still runs tool calls. |
 | `src/runtime` | WebContainers: Node in the tab. The terminal attaches to it and the agent executes in it, so they are one machine. |
-| `src/net` | The page's `fetch` and `WebSocket` routed into an in-page virtual server, so `/api` runs through dsh's own bridge, trust fence, and Typert gateway. |
+| `src/net` | The page's `fetch` and `WebSocket` routed into an in-page virtual server, so `/api` runs through dsh's own bridge, trust fence, and Typert gateway — plus the CORS policy every cross-origin request goes out through. |
 | `src/host` | The boot, plus browser rows for the handful of capabilities a page cannot have. |
 | `src/plugins` | Plugin installation from the npm registry, a tarball URL, a GitHub repository, or a path in this filesystem, with an ES-module loader that binds installed packages to this app's single cordis instance. |
-| `packages/` | The plugins this repository ships: the terminal, the plugin installer, the repository link at the sidebar foot, and the shell the model is told about. |
+| `packages/` | The plugins this repository ships: the terminal, the plugin installer, the Network settings page, the repository link at the sidebar foot, and the shell the model is told about. |
 
 Five composition rows are swapped, each because the shipped one names a host
 capability a page does not have; `src/host/browser.patch.yml` is the complete
@@ -69,12 +71,17 @@ the browser at boot.
 
 ## Usage
 
-Open the page. It walks the same first-run flow as `dsh web`: acknowledge the
-notice, enter a DeepSeek API key, choose a workspace, start talking.
+Open the page, acknowledge the notice, choose a workspace, start talking.
+**There is no key step** — the default model is OpenCode Zen's free tier, which
+serves a request with no account at all. `dsh web` asks for a DeepSeek key here
+because a machine is being configured; a page is being opened, and it should
+answer before it asks for anything.
 
-Your API key, files, sessions, and settings live in your browser's storage for
-that origin and are never uploaded. Model requests go from your browser straight
-to the provider.
+Any key you do enter, along with your files, sessions, and settings, lives in
+your browser's storage for that origin and is never uploaded. Model requests go
+from your browser to the provider — directly where the provider answers a
+browser, and otherwise through the proxy in
+[Settings → Network](#reaching-a-host-that-refuses-browsers).
 
 - **Files and sessions** persist across reloads: reopening the page restores the
   workspace, its session list, and each session's transcript from the same
@@ -85,6 +92,181 @@ to the provider.
 - **Plugins** install from Settings → Plugins, or with `/plugin add <package>`
   in the composer. Both are the same plugin, and both take an npm name, a
   tarball URL, `owner/repo#ref`, or a path.
+- **Models** are in Settings → Models: thirty-three providers are already
+  registered, and a provider becomes usable by typing its key. The default one
+  needs no key.
+- **Network** is in Settings → Network, and matters more here than it would on a
+  machine — see [below](#reaching-a-host-that-refuses-browsers).
+
+## The models it ships with
+
+`dsh` composes two model adapters. `llm-deepseek` serves DeepSeek. The other,
+`llm-pi-ai`, is a multi-provider adapter carrying a catalog of its own — and
+upstream mounts it **dormant**, serving nothing until a deployment names the
+routes it has keys for.
+
+On a machine that is right; someone configures the install. A tab has no
+configuration step, so the same posture means a first-time visitor sees one
+provider and no sign that thirty-two more are already in the bundle. So this
+build registers them:
+
+```
+$ npm run assemble
+[assemble] 33 default provider routes, 1002 models
+```
+
+Anthropic, OpenAI, Google, OpenRouter, Groq, Mistral, Together, Fireworks,
+HuggingFace, xAI, Moonshot, z.ai, MiniMax, Cerebras, NVIDIA, Bedrock,
+GitHub Copilot, Vercel's AI gateway, both OpenCode Zen routes, and the rest of
+the installed catalog. Each names the credential reference the Models page
+writes, so typing a key for a provider is the whole of configuring it; a
+provider with no key stored fails its own requests with `MISSING_CREDENTIAL`
+and costs the others nothing.
+
+The roster is derived at build time from the pi-ai catalog in `node_modules`
+rather than written down — bumping the dependency is what updates it. A route is
+registered when the adapter can serve it unattended: pi-ai offers api-key
+authentication for it, it ships models, and every one of those models names a
+concrete endpoint. That last test is what leaves out Azure, Vertex, and the
+Cloudflare gateways, whose endpoints carry `{resource}`, `{location}` and
+`{CLOUDFLARE_ACCOUNT_ID}` placeholders only a deployment can fill. They stay
+where they were — the Models page's add-a-provider card, which asks for the
+endpoint. It is composition, not settings, so a `llm-pi-ai:` section in
+`settings.yaml` still overrides any of it.
+
+### The one that needs no key
+
+Thirty-two of those routes are useless until someone types a key, which would
+leave a first-time visitor exactly where `dsh web` leaves them: at a form. The
+thirty-third is not. OpenCode Zen prices seven of its models at zero and serves
+them to an **unauthenticated** request, so this build declares a route for them
+and makes it the default. Five, in the end: two of the seven answer
+`401 Model … is not supported` to every request, so a price is not a promise
+and the roster subtracts them — that list is measured, and
+`scripts/assemble.ts` carries the one-line command to re-check it.
+
+```
+provider: opencode-free
+model:    deepseek-v4-flash-free
+```
+
+Open the page and the model answers. The first-run key step does not render at
+all, because the Models page ends onboarding for a provider whose profile names
+no credential reference — which this one does not, because it needs none.
+
+Getting there meant finding what actually stops it, and two different things
+do. pi-ai will not dispatch without a key: a *catalog* route with no
+`apiKeyEnv` fails `Provider is not configured` before a request is built, and a
+*declared* route gets one step further and fails `No API key for provider`.
+That second gate is the one with a way through — pi-ai accepts a request
+carrying no key when the profile supplies an `authorization` header, and the
+OpenAI client merges `defaultHeaders` *after* its own `Authorization`, so the
+profile's value is what reaches the wire. The value has to be `Bearer` with
+nothing after it: Zen answers 200 to an empty bearer and 401 `Invalid API key`
+to any non-empty one, so a placeholder key is not a substitute for having none.
+
+The route is declared beside `opencode` rather than replacing it, because they
+are different postures: `opencode` keeps its credential reference and serves all
+58 models to whoever has an account; `opencode-free` serves the seven that need
+none. Sharing one route would mean the header override silently ignoring a key
+the user had typed. Which models are free is read from the catalog's own
+prices, so a model that stops being free stops being offered here.
+
+Two costs, both measured, neither hidden:
+
+- **It only works through the proxy.** `opencode.ai/zen` answers a CORS
+  preflight with a 404 HTML page and sends no `access-control-allow-origin`, so
+  a browser cannot reach it directly. Turning the proxy off in Settings →
+  Network turns the default model off with it.
+- **The free tier is rate-limited upstream, per model.** A model whose pool is
+  spent answers `429 FreeUsageLimitError — Error from provider (Console)` and
+  keeps doing so for a good while — `deepseek-v4-flash-free` stayed that way for
+  half an hour under testing — while its siblings on the same route answer
+  normally. So a 429 on the default is a reason to pick another free model in
+  the composer, not a sign the route is broken. It is a real free tier, not a
+  private one, and every other provider is one key away.
+
+`deepseek-official` / `deepseek-v4-flash` remains available and is one selection
+away in the composer's picker.
+
+One consequence is worth knowing before it surprises anyone: the composer's
+model picker is the surface's own, it groups by provider in alphabetical order,
+and it has no search — so with the catalog registered it opens on
+`amazon-bedrock` and reaching a model far down the list means scrolling. That is
+the cost of the models being there at all, and the trade this build takes; a
+deployment that wants a shorter list narrows `llm-pi-ai.providers` in
+`settings.yaml`, which overrides the composition layer.
+
+## Reaching a host that refuses browsers
+
+A tab's network reach is the browser's, and CORS is the whole rule: a host
+answers only if it says so in its own response headers. That is not a
+limitation this build works around so much as the single fact that shapes it,
+and it is worth publishing what was actually measured from the page rather than
+what is assumed.
+
+Answers a browser: the npm registry, `api.github.com`,
+`raw.githubusercontent.com`, `cdn.jsdelivr.net`, and — for models — DeepSeek,
+Google, OpenRouter, Groq, Mistral, Together, Fireworks, HuggingFace, Moonshot,
+xAI, z.ai, Xiaomi, GitHub Copilot. Anthropic joins them only because pi-ai sends
+`anthropic-dangerous-direct-browser-access`, which is Anthropic's own opt-in;
+without that header it refuses, and a plain `fetch` to it from here still does.
+
+Refuses a browser: **OpenAI**, NVIDIA, Cerebras, Vercel's AI gateway, MiniMax,
+Alibaba's token-plan endpoints, ant-ling, `codeload.github.com` — where GitHub
+keeps every repository tarball — and **`opencode.ai/zen`**, which serves this
+build's own default model and answers a preflight with a 404 HTML page.
+
+So the page has one fallback, and **Settings → Network** is where it is chosen:
+a CORS proxy, applied automatically by `src/net/cors-proxy.ts` and never before
+a direct attempt has actually failed. A host that answers a browser never goes
+through it; an origin that needed it once is remembered and skips the wasted
+round trip after that. The page reports which origins it used the proxy for, on
+that same page, because a user routing traffic through a third party should be
+able to see it happening.
+
+The default is `https://proxy.cors.sh/{url}`, chosen by measurement:
+with a production `Origin` and a POST carrying an `authorization` header, it
+answered in 0.4s and `https://cors.eu.org/{url}` in 3.3s, both forwarding
+headers and body intact and neither requiring a key. `corsproxy.io` and
+`cors-anywhere` answered 403; `allorigins`, `codetabs`, `thingproxy`, `yacdn`,
+`cors.lol` and `test.cors.workers.dev` were unreachable or refused the method.
+The field takes any URL with a `{url}` or `{encoded}` placeholder, and the
+checkbox above it turns the whole thing off.
+
+Two things are worth knowing before leaving the default on:
+
+- **A proxy sees the whole request** — URL, headers, body, and the API key on a
+  model request routed through it. No cookies are sent and only a host that
+  refuses browsers is ever proxied, but that is the trade.
+- **Both public proxies buffer.** Measured against a 3-second dripping
+  response, a direct fetch arrived in twelve chunks and each proxy delivered
+  one, at the end. A proxied model reply is therefore correct and complete but
+  arrives whole rather than a word at a time.
+
+Both are fixed the same way: run your own. A Cloudflare Worker that forwards the
+request and returns `response.body` unread is enough, and it streams.
+
+One place this does not reach, one that no longer needs it, and one note beside
+them:
+
+- **The runtime.** A WebContainer's requests leave from StackBlitz's own worker,
+  which neither a patched `window.fetch` nor `public/sw.js` ever sees — both
+  were measured, and both see zero. So for commands the agent runs, the proxy
+  cannot be applied by code; `src/host/jsh-tool.ts` reads the same setting and
+  tells the model what it may use instead, which means turning the proxy off
+  removes the advice rather than leaving the model retrying through a host the
+  user declined. StackBlitz's own CORS proxy is no help either: it is a
+  stackblitz.com project feature (a `.stackblitzrc` plus a paid plan) with no
+  effect on a self-hosted embed. `BootOptions.coep` cannot help by construction
+  — `credentialless` relaxes what the page may embed, while a cross-origin
+  response still has to pass CORS to be *readable*.
+- **GitHub plugin sources no longer need a proxy at all.** `codeload` refuses
+  browsers, but `api.github.com` and `raw.githubusercontent.com` do not, so
+  `owner/repo#ref` is read the way git would read it: one tree listing, then the
+  blobs. The tarball through the proxy stays as the fallback for a rate-limited
+  API or a repository too large to list.
+- **The `curl` in the container is a stub** — prefer `node -e "fetch(...)"`.
 
 ## The runtime
 
@@ -196,6 +378,12 @@ way an installed plugin is. Removing one is removing a directory.
   `sidebar.footer.action` slot, with the star count GitHub reports. The page is
   the only place most visitors ever see this project, so it is the only place
   the ask can be made; it is one row, and it is never modal.
+- `dsh-web-network` — the Network settings page, a `settings.section` between
+  Models and Plugins, where the CORS proxy is chosen. The setting itself is the
+  app's: `src/net/cors-proxy.ts` applies it to every cross-origin request, long
+  before any plugin has mounted. What the plugin owns is the page it is edited
+  on — which is why removing the directory removes the page and leaves the
+  policy, rather than leaving the app unable to reach anything.
 
 Both foot actions wear the sidebar's own Settings row — the same height, radius,
 gap, and hover, and the same 36px circle when the column folds to the icon rail
@@ -217,9 +405,10 @@ dsh web composes 129 rows.
   disabled by this build (6) ── web-startup, web-runtime, modules,
                                 typert-loader, sandbox, tool-bash
   replaced (5)              ── a browser row for each of the first five
-  shipped as plugins (2)    ── web-terminal, web-plugin-install
-  reconfigured (1)          ── agent-presets
-117 of 129 rows compose exactly as `dsh web` composes them.
+  shipped as plugins (4)    ── web-terminal, web-plugin-install, web-star,
+                                web-network
+  reconfigured (3)          ── agent-presets, llm-pi-ai, agent-default-model
+115 of 129 rows compose exactly as `dsh web` composes them.
 ```
 
 Each of the five browser swaps names a host capability a page does not have:
@@ -237,11 +426,17 @@ the host module map from them at build time, and the only modification is a
 
 ## Plugin compatibility
 
-Community plugins install from npm and compose into the running tree exactly as
-they do on a real machine: the tarball unpacks into the virtual filesystem, its
-`cordis.patch.yml` becomes another patch layer on the root include, its host
-half loads through the module system, and its browser half is published to the
-client graph as a blob URL.
+Community plugins compose into the running tree exactly as they do on a real
+machine: the tarball unpacks into the virtual filesystem, its `cordis.patch.yml`
+becomes another patch layer on the root include, its host half loads through the
+module system, and its browser half is published to the client graph as a blob
+URL.
+
+Every source `dsh plugin add` takes works here, including the one CORS used to
+close off: `owner/repo`, `github:owner/repo#ref`, and a bare tarball URL install
+alongside an npm name and a path. A GitHub reference is read through the trees
+API and `raw.githubusercontent.com`, which answer a browser — not through
+`codeload`, which does not.
 
 `npx tsx scripts/plugin-e2e.ts` installs a roster of real published plugins
 into a real browser and reports what composed. See
@@ -267,32 +462,11 @@ These are the honest limits. Everything else behaves as `dsh web` does.
   host over one IndexedDB, with no coordination between them.
 - **Storage has no quota handling.** Nothing requests persistence or reacts to
   eviction.
-- **Network reach is the browser's, and CORS is the whole rule.** A host answers
-  only if it sends CORS headers: the npm registry does, so `npm install` works,
-  and so do most JSON APIs; `example.com` and `en.wikipedia.org` do not, and a
-  request to either fails with `fetch failed`.
-
-  There is no way to fix that from here, and the reason is worth recording. The
-  container's requests come out of StackBlitz's own worker: a patched
-  `window.fetch` sees none of them, and neither does `public/sw.js` — both were
-  measured, and both see zero. So a "retry through a proxy when CORS blocks it"
-  rule cannot be implemented in this app at all; it can only be something the
-  model is told to do, which is what `src/host/jsh-tool.ts` does. StackBlitz's
-  own CORS proxy is no help either: it is a stackblitz.com project feature (a
-  `.stackblitzrc` plus a paid plan) with no effect on a self-hosted embed, which
-  was also measured. `BootOptions.coep` cannot help by construction —
-  `credentialless` relaxes what the page may embed, while a cross-origin
-  response still has to pass CORS to be *readable*.
-
-  Of the public CORS proxies tried from inside the container, one answered:
-  `proxy.cors.sh`. `allorigins`, `codetabs`, `cors.isomorphic-git.org` and
-  `corsproxy.io` were unreachable or refused a non-localhost origin. The tool
-  description names it as a fallback after a real failure, for public URLs only,
-  and tells the model never to send a credential through it — it is a third
-  party that sees every byte routed through it. Removing that is deleting one
-  constant.
-
-  The `curl` in the container is a stub — prefer `node -e "fetch(...)"`.
+- **Network reach is the browser's, and CORS is the whole rule.** The page has
+  one answer to that — a configurable proxy it applies itself, after a direct
+  attempt has failed — and it does not reach the runtime, where the agent's
+  commands run. What was measured, what is proxied, and what it costs are in
+  [the section above](#reaching-a-host-that-refuses-browsers).
 - **No listening port.** Nothing can bind, so a plugin whose contract is a
   local server or an stdio child process cannot work here.
 - **`AsyncLocalStorage` is approximate.** A page cannot intercept `await`, so
@@ -310,7 +484,8 @@ npm run assemble    # regenerate the roster/manifest/module map from node_module
 npm run build
 node scripts/serve.mjs 4173
 
-npx tsx scripts/e2e.ts                                  # boot, plugins, the jsh contract, persistence
+npx tsx scripts/e2e.ts                                  # boot, plugins, the jsh contract, the model catalog,
+                                                        # the CORS policy, persistence
 DEEPSEEK_API_KEY=… npx tsx scripts/e2e.ts               # …plus a real model turn
 DEEPSEEK_API_KEY=… npx tsx scripts/ui-e2e.ts            # the whole user path, through the UI
 npx tsx scripts/runtime-e2e.ts                          # Node, npm, and agent↔terminal sharing
@@ -326,6 +501,13 @@ a day `src/host/jsh-tool.ts` needs its description rewritten, and the suite says
 so in the failure message. It also captures a real model request (with a
 placeholder key, which the provider rejects only after the body is built) and
 asserts the model was offered `jsh` and no `bash`.
+
+The CORS policy is asserted from both sides, because only one of them is the
+feature: that a host which answers a browser is *not* proxied, that a host which
+refuses one is reached anyway, and that turning the proxy off restores the
+failure. The GitHub install is asserted not to have used the proxy at all — the
+fallback would otherwise let the trees-API route rot while every test stayed
+green and every plugin install quietly went through a stranger.
 
 Upgrading the harness is a dependency bump: change the `@deepseek-ai/*` versions
 in `package.json`, run `npm run assemble`, and rebuild. Nothing here is

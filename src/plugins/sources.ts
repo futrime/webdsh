@@ -7,6 +7,15 @@
  * a filesystem — so the same set of sources is reachable, just resolved here
  * instead of shelled out.
  *
+ * One of them is not reachable the obvious way. The npm registry serves both
+ * metadata and tarballs with permissive CORS, so a registry name is a plain
+ * fetch; `codeload.github.com`, where every repository tarball lives, sends no
+ * CORS headers at all, and neither does the API's `tarball` endpoint, which
+ * redirects there. So a GitHub reference is read through the two endpoints that
+ * do answer a browser — the trees API and `raw.githubusercontent.com` — and
+ * falls back to the tarball, which `src/net/cors-proxy.ts` may be able to
+ * proxy, only when that fails.
+ *
  * Each source resolves to the same thing: a package name and the bytes of a
  * tarball, or a set of files already in the virtual filesystem.
  */
@@ -76,10 +85,112 @@ function fromDirectory(root: string): PackageSource {
 }
 
 /** Turn a `github:` / `owner/repo` reference into a codeload tarball URL. */
-function githubTarball(reference: string): string {
+function githubTarball(repository: string, ref: string): string {
+  return `https://codeload.github.com/${repository}/tar.gz/${ref}`
+}
+
+/** How many blobs a repository may carry before the tarball is the better route. */
+const GITHUB_MAX_FILES = 2000
+
+/** How many blob fetches run at once. */
+const GITHUB_CONCURRENCY = 12
+
+/** One entry of the git trees API response. */
+interface TreeEntry {
+  path: string
+  mode: string
+  type: string
+}
+
+/**
+ * Encode a path or ref for a URL without encoding its separators.
+ *
+ * `encodeURIComponent` turns `feat/x` into `feat%2Fx`, which GitHub reads as a
+ * branch literally named with a slash in it rather than as the branch the user
+ * meant. Encoding segment by segment keeps the separator a separator.
+ * @param value - a ref or a repository path.
+ * @returns the encoded value.
+ */
+function encodePath(value: string): string {
+  return value.split('/').map(encodeURIComponent).join('/')
+}
+
+/**
+ * Read a GitHub repository through the two endpoints a browser can reach.
+ *
+ * `codeload.github.com`, where the tarball lives, sends no CORS headers, and
+ * neither does the `tarball` endpoint on the API — it redirects there, and a
+ * redirect into an origin that refuses the browser fails exactly as the direct
+ * request would. Both were measured from this page.
+ *
+ * What does answer a browser, with `access-control-allow-origin: *`, is
+ * `api.github.com` and `raw.githubusercontent.com`. So the repository is read
+ * the way git would: one tree listing, then the blobs. It costs one API call
+ * against the unauthenticated hourly allowance and no third party at all,
+ * which is why it is tried before the proxy is.
+ * @param repository - `owner/repo`.
+ * @param ref - a branch, tag, or commit.
+ * @returns the repository's files.
+ */
+async function fromGithubApi(repository: string, ref: string): Promise<{ name: string, data: Uint8Array, mode: number }[]> {
+  const listing = await fetch(`https://api.github.com/repos/${repository}/git/trees/${encodePath(ref)}?recursive=1`)
+  if (!listing.ok) {
+    throw new Error(`github: ${repository}@${ref} tree listing failed (${String(listing.status)})`)
+  }
+  const document = await listing.json() as { tree?: TreeEntry[], truncated?: boolean }
+  if (document.truncated === true) {
+    throw new Error(`github: ${repository} is too large to list; falling back to its tarball`)
+  }
+  const blobs = (document.tree ?? []).filter(entry => entry.type === 'blob'
+    && !entry.path.startsWith('node_modules/')
+    && !entry.path.includes('/node_modules/'))
+  if (blobs.length === 0) throw new Error(`github: ${repository}@${ref} has no files`)
+  if (blobs.length > GITHUB_MAX_FILES) {
+    throw new Error(`github: ${repository} has ${String(blobs.length)} files; falling back to its tarball`)
+  }
+
+  const files: { name: string, data: Uint8Array, mode: number }[] = new Array(blobs.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    for (let index = next++; index < blobs.length; index = next++) {
+      const entry = blobs[index]
+      const response = await fetch(`https://raw.githubusercontent.com/${repository}/${encodePath(ref)}/${encodePath(entry.path)}`)
+      if (!response.ok) throw new Error(`github: ${entry.path} → ${String(response.status)}`)
+      files[index] = {
+        name: entry.path,
+        data: new Uint8Array(await response.arrayBuffer()),
+        // The git mode is the only permission bit that survives a checkout,
+        // and it is the one a package's own bin scripts depend on.
+        mode: entry.mode === '100755' ? 0o755 : 0o644,
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(GITHUB_CONCURRENCY, blobs.length) }, worker))
+  return files
+}
+
+/**
+ * Resolve a GitHub reference, preferring the route that needs no proxy.
+ * @param reference - `github:owner/repo[#ref]` or `owner/repo[#ref]`.
+ * @returns the resolved package.
+ */
+async function fromGithub(reference: string): Promise<PackageSource> {
   const body = reference.replace(/^github:/, '')
   const [repository, ref = 'HEAD'] = body.split('#')
-  return `https://codeload.github.com/${repository}/tar.gz/${ref}`
+  try {
+    const files = await fromGithubApi(repository, ref)
+    const manifest = manifestOf(files, reference)
+    const name = typeof manifest.name === 'string' ? manifest.name : undefined
+    if (name === undefined) throw new Error(`install: ${reference} has a package.json with no name`)
+    return { name, version: typeof manifest.version === 'string' ? manifest.version : '0.0.0', files, manifest, origin: reference }
+  } catch (error) {
+    // A rate-limited API, a repository too large to list one blob at a time, a
+    // private repository — all of them still have a tarball, and the page's
+    // CORS policy may be able to reach it. A repository with no package.json
+    // is not one of those cases, but the tarball will say so just as clearly.
+    console.warn(`[plugins] ${reference}: reading through the GitHub API failed, trying its tarball —`, error)
+    return fromTarball(await fetchTarball(githubTarball(repository, ref)), reference)
+  }
 }
 
 /**
@@ -112,8 +223,7 @@ export async function resolveSource(spec: string, registry = DEFAULT_REGISTRY): 
   // `owner/repo` is a GitHub reference; `@scope/name` is a package. The `@`
   // prefix is what tells them apart.
   if (trimmed.startsWith('github:') || (/^[\w.-]+\/[\w.-]+(#.+)?$/.test(trimmed) && !trimmed.startsWith('@'))) {
-    const url = githubTarball(trimmed)
-    return fromTarball(await fetchTarball(url), trimmed)
+    return fromGithub(trimmed)
   }
 
   const { name, range } = parseSpec(trimmed)

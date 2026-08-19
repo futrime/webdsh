@@ -80,6 +80,27 @@
 
 # ── rows kept, with browser-appropriate values ──────────────────────────────
 
+# The model a session starts on.
+#
+# Upstream defaults to `deepseek-official`, which is right where someone has
+# installed dsh and is about to configure it. A page is opened, not installed:
+# the visitor has no account, no key, and no reason to get one before seeing
+# whether the thing works at all. So the default is the route that needs
+# neither — OpenCode Zen's free tier, declared by the generated roster below.
+#
+# `deepseek-v4-flash-free` in particular, because it is the free model closest
+# to what the rest of this surface is written around.
+#
+# Two things this costs, both measured and neither hidden: the endpoint sends
+# no CORS headers and answers a preflight with 404, so every request to it goes
+# through the proxy in Settings → Network; and the free tier is rate-limited
+# upstream, answering `429 FreeUsageLimitError` when the pool is spent. A user
+# who hits either has every other provider one key away in Settings → Models.
+- id: agent-default-model
+  config:
+    provider: opencode-free
+    model: deepseek-v4-flash-free
+
 # The shipped roster lives beside the installed app; here it is seeded into the
 # virtual filesystem at a fixed deployment root. `includeUserRoot` keeps
 # `$DSH_HOME/.agent-presets` writable, which is what preset authoring uses.

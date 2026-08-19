@@ -13,6 +13,7 @@ import type { CommandContext, CommandImpl } from './runtime.ts'
 import { abs, parseArgs } from './coreutils.ts'
 import { toText } from '../node/binary.ts'
 import * as fs from '../node/fs.ts'
+import { proxyConfig } from '../net/cors-proxy.ts'
 
 /** Lazily imported so the git engine is not in the initial page payload. */
 let engine: typeof import('isomorphic-git') | undefined
@@ -388,10 +389,21 @@ export const gitCommand: CommandImpl = async (context) => {
     // than with a CORS rejection, so matching only on the word "CORS" left the
     // one explanation that helps unsaid.
     if (/fetch|network|CORS|Failed to fetch|HTTP Error/i.test(message) && corsProxy(context) === undefined) {
+      const { enabled, template } = proxyConfig()
       context.stderr.write('hint: git-over-HTTP needs a remote that allows cross-origin reads, and no git host does.\n')
-      context.stderr.write('hint: set GIT_CORS_PROXY to a proxy you trust to route through it — for example\n')
-      context.stderr.write('hint:   export GIT_CORS_PROXY=https://cors.isomorphic-git.org\n')
-      context.stderr.write('hint: that sends the repository URL, and any credentials, to whoever runs it.\n')
+      if (enabled) {
+        // The page proxy already covers this: `isomorphic-git/http/web` issues
+        // ordinary `fetch` calls, so a refused handshake is retried through
+        // whatever Settings → Network names, without git being told about it.
+        // Reaching here with it on means the proxy itself could not serve the
+        // request, which is a different problem from having none.
+        context.stderr.write(`hint: this page already retries refused requests through ${template}, so the\n`)
+        context.stderr.write('hint: proxy itself could not serve this one. Try another in Settings → Network.\n')
+      } else {
+        context.stderr.write('hint: turn the proxy on in Settings → Network, or set GIT_CORS_PROXY to one that\n')
+        context.stderr.write('hint: speaks git\'s own convention — `export GIT_CORS_PROXY=<url>`.\n')
+      }
+      context.stderr.write('hint: either one sees the repository URL, and any credentials, in full.\n')
     }
     return 128
   }
