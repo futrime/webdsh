@@ -42,6 +42,8 @@ interface XTerm {
   onData(handler: (data: string) => void): void
   onResize(handler: (size: { cols: number, rows: number }) => void): void
   loadAddon(addon: unknown): void
+  /** Repaint a row range; a canvas that was `display:none` has nothing on it. */
+  refresh(start: number, end: number): void
   focus(): void
   dispose(): void
   buffer: { active: { length: number, getLine(index: number): { translateToString(trim?: boolean): string } | undefined } }
@@ -63,13 +65,32 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
   const host = useRef<HTMLDivElement | null>(null)
   const started = useRef(false)
   const fitter = useRef<FitAddon | undefined>(undefined)
+  const emulator = useRef<XTerm | undefined>(undefined)
+  const gone = useRef(false)
   const [message, setMessage] = useState<string | undefined>(undefined)
 
-  // A hidden element has no size, so xterm measured zero while it was closed.
-  // Re-fitting on the way back is what makes the grid match the window again.
+  // The emulator outlives every open and close, and is disposed once, when this
+  // component itself goes away. Tying its lifetime to `open` is what broke it:
+  // an effect's cleanup runs on every dependency change, not only on unmount,
+  // so closing the panel disposed the terminal — taking its DOM with it — while
+  // the guard below still said it had been started. Reopening then rendered an
+  // empty box, with the session running and nothing drawing it.
+  useEffect(() => () => {
+    gone.current = true
+    emulator.current?.dispose()
+  }, [])
+
+  // A hidden element has no size, so the grid measured zero while it was
+  // closed. Re-fitting on the way back matches it to the window again, and the
+  // refresh after it is what repaints rows that were never drawn while there
+  // was nothing to draw them on.
   useEffect(() => {
     if (!open) return
-    const frame = requestAnimationFrame(() => { fitter.current?.fit() })
+    const frame = requestAnimationFrame(() => {
+      fitter.current?.fit()
+      const terminal = emulator.current
+      if (terminal !== undefined) terminal.refresh(0, Math.max(0, terminal.rows - 1))
+    })
     return () => { cancelAnimationFrame(frame) }
   }, [open])
 
@@ -92,10 +113,9 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
     started.current = true
 
     let terminal: XTerm | undefined
-    let disposed = false
     void (async () => {
       const { Terminal, FitAddon, styles } = await runtime.terminal()
-      if (disposed) return
+      if (gone.current) return
       if (document.getElementById('dsh-web-terminal-style') === null) {
         const style = document.createElement('style')
         style.id = 'dsh-web-terminal-style'
@@ -113,6 +133,7 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
       })
       const fit = new FitAddon()
       fitter.current = fit
+      emulator.current = terminal
       terminal.loadAddon(fit)
       terminal.open(host.current!)
       fit.fit()
@@ -147,11 +168,6 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
         started.current = false
       }
     })()
-
-    return () => {
-      disposed = true
-      terminal?.dispose()
-    }
   }, [open])
 
   // Hidden rather than unmounted. Closing used to drop the element, which took

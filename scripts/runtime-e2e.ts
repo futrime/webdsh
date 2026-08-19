@@ -241,9 +241,20 @@ async function main(): Promise<void> {
       await action.first().evaluate((node: HTMLElement) => { node.click() })
       await page.waitForTimeout(1000)
       await action.first().evaluate((node: HTMLElement) => { node.click() })
-      await page.waitForTimeout(1500)
-      const shown = await screen(page)
-      expect(/before-the-close/.test(shown), `the scrollback did not survive:\n${shown.slice(-400)}`)
+      await page.waitForTimeout(2000)
+      // Read the *rendered rows*, not the emulator's buffer. A disposed
+      // emulator still answers `text()` from the object the closure holds, so
+      // the buffer was green while the panel on screen was empty — which is
+      // how the first version of this check passed against the bug it was
+      // written for.
+      const painted = await page.evaluate(() =>
+        document.querySelector('.dsh-web-terminal .xterm-rows')?.textContent ?? '(nothing rendered)')
+      expect(/before-the-close/.test(painted), `the reopened terminal drew nothing: ${painted.slice(0, 200)}`)
+      const visible = await page.evaluate(() => {
+        const panel = document.querySelector('.dsh-web-terminal')
+        return panel === null ? 'absent' : getComputedStyle(panel).display
+      })
+      expect(visible !== 'none' && visible !== 'absent', `the panel is not showing: ${visible}`)
       const after = await run(page, 'cat closed.txt')
       expect(/before-the-close/.test(after), `the session did not survive being closed:\n${after.slice(-400)}`)
       process.stdout.write('  ✓\n')
