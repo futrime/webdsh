@@ -9,6 +9,12 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # A whole run is about half an hour, and the browser suites are the bulk of
+    # it. This is a ceiling on a stall, not a budget: `playwright install
+    # --with-deps` once sat on `apt-get update` for 55 minutes against a step
+    # that normally takes three, and without a limit the default is six hours
+    # of a runner doing nothing.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
