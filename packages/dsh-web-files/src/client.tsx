@@ -387,37 +387,49 @@ function FilesAction({ open, onToggle, wide }: { open: boolean, onToggle: () => 
 }
 
 const STYLE = `
+/* Surface tokens, with fallbacks that agree with each other. A fallback is
+   the value used when the token is missing, so pairing a hard-coded dark
+   background with a token-resolved foreground is how a panel ends up as dark
+   text on dark. That is what happened here: --dsw-alias-bg-l1 is not a token
+   this surface defines, so the background fell back to a dark literal while
+   the text colour resolved from a real token and followed the light theme.
+   Canvas and CanvasText are the system pair, and they move together. */
 .dsh-web-files{position:fixed;left:0;right:0;bottom:0;height:min(58vh,36rem);z-index:60;display:flex;
- flex-direction:column;background:var(--dsw-alias-bg-l1,#0d1017);color:var(--dsw-alias-label-primary,#dfe3ea);
- border-top:1px solid rgba(127,127,127,.3);box-shadow:0 -8px 32px rgba(0,0,0,.35);
+ flex-direction:column;background:var(--dsw-alias-bg-layer-1,Canvas);color:var(--dsw-alias-label-primary,CanvasText);
+ border-top:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));box-shadow:0 -8px 32px rgba(0,0,0,.18);
  font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
 .dsh-web-files-bar,.dsh-web-files-viewer-bar{display:flex;align-items:center;gap:.75rem;padding:.4rem .75rem;flex:none;
- border-bottom:1px solid rgba(127,127,127,.2)}
+ border-bottom:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2))}
 .dsh-web-files-title{font-weight:600}
-.dsh-web-files-hint{opacity:.55;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
-.dsh-web-files button{font:inherit;background:transparent;border:1px solid rgba(127,127,127,.4);color:inherit;
- border-radius:.35rem;padding:.15rem .5rem;cursor:pointer}
+.dsh-web-files-hint{color:var(--dsw-alias-label-secondary,inherit);opacity:.8;flex:1;overflow:hidden;
+ text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.dsh-web-files button{font:inherit;background:transparent;color:inherit;border-radius:.35rem;padding:.15rem .5rem;
+ cursor:pointer;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4))}
+.dsh-web-files button:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}
 .dsh-web-files button:disabled{opacity:.45;cursor:default}
 .dsh-web-files-tools{display:flex;align-items:center;gap:.5rem;padding:.4rem .75rem;flex:none;flex-wrap:wrap;
- border-bottom:1px solid rgba(127,127,127,.2)}
+ border-bottom:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2))}
 .dsh-web-files-crumbs{display:flex;align-items:center;gap:.2rem;flex:1;overflow:hidden;white-space:nowrap}
-.dsh-web-files-crumbs button{border:none;padding:.1rem .25rem;opacity:.8}
-.dsh-web-files-crumbs button:hover{opacity:1;text-decoration:underline}
+.dsh-web-files-crumbs button{border:none;padding:.1rem .25rem}
+.dsh-web-files-crumbs button:hover{text-decoration:underline}
 .dsh-web-files-actions{display:flex;gap:.4rem;margin-left:auto}
 .dsh-web-files-body{flex:1;min-height:0;display:flex}
 .dsh-web-files-list{flex:1;min-width:14rem;max-width:32rem;overflow:auto;margin:0;padding:.25rem;list-style:none;
- border-right:1px solid rgba(127,127,127,.2)}
+ border-right:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2))}
+.dsh-web-files-list:last-child{max-width:none;border-right:none}
 .dsh-web-files-list li{display:flex;align-items:center;gap:.25rem;border-radius:.4rem;padding:.05rem .25rem}
-.dsh-web-files-list li:hover,.dsh-web-files-list li[data-open]{background:rgba(127,127,127,.14)}
+.dsh-web-files-list li:hover,.dsh-web-files-list li[data-open]{
+ background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14))}
 .dsh-web-files-list li button{border:none;padding:.2rem .35rem}
 .dsh-web-files-name{flex:1;display:flex;align-items:center;gap:.45rem;overflow:hidden;text-align:left}
 .dsh-web-files-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dsh-web-files-empty{opacity:.5;padding:.5rem}
+.dsh-web-files-empty{color:var(--dsw-alias-label-secondary,inherit);opacity:.8;padding:.5rem}
 .dsh-web-files-viewer{flex:2;min-width:0;display:flex;flex-direction:column}
 .dsh-web-files-text{flex:1;margin:0;padding:.6rem .75rem;overflow:auto;white-space:pre-wrap;word-break:break-word;
+ background:var(--dsw-alias-markdown-code-block,transparent);
  font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.dsh-web-files-notice{padding:.6rem .75rem;margin:0;opacity:.75;font-size:12px}
-.dsh-web-files-notice[data-error]{color:var(--dsw-alias-state-error-primary,#d66)}
+.dsh-web-files-notice{padding:.6rem .75rem;margin:0;color:var(--dsw-alias-label-secondary,inherit);font-size:12px}
+.dsh-web-files-notice[data-error]{color:var(--dsw-alias-state-error-primary,#d33)}
 .dsh-web-files-action{box-sizing:border-box;display:flex;align-items:center;gap:8px;flex:0 0 calc(100% + 8px);
  width:calc(100% + 8px);height:34px;margin:4px -4px;padding:6px 2px 6px 10px;border:none;border-radius:12px;
  background:0 0;color:var(--dsw-alias-label-primary,inherit);font-family:inherit;font-size:14px;line-height:22px;

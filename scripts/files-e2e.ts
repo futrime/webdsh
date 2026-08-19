@@ -87,6 +87,12 @@ async function rows(page: Page): Promise<string[]> {
     .map(row => (row.textContent ?? '').replace(/[↓✕]/g, '').trim()))
 }
 
+/** Re-read the current directory through the panel's own button. */
+async function refresh(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Refresh', exact: true }).first()
+    .evaluate((node: HTMLElement) => { node.click() })
+}
+
 /** Open the panel through the sidebar action, the way a person does. */
 async function openPanel(page: Page): Promise<void> {
   await acknowledge(page)
@@ -103,6 +109,52 @@ async function openPanel(page: Page): Promise<void> {
     undefined,
     { timeout: 60_000 },
   ).catch(() => undefined)
+}
+
+/** The channels of a `rgb(…)` string. */
+function channels(colour: string): number[] {
+  return (colour.match(/[\d.]+/g) ?? ['0', '0', '0']).slice(0, 3).map(Number)
+}
+
+/** WCAG relative luminance. */
+function luminance(colour: string): number {
+  const [red, green, blue] = channels(colour).map((value) => {
+    const channel = value / 255
+    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * (red ?? 0) + 0.7152 * (green ?? 0) + 0.0722 * (blue ?? 0)
+}
+
+/**
+ * The contrast ratio between two rendered colours.
+ *
+ * Computed here rather than in the page: a helper defined inside
+ * `page.evaluate` is transpiled with esbuild's `__name` wrapper, which the page
+ * has never heard of.
+ * @param front - the text colour.
+ * @param back - what it is drawn on.
+ * @returns the WCAG ratio, 1 for identical and 21 for black on white.
+ */
+function contrast(front: string, back: string): number {
+  const [high, low] = [luminance(front), luminance(back)].sort((left, right) => right - left)
+  return ((high ?? 0) + 0.05) / ((low ?? 0) + 0.05)
+}
+
+/** What the panel is currently painted in. */
+async function palette(page: Page): Promise<{ background: string, text: string, row: string, hint: string }> {
+  return page.evaluate(() => {
+    const panel = document.querySelector('.dsh-web-files')
+    if (panel === null) return { background: '', text: '', row: '', hint: '' }
+    const style = getComputedStyle(panel)
+    const row = document.querySelector('.dsh-web-files-label')
+    const hint = document.querySelector('.dsh-web-files-hint')
+    return {
+      background: style.backgroundColor,
+      text: style.color,
+      row: row === null ? style.color : getComputedStyle(row).color,
+      hint: hint === null ? style.color : getComputedStyle(hint).color,
+    }
+  })
 }
 
 /** One check. */
@@ -136,10 +188,41 @@ const checks: Check[] = [
     },
   },
   {
+    // The panel shipped once with `--dsw-alias-bg-l1`, a token this surface
+    // does not define. The background fell back to a dark literal while the
+    // text colour resolved from a real token and followed the light theme:
+    // dark on dark, nothing readable, and every other check still green. What
+    // catches that is measuring what a reader would see.
+    name: 'the panel is legible in both themes',
+    async run(page) {
+      await openPanel(page)
+      for (const theme of ['light', 'dark'] as const) {
+        await page.evaluate((wanted: string) => {
+          if (wanted === 'dark') document.body.setAttribute('data-ds-dark-theme', '')
+          else document.body.removeAttribute('data-ds-dark-theme')
+        }, theme)
+        await page.waitForTimeout(400)
+        const seen = await palette(page)
+        expect(seen.background !== '', `the panel is not on screen in the ${theme} theme`)
+        // 4.5 is the ratio WCAG asks of body text; the surface's own tokens
+        // clear it by a wide margin, so anything near it means a fallback won.
+        for (const [what, colour] of Object.entries({ text: seen.text, row: seen.row, hint: seen.hint })) {
+          const ratio = contrast(colour, seen.background)
+          expect(ratio >= 4.5,
+            `${what} is unreadable in the ${theme} theme: ${colour} on ${seen.background} is ${ratio.toFixed(2)}:1`)
+        }
+      }
+      await page.evaluate(() => { document.body.removeAttribute('data-ds-dark-theme') })
+    },
+  },
+  {
     name: 'the panel shows the workspace the agent writes to',
     async run(page) {
       await shell(page, 'mkdir -p sub && echo hello-from-the-agent > note.txt && echo deeper > sub/deep.txt')
       await openPanel(page)
+      // The listing is a snapshot, and the panel may already have been open
+      // when the agent wrote these — so re-read it the way a person would.
+      await refresh(page)
       await page.waitForFunction(
         () => Array.from(document.querySelectorAll('.dsh-web-files-list li')).some(row => (row.textContent ?? '').includes('note.txt')),
         undefined,
