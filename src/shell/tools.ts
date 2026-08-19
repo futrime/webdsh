@@ -8,6 +8,7 @@
  */
 
 import type { CommandImpl } from './runtime.ts'
+import { announceOpenPath } from '../node/open-path.ts'
 import { abs, parseArgs } from './coreutils.ts'
 import { Buffer, toBytes, toText } from '../node/binary.ts'
 import { digest } from '../node/hash.ts'
@@ -354,6 +355,36 @@ tools.tar = (context) => {
   }
   context.stderr.write('tar: specify one of -c, -x, or -t\n')
   return 2
+}
+
+/**
+ * `xdg-open` — what "open this path" means in a tab.
+ *
+ * This is not a courtesy alias. The harness's own `host.openPath` RPC, which is
+ * what a file mention in the chat calls when it is clicked, ends at
+ * `xdg-open <path>` on Linux — and this host reports Linux because the shipped
+ * compositions read `process.platform` to choose their POSIX rows. Every such
+ * click therefore arrived here, found no command, and was swallowed by the
+ * caller's `.catch(() => {})`: a rendered, underlined, entirely dead
+ * affordance.
+ *
+ * A page has no desktop to hand a path to, but it does have somewhere a file
+ * can be opened — the Files panel. So the event goes to the page and the
+ * plugin that draws that panel answers it. If nothing is listening, the command
+ * still succeeds: the path was opened as far as this deployment can open one,
+ * and reporting failure would put the confusing half of the old behaviour back.
+ */
+tools['xdg-open'] = (context) => {
+  const target = context.argv[1]
+  if (target === undefined || target === '') {
+    context.stderr.write('xdg-open: expects a path\n')
+    return 2
+  }
+  if (!announceOpenPath(abs(context, target))) {
+    context.stderr.write('xdg-open: there is no page to open a path in\n')
+    return 1
+  }
+  return 0
 }
 
 /** Re-exported so the shell entry can register text helpers used by `strToU8`. */

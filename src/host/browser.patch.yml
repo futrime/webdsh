@@ -119,6 +119,16 @@
     provider: ovh-free
     model: Qwen3-Coder-30B-A3B-Instruct
 
+# Whether this deployment can hand a path to something that will open it. On a
+# machine the answer is a desktop and `xdg-open`; here it is the Files panel,
+# and `xdg-open` in `src/shell/tools.ts` is what carries a path to it. The
+# gateway asks this question of the host once, at `describe`, and a surface that
+# heard `false` hides the affordance — so the honest answer is `true`, and the
+# thing that makes it true ships in the same commit.
+- id: api-gateway
+  config:
+    nativeOpen: true
+
 # The shipped roster lives beside the installed app; here it is seeded into the
 # virtual filesystem at a fixed deployment root. `includeUserRoot` keeps
 # `$DSH_HOME/.agent-presets` writable, which is what preset authoring uses.

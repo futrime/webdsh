@@ -18,6 +18,7 @@ import terminalPatchSource from '../../packages/dsh-web-terminal/cordis.patch.ym
 import installPatchSource from '../../packages/dsh-web-plugins/cordis.patch.yml?raw'
 import starPatchSource from '../../packages/dsh-web-star/cordis.patch.yml?raw'
 import networkPatchSource from '../../packages/dsh-web-network/cordis.patch.yml?raw'
+import filesPatchSource from '../../packages/dsh-web-files/cordis.patch.yml?raw'
 
 /**
  * Bundle layers for the plugins this repository ships.
@@ -31,6 +32,7 @@ const SHIPPED_PLUGIN_PATCHES: Record<string, string> = {
   'web-plugin-install': installPatchSource,
   'web-star': starPatchSource,
   'web-network': networkPatchSource,
+  'web-files': filesPatchSource,
 }
 
 /** The bundle layers this build lays down, in application order. */

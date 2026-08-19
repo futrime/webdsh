@@ -21,6 +21,7 @@
     "test:fallback": "tsx scripts/fallback-e2e.ts",
     "test:shell": "node scripts/shell-diff.mjs",
     "test:python": "tsx scripts/python-e2e.ts",
+    "test:files": "tsx scripts/files-e2e.ts",
     "build:plugins": "node scripts/build-plugins.mjs",
     "build:shell": "node scripts/build-container-shell.mjs",
     "build:python": "node scripts/build-container-python.mjs"

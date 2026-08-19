@@ -20,6 +20,8 @@ import { ReadableStreamShim, StreamEmitter, WritableStreamShim } from './streams
 import { Buffer, toText } from './binary.ts'
 import { process as processShim, setProcessTable } from './process.ts'
 import { volume } from '../vfs/volume.ts'
+import { announceOpenPath, OPEN_PATH_COMMAND } from './open-path.ts'
+import { resolve as resolvePath } from './path.ts'
 
 /**
  * Render a thrown value for a command's stderr.
@@ -125,6 +127,20 @@ export class ChildProcessShim extends StreamEmitter {
         this.stderr?.push(`${describe(error)}\n`)
         this.settle(2, null)
       }
+      return
+    }
+    // Opening a path is the harness asking its *host* to show the user
+    // something, and this host is a page. Reached before the command line is
+    // built for the same reason ripgrep is: the runtime has an `xdg-open` of
+    // its own, and a stub inside the container cannot show anybody anything.
+    if (this.command === OPEN_PATH_COMMAND) {
+      const target = this.args.find(argument => !argument.startsWith('-'))
+      if (target === undefined) {
+        this.stderr?.push(`${OPEN_PATH_COMMAND}: expects a path\n`)
+        this.settle(2, null)
+        return
+      }
+      this.settle(announceOpenPath(resolvePath(this.options.cwd ?? processShim.cwd(), target)) ? 0 : 1, null)
       return
     }
     const script = buildScript(this.command, this.args)

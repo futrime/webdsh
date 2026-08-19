@@ -1,0 +1,13 @@
+# The file browser, as a profile bundle layer.
+#
+# On a machine the user's files are already in a file manager, an editor, and a
+# shell — `dsh web` never needed to carry one. In a browser tab the workspace
+# lives in a filesystem no other program can open, so getting a file in or out
+# has to be something the page offers, and offering it the way any other plugin
+# would is what keeps the composition honest.
+#
+# The node half is a plain host row; the `dsh.client` declaration in
+# package.json is what puts the browser half in the client roster.
+- insert:
+    - id: web-files
+      name: '@dsh-web/files'

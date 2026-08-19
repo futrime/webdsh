@@ -15,7 +15,7 @@ import { bootHost } from './host/boot.ts'
 import { disableAllPlugins, installedPluginNames, installPluginManager } from './plugins/manager.ts'
 import { installWindowApi } from './api.ts'
 import { bootRuntime } from './runtime/webcontainer.ts'
-import { publishInstallerBridge, publishNetworkBridge, publishRuntimeBridge } from './host/bridges.ts'
+import { publishFilesBridge, publishInstallerBridge, publishNetworkBridge, publishRuntimeBridge } from './host/bridges.ts'
 import { SHELL_ENTRY, SHELL_STYLES } from './generated/shell-assets.ts'
 import { renderBootFailure, renderBootProgress, type BootRecovery } from './boot-screen.ts'
 import { attachPersistence } from './vfs/persist.ts'
@@ -83,6 +83,10 @@ async function main(): Promise<void> {
     // what this publishes is the ability to see and change it, and the host's
     // own first requests are already covered whether or not it is ever read.
     publishNetworkBridge()
+    // And the filesystem the file browser draws: it routes to whichever of the
+    // two filesystems is the real one right now, which is a question only this
+    // app can answer.
+    publishFilesBridge()
 
     progress.step('Starting the harness host')
     const { ctx, persistence, warnings } = await bootHost()

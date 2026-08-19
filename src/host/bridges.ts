@@ -13,7 +13,10 @@
  * two different machines and the whole point is that there is one.
  */
 
-import { bootRuntime, runtimeSupported, setShellMode, shellMode, startShell, type ShellMode } from '../runtime/webcontainer.ts'
+import {
+  bootRuntime, runtimeFs, runtimePersistence, runtimeReady, runtimeSupported,
+  setShellMode, shellMode, startShell, toContainerPath, WORKDIR, WORKSPACE, type ShellMode,
+} from '../runtime/webcontainer.ts'
 import { ripgrep } from '../runtime/ripgrep.ts'
 import type { PluginManager } from '../plugins/manager.ts'
 import { volume } from '../vfs/volume.ts'
@@ -107,4 +110,114 @@ export function publishInstallerBridge(manager: PluginManager): void {
       return path
     },
   }
+}
+
+/** One row of a directory listing. */
+export interface FileEntry {
+  /** Base name, as it is shown. */
+  name: string
+  /** Absolute path, because a browser must never join path segments itself. */
+  path: string
+  /** Whether this row can be entered. */
+  directory: boolean
+}
+
+/**
+ * Join a directory and a name into an absolute path.
+ * @param directory - the parent, absolute.
+ * @param name - one path segment.
+ * @returns the child's absolute path.
+ */
+function child(directory: string, name: string): string {
+  return `${directory === '/' ? '' : directory.replace(/\/+$/, '')}/${name}`
+}
+
+/**
+ * Publish the filesystem, for whoever draws a file browser on it.
+ *
+ * The machine has two filesystems and the honest answer about which one a file
+ * is in changes with the runtime: when the container is up it holds the user's
+ * workspace and the agent's commands run against it, and when it could not
+ * start the page's own volume answers instead. Every call below picks the same
+ * way the agent's file tools do, so a browser drawn on this shows the files the
+ * agent is actually looking at rather than a second set that resembles them.
+ *
+ * There is no `stat` in the container's filesystem API, so a listing carries a
+ * name and whether it can be entered, and nothing it cannot know — a size
+ * column that was populated only when the container was down would be worse
+ * than no size column.
+ */
+export function publishFilesBridge(): void {
+  ;(globalThis as Record<string, unknown>).__DSH_WEB_FILES__ = {
+    /** Where the user's files start. */
+    root: () => WORKSPACE,
+    /** The directory above it, which is as far up as a browser here may go. */
+    home: () => WORKDIR,
+
+    /** Which filesystem is answering, so a panel can say so. */
+    backing: async (): Promise<'runtime' | 'page'> => (await runtimeReady() ? 'runtime' : 'page'),
+
+    list: async (path: string): Promise<FileEntry[]> => {
+      if (await runtimeReady()) {
+        const fs = await runtimeFs()
+        const entries = await fs.readdir(toContainerPath(path), { withFileTypes: true })
+        return entries
+          .map(entry => ({ name: entry.name, path: child(path, entry.name), directory: entry.isDirectory() }))
+          .sort(byKindThenName)
+      }
+      return volume.readdirNodes(path)
+        .map(([name, node]) => ({ name, path: child(path, name), directory: node.kind === 'dir' }))
+        .sort(byKindThenName)
+    },
+
+    read: async (path: string): Promise<Uint8Array> => {
+      if (await runtimeReady()) return (await runtimeFs()).readFile(toContainerPath(path))
+      return volume.readFile(path)
+    },
+
+    write: async (path: string, bytes: Uint8Array): Promise<void> => {
+      if (await runtimeReady()) {
+        await (await runtimeFs()).writeFile(toContainerPath(path), bytes)
+        // The same signal a command sends: a file written here is the user's
+        // work, and without this it is gone at the next reload.
+        runtimePersistence()?.touch()
+        return
+      }
+      volume.mkdirp(dirname(path))
+      volume.writeFile(path, bytes)
+    },
+
+    mkdir: async (path: string): Promise<void> => {
+      if (await runtimeReady()) {
+        await (await runtimeFs()).mkdir(toContainerPath(path), { recursive: true })
+        runtimePersistence()?.touch()
+        return
+      }
+      volume.mkdirp(path)
+    },
+
+    remove: async (path: string): Promise<void> => {
+      if (await runtimeReady()) {
+        await (await runtimeFs()).rm(toContainerPath(path), { recursive: true, force: true })
+        runtimePersistence()?.touch()
+        return
+      }
+      volume.rm(path, { recursive: true, force: true })
+    },
+
+    rename: async (from: string, to: string): Promise<void> => {
+      if (await runtimeReady()) {
+        await (await runtimeFs()).rename(toContainerPath(from), toContainerPath(to))
+        runtimePersistence()?.touch()
+        return
+      }
+      volume.rename(from, to)
+    },
+  }
+}
+
+/** Directories first, then names, the way a file browser is read. */
+function byKindThenName(left: FileEntry, right: FileEntry): number {
+  if (left.directory !== right.directory) return left.directory ? -1 : 1
+  return left.name.localeCompare(right.name)
 }

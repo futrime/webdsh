@@ -17,7 +17,7 @@ Node itself, in the tab.
 - ⚡ **Nothing to run.** No server, no install, no local Node — the harness boots in the page.
 - 🖥️ **Real Node, real Python.** `npm install` and `pip install` both work, and the terminal and the agent share one container.
 - 🧩 **Real plugins.** Install from npm, a tarball, GitHub, or a path — from the browser.
-- 📦 **Real dsh.** The published `@deepseek-ai/*` packages, unmodified: 115 of 129 rows compose exactly as `dsh web` composes them.
+- 📦 **Real dsh.** The published `@deepseek-ai/*` packages, unmodified: 114 of 129 rows compose exactly as `dsh web` composes them.
 - 🔒 **Yours.** Files, sessions and keys live in your browser's storage. Nothing is uploaded.
 
 ## Table of Contents
@@ -42,8 +42,10 @@ server for `/api` plus the CORS policy every outbound request goes through
 (`src/net`), and the plugins this build ships (`packages/`).
 
 Six composition rows are swapped, each because the shipped one names something a
-page cannot have — or, in the shell's case, cannot honestly describe.
-`npx tsx scripts/alignment.ts` prints the whole difference.
+page cannot have — or, in the shell's case, cannot honestly describe. Four more
+are reconfigured rather than replaced, including the one that decides whether
+this deployment can open a path at all. `npx tsx scripts/alignment.ts` prints
+the whole difference.
 
 ## Install
 
@@ -62,14 +64,21 @@ at a domain root, a project path, or a local directory.
 
 Open the page, choose a workspace, start talking.
 
+- **Files** — the sidebar action above the terminal. Browse the workspace,
+  open a file, download one out of the tab, or drop files in — the same
+  filesystem the agent and the terminal use, not a copy. A file path the
+  assistant names in the chat opens here when you click it.
 - **Terminal** — `` Ctrl+` `` or the sidebar action. It is Node in this tab, and
-  the same machine the agent's tools run in.
+  the same machine the agent's tools run in. Closing it hides it; the session,
+  its scrollback and its working directory are still there when you reopen.
 - **Python** — `python3` and `pip` are there for both of them. The first call
   fetches a 14 MB interpreter; after that it is stored, and packages installed
   with `pip` survive a reload. Write `python3`: `jsh` aliases `python` to it and
   loses the quoting on the way, so `python -c "…"` is a syntax error.
 - **Plugins** — Settings → Plugins, or `/plugin add <package>` in the composer.
-  Takes an npm name, a tarball URL, `owner/repo#ref`, or a path.
+  Takes an npm name, a tarball URL, `owner/repo#ref`, or a path. The *Installed*
+  tab turns one off or removes it; the composition is fixed at boot, so a change
+  applies on the next reload and the panel says so.
 - **Models** — 42 models across six routes are registered up front and need no
   account, so the page answers before it asks for anything. Settings → Models
   offers the rest of the provider catalog; typing a key is the whole of

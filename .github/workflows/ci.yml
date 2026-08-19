@@ -65,6 +65,15 @@ jobs:
           sleep 3
           npx tsx scripts/python-e2e.ts --url http://127.0.0.1:4176/
 
+      - name: Files, chat file links, and the plugin roster
+        # The panel over the same filesystem the agent uses, a file in and a
+        # file out of the tab, the host's "open this path" landing somewhere,
+        # and a plugin toggle that leaves the rest of the composition standing.
+        run: |
+          node scripts/serve.mjs 4178 &
+          sleep 3
+          npx tsx scripts/files-e2e.ts --url http://127.0.0.1:4178/
+
       - name: Plugin compatibility
         # Installs real community plugins from npm into the built app. Runs only
         # on the default branch: it reaches the network for every package.
