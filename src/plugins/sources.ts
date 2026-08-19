@@ -95,6 +95,17 @@ const GITHUB_MAX_FILES = 2000
 /** How many blob fetches run at once. */
 const GITHUB_CONCURRENCY = 12
 
+/**
+ * How long one GitHub request may take.
+ *
+ * Every request this bounds asks for something small — a tree listing, a single
+ * source file — so a slow one is a stalled one. It matters because the request
+ * may be travelling through a public CORS proxy that can stop answering without
+ * closing the connection, and an install that hangs forever is worse than one
+ * that fails: the caller can retry a failure.
+ */
+const GITHUB_TIMEOUT_MS = 30_000
+
 /** One entry of the git trees API response. */
 interface TreeEntry {
   path: string
@@ -133,7 +144,8 @@ function encodePath(value: string): string {
  * @returns the repository's files.
  */
 async function fromGithubApi(repository: string, ref: string): Promise<{ name: string, data: Uint8Array, mode: number }[]> {
-  const listing = await fetch(`https://api.github.com/repos/${repository}/git/trees/${encodePath(ref)}?recursive=1`)
+  const listing = await fetch(`https://api.github.com/repos/${repository}/git/trees/${encodePath(ref)}?recursive=1`,
+    { signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS) })
   if (!listing.ok) {
     throw new Error(`github: ${repository}@${ref} tree listing failed (${String(listing.status)})`)
   }
@@ -154,7 +166,8 @@ async function fromGithubApi(repository: string, ref: string): Promise<{ name: s
   const worker = async (): Promise<void> => {
     for (let index = next++; index < blobs.length; index = next++) {
       const entry = blobs[index]
-      const response = await fetch(`https://raw.githubusercontent.com/${repository}/${encodePath(ref)}/${encodePath(entry.path)}`)
+      const response = await fetch(`https://raw.githubusercontent.com/${repository}/${encodePath(ref)}/${encodePath(entry.path)}`,
+        { signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS) })
       if (!response.ok) throw new Error(`github: ${entry.path} → ${String(response.status)}`)
       files[index] = {
         name: entry.path,

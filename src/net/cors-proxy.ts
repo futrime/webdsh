@@ -61,6 +61,16 @@ export const DEFAULT_PROXY_TEMPLATE = 'https://proxy.cors.sh/{url}'
 /** The alternative offered beside the default, measured the same way. */
 export const ALTERNATIVE_PROXY_TEMPLATE = 'https://cors.eu.org/{url}'
 
+/**
+ * How long the settings page's probe waits.
+ *
+ * Only the probe is bounded. A real request is not, because a model streaming
+ * a long answer is indistinguishable from a stall at this layer, and cutting
+ * one off at a fixed deadline would break the thing the proxy exists to make
+ * work. `dsh-timeout` already bounds a model call by its own idle watchdog.
+ */
+const PROBE_TIMEOUT_MS = 15_000
+
 /** Where the choice is kept. Not the virtual filesystem: this is read before it is restored. */
 const STORAGE_KEY = 'dsh-web:network'
 
@@ -306,15 +316,31 @@ export async function testProxy(template = proxyConfig().template): Promise<{ ok
     return { ok: false, detail: 'That is not a URL this page can address.' }
   }
   try {
-    const response = await fetch(target, { method: 'GET', credentials: 'omit' })
+    // Bounded, because a probe that hangs is worse than one that fails: this is
+    // a button on a settings page, and a public proxy that black-holes the
+    // request would otherwise leave it spinning with nothing to report.
+    const response = await fetch(target, { method: 'GET', credentials: 'omit', signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
     // 401 is the probe reaching OpenAI without a key, which is exactly right.
     if (response.status === 401) return { ok: true, detail: 'Reached api.openai.com through the proxy (401, no key sent).' }
-    if (response.ok || response.status < 500) {
-      return { ok: true, detail: `The proxy answered ${String(response.status)}; the request reached it.` }
+    if (response.status < 400) return { ok: true, detail: `The proxy answered ${String(response.status)}; the request reached it.` }
+    // Anything else in the 4xx range is the proxy refusing *us* rather than
+    // the target answering — 429 above all, which is what a public instance
+    // says once it has had enough. Reporting that as working would send a user
+    // away from the one setting that would fix it.
+    return {
+      ok: false,
+      detail: response.status === 429
+        ? 'The proxy is rate-limiting this page (429). Try another, or run your own.'
+        : `The proxy refused the request (${String(response.status)}).`,
     }
-    return { ok: false, detail: `The proxy answered ${String(response.status)}.` }
   } catch (error) {
-    return { ok: false, detail: `The proxy could not be reached: ${error instanceof Error ? error.message : String(error)}` }
+    const timedOut = error instanceof DOMException && error.name === 'TimeoutError'
+    return {
+      ok: false,
+      detail: timedOut
+        ? `The proxy did not answer within ${String(PROBE_TIMEOUT_MS / 1000)}s.`
+        : `The proxy could not be reached: ${error instanceof Error ? error.message : String(error)}`,
+    }
   } finally {
     excluded.delete(origin)
   }

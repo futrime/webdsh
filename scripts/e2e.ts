@@ -358,7 +358,7 @@ const scenarios: Scenario[] = [
       // exhausted one is a fact about the runner, not a regression.
       const allowance = await page.evaluate(async () => {
         try {
-          const response = await fetch('https://api.github.com/rate_limit')
+          const response = await fetch('https://api.github.com/rate_limit', { signal: AbortSignal.timeout(15_000) })
           if (!response.ok) return 0
           const document = await response.json() as { resources?: { core?: { remaining?: number } } }
           return document.resources?.core?.remaining ?? 0
@@ -407,6 +407,7 @@ const scenarios: Scenario[] = [
             method: 'POST',
             headers: { 'content-type': 'application/json', authorization: 'Bearer sk-not-a-real-key' },
             body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }),
+            signal: AbortSignal.timeout(30_000),
           })
           return `reached anyway (${String(response.status)})`
         } catch { return 'refused' }
@@ -430,6 +431,7 @@ const scenarios: Scenario[] = [
             method: 'POST',
             headers: { 'content-type': 'application/json', authorization: 'Bearer sk-not-a-real-key' },
             body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }),
+            signal: AbortSignal.timeout(30_000),
           })
           return { reachable, status: response.status, proxied: network?.proxied() ?? [] }
         } catch (error) { return { reachable, status: 0, error: String(error), proxied: network?.proxied() ?? [] } }
@@ -507,6 +509,10 @@ const scenarios: Scenario[] = [
             model: 'deepseek-v4-flash-free',
             messages: [{ role: 'user', content: [{ type: 'text', text: 'Reply with exactly the word: pong' }] }],
             maxTokens: 200,
+            // A free tier behind a public proxy can stall rather than refuse,
+            // and this case gates a deploy. Bound it: a turn that has not
+            // finished in a minute has told us everything it is going to.
+            signal: AbortSignal.timeout(60_000),
           })) {
             if (chunk.type === 'text-delta') text += chunk.text ?? ''
             if (chunk.type === 'finish') { failure = chunk.reason?.failure; break }
