@@ -92,9 +92,9 @@ browser, and otherwise through the proxy in
 - **Plugins** install from Settings → Plugins, or with `/plugin add <package>`
   in the composer. Both are the same plugin, and both take an npm name, a
   tarball URL, `owner/repo#ref`, or a path.
-- **Models** are in Settings → Models: thirty-three providers are already
-  registered, and a provider becomes usable by typing its key. The default one
-  needs no key.
+- **Models** are in Settings → Models, which offers the whole installed
+  provider catalog; typing a key for one is the whole of configuring it. The
+  default model needs no key at all.
 - **Network** is in Settings → Network, and matters more here than it would on a
   machine — see [below](#reaching-a-host-that-refuses-browsers).
 
@@ -103,46 +103,28 @@ browser, and otherwise through the proxy in
 `dsh` composes two model adapters. `llm-deepseek` serves DeepSeek. The other,
 `llm-pi-ai`, is a multi-provider adapter carrying a catalog of its own — and
 upstream mounts it **dormant**, serving nothing until a deployment names the
-routes it has keys for.
+routes it has keys for. That posture is kept: preregistering a provider whose
+key nobody has would fill the picker with a thousand models that cannot be
+called. Every one of them is still one card away, in Settings → Models, which
+offers the whole installed catalog and registers a route the moment a key is
+typed for it.
 
-On a machine that is right; someone configures the install. A tab has no
-configuration step, so the same posture means a first-time visitor sees one
-provider and no sign that thirty-two more are already in the bundle. So this
-build registers them:
+What this build adds is the one route that needs no configuring, because it
+needs no account:
 
 ```
 $ npm run assemble
-[assemble] 33 default provider routes, 1002 models
+[assemble] 1 default provider routes, 5 models
 ```
-
-Anthropic, OpenAI, Google, OpenRouter, Groq, Mistral, Together, Fireworks,
-HuggingFace, xAI, Moonshot, z.ai, MiniMax, Cerebras, NVIDIA, Bedrock,
-GitHub Copilot, Vercel's AI gateway, both OpenCode Zen routes, and the rest of
-the installed catalog. Each names the credential reference the Models page
-writes, so typing a key for a provider is the whole of configuring it; a
-provider with no key stored fails its own requests with `MISSING_CREDENTIAL`
-and costs the others nothing.
-
-The roster is derived at build time from the pi-ai catalog in `node_modules`
-rather than written down — bumping the dependency is what updates it. A route is
-registered when the adapter can serve it unattended: pi-ai offers api-key
-authentication for it, it ships models, and every one of those models names a
-concrete endpoint. That last test is what leaves out Azure, Vertex, and the
-Cloudflare gateways, whose endpoints carry `{resource}`, `{location}` and
-`{CLOUDFLARE_ACCOUNT_ID}` placeholders only a deployment can fill. They stay
-where they were — the Models page's add-a-provider card, which asks for the
-endpoint. It is composition, not settings, so a `llm-pi-ai:` section in
-`settings.yaml` still overrides any of it.
 
 ### The one that needs no key
 
-Thirty-two of those routes are useless until someone types a key, which would
-leave a first-time visitor exactly where `dsh web` leaves them: at a form. The
-thirty-third is not. OpenCode Zen prices seven of its models at zero and serves
-them to an **unauthenticated** request, so this build declares a route for them
-and makes it the default. Five, in the end: two of the seven answer
-`401 Model … is not supported` to every request, so a price is not a promise
-and the roster subtracts them — that list is measured, and
+A provider you must configure leaves a first-time visitor exactly where
+`dsh web` leaves them: at a form. OpenCode Zen prices seven of its models at
+zero and serves them to an **unauthenticated** request, so this build declares
+a route for them and makes it the default. Five, in the end: two of the seven
+answer `401 Model … is not supported` to every request, so a price is not a
+promise and the roster subtracts them — that list is measured, and
 `scripts/assemble.ts` carries the one-line command to re-check it.
 
 ```
@@ -188,14 +170,6 @@ Two costs, both measured, neither hidden:
 
 `deepseek-official` / `deepseek-v4-flash` remains available and is one selection
 away in the composer's picker.
-
-One consequence is worth knowing before it surprises anyone: the composer's
-model picker is the surface's own, it groups by provider in alphabetical order,
-and it has no search — so with the catalog registered it opens on
-`amazon-bedrock` and reaching a model far down the list means scrolling. That is
-the cost of the models being there at all, and the trade this build takes; a
-deployment that wants a shorter list narrows `llm-pi-ai.providers` in
-`settings.yaml`, which overrides the composition layer.
 
 ## Reaching a host that refuses browsers
 

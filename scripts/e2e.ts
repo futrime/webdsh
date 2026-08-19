@@ -467,11 +467,17 @@ const scenarios: Scenario[] = [
         for (const provider of providers) models += (await llm.listModels(provider)).length
         return { providers, models }
       })
-      expect(catalog.providers.length >= 30, `only ${String(catalog.providers.length)} providers registered`)
-      expect(catalog.models >= 500, `only ${String(catalog.models)} models offered`)
-      for (const expected of ['anthropic', 'openai', 'google', 'openrouter', 'opencode', 'deepseek-official']) {
-        expect(catalog.providers.includes(expected), `${expected} is not a registered provider`)
-      }
+      // What is registered is deliberately small: the route that needs no
+      // account, plus whatever upstream's own composition mounts. Every other
+      // provider pi-ai ships is offered by the Models page and registered only
+      // once a user configures one — preregistering them would fill the picker
+      // with models nobody can call, which is the thing this asserts against.
+      expect(catalog.providers.includes('opencode-free'), 'the keyless route is not registered')
+      expect(
+        !catalog.providers.some(id => ['anthropic', 'openai', 'openrouter', 'xai', 'groq'].includes(id)),
+        `a key-only provider is preregistered: ${catalog.providers.join(', ')}`,
+      )
+      expect(catalog.models > 0 && catalog.models < 100, `unexpected model count: ${String(catalog.models)}`)
       // The default is the whole first-run experience: a page anyone can open
       // has to answer before it asks for anything, so it starts on the route
       // that needs no account.
@@ -483,7 +489,6 @@ const scenarios: Scenario[] = [
         return 'missing'
       })
       expect(fallback === 'opencode-free/deepseek-v4-flash-free', `the default model changed: ${fallback}`)
-      expect(catalog.providers.includes('opencode-free'), 'the keyless route is not registered')
 
       // And it has to actually dispatch without a credential. The distinction
       // that matters is auth versus everything else: a rate-limited free pool
