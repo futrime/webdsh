@@ -8,7 +8,11 @@
  * Usage: `npx tsx scripts/e2e.ts [--url <url>] [--case <name>] [--headed]`
  */
 
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { chromium, type ConsoleMessage, type Page } from 'playwright'
+import { FREE_ROUTES } from './free-routes.ts'
 
 /** One scenario. */
 interface Scenario {
@@ -32,6 +36,25 @@ const apiKey = process.env.DEEPSEEK_API_KEY ?? ''
 function valueOf(flag: string): string | undefined {
   const index = args.indexOf(flag)
   return index === -1 ? undefined : args[index + 1]
+}
+
+/**
+ * The model a new session is supposed to start on, as the overlay declares it.
+ *
+ * Read rather than pinned. Which route is the default is a decision that moves
+ * — it follows what the free endpoints actually serve, and the roster behind it
+ * is re-measured against live services — so a literal here turns every such
+ * change into a failing build that says only "the default model changed". What
+ * is worth asserting is not the value but that it *arrived*: that the patch
+ * layer this repository authors is the one the running page composed.
+ * @returns the declared `provider/model`.
+ */
+function declaredDefault(): string {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const patch = readFileSync(join(root, 'src/host/browser.patch.yml'), 'utf8')
+  const block = /^- id: agent-default-model$[\s\S]*?^\s+provider:\s*(\S+)$[\s\S]*?^\s+model:\s*(\S+)$/m.exec(patch)
+  if (block === null) throw new Error('e2e: browser.patch.yml declares no agent-default-model provider and model')
+  return `${block[1]}/${block[2]}`
 }
 
 /** Wait until the app's own boot screen is gone and the shell rendered. */
@@ -469,20 +492,27 @@ const scenarios: Scenario[] = [
         for (const provider of providers) models += (await llm.listModels(provider)).length
         return { providers, models }
       })
-      // What is registered is deliberately small: the route that needs no
+      // What is registered is deliberately bounded: the routes that need no
       // account, plus whatever upstream's own composition mounts. Every other
       // provider pi-ai ships is offered by the Models page and registered only
       // once a user configures one — preregistering them would fill the picker
       // with models nobody can call, which is the thing this asserts against.
-      expect(catalog.providers.includes('opencode-free'), 'the keyless route is not registered')
+      //
+      // `opencode-free` is named separately because it is the one route derived
+      // from the pi-ai catalog rather than from the measured roster, so it is
+      // the one FREE_ROUTES does not describe.
+      const keylessRoutes = ['opencode-free', ...FREE_ROUTES.map(route => route.id)]
+      const missing = keylessRoutes.filter(id => !catalog.providers.includes(id))
+      expect(missing.length === 0, `keyless routes are not registered: ${missing.join(', ')}`)
       expect(
         !catalog.providers.some(id => ['anthropic', 'openai', 'openrouter', 'xai', 'groq'].includes(id)),
         `a key-only provider is preregistered: ${catalog.providers.join(', ')}`,
       )
       expect(catalog.models > 0 && catalog.models < 100, `unexpected model count: ${String(catalog.models)}`)
       // The default is the whole first-run experience: a page anyone can open
-      // has to answer before it asks for anything, so it starts on the route
-      // that needs no account.
+      // has to answer before it asks for anything, so it starts on a route that
+      // needs no account.
+      const expected = declaredDefault()
       const fallback = await page.evaluate(() => {
         for (const entry of globalThis.dsh.ctx.loader?.entries() ?? []) {
           const options = entry.options as { id?: string, config?: { provider?: string, model?: string } }
@@ -490,14 +520,23 @@ const scenarios: Scenario[] = [
         }
         return 'missing'
       })
-      expect(fallback === 'opencode-free/deepseek-v4-flash-free', `the default model changed: ${fallback}`)
+      expect(fallback === expected, `the running page's default is ${fallback}, but the overlay declares ${expected}`)
+      // And the route it names has to be one of the registered ones. Nothing
+      // else in the build catches a default pointed at a provider that was
+      // never composed: the picker looks fine and the first message is what
+      // breaks.
+      const [defaultProvider, defaultModel] = expected.split('/')
+      expect(
+        catalog.providers.includes(defaultProvider),
+        `the default names ${defaultProvider}, which is not registered: ${catalog.providers.join(', ')}`,
+      )
 
       // And it has to actually dispatch without a credential. The distinction
       // that matters is auth versus everything else: a rate-limited free pool
       // is the provider's business and must not fail a deploy, but an auth
       // failure means the empty `authorization` header stopped reaching the
       // wire — which is the one thing holding this route together.
-      const keyless = await page.evaluate(async () => {
+      const keyless = await page.evaluate(async ([provider, model]) => {
         const llm = globalThis.dsh.ctx.get('llm') as {
           stream(options: Record<string, unknown>): AsyncIterable<{ type: string, text?: string, reason?: { kind?: string, failure?: { code?: string, message?: string } } }>
         }
@@ -505,8 +544,8 @@ const scenarios: Scenario[] = [
         let failure: { code?: string, message?: string } | undefined
         try {
           for await (const chunk of llm.stream({
-            provider: 'opencode-free',
-            model: 'deepseek-v4-flash-free',
+            provider,
+            model,
             messages: [{ role: 'user', content: [{ type: 'text', text: 'Reply with exactly the word: pong' }] }],
             maxTokens: 200,
             // A free tier behind a public proxy can stall rather than refuse,
@@ -519,19 +558,21 @@ const scenarios: Scenario[] = [
           }
         } catch (error) { failure = { code: 'THREW', message: String(error) } }
         return { text, failure }
-      })
+      }, [defaultProvider, defaultModel])
       const code = keyless.failure?.code
-      // The signature that matters is Zen's own `Invalid API key`, which is
-      // what it answers when a non-empty bearer reaches it — the one way this
-      // route can break. Its other 401 ("Model … is not supported") is also
-      // reported as AUTH and means something completely different, so matching
-      // on the code alone would fail for the wrong reason.
+      // Matched on the message rather than the code, because the endpoints
+      // disagree about the code and agree about the words. Zen answers
+      // `Invalid API key` and OVHcloud `Forbidden: authentication failed` when a
+      // non-empty bearer reaches them, which is the one way this route breaks;
+      // but Zen also reports "Model … is not supported" as AUTH, so matching on
+      // the code alone would fail for something else entirely.
       expect(
-        !/invalid api key/i.test(keyless.failure?.message ?? ''),
+        !/invalid api key|authentication failed|no api key/i.test(keyless.failure?.message ?? ''),
         `the keyless route was rejected for authentication, so the empty bearer did not reach the wire: ${JSON.stringify(keyless.failure)}`,
       )
       if (code === 'RATE_LIMIT') {
-        process.stdout.write('  note: OpenCode Zen\'s free pool is rate-limited right now; the turn reached it but returned no text\n')
+        process.stdout.write(`  note: ${defaultProvider}'s free pool is rate-limited right now;`
+          + ' the turn reached it but returned no text\n')
       } else {
         expect(code === undefined, `the keyless turn failed: ${JSON.stringify(keyless.failure)}`)
         expect(keyless.text.trim().length > 0, 'the keyless turn finished without any text')
