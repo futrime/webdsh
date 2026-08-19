@@ -66,8 +66,10 @@ Open the page, choose a workspace, start talking.
   the same machine the agent's tools run in.
 - **Plugins** — Settings → Plugins, or `/plugin add <package>` in the composer.
   Takes an npm name, a tarball URL, `owner/repo#ref`, or a path.
-- **Models** — Settings → Models offers the whole provider catalog; typing a key
-  is the whole of configuring one.
+- **Models** — 42 models across six routes are registered up front and need no
+  account, so the page answers before it asks for anything. Settings → Models
+  offers the rest of the provider catalog; typing a key is the whole of
+  configuring one.
 - **Network** — Settings → Network picks the CORS proxy, used only after a
   direct request has actually failed, and reported to you when it is.
 - **Persistence** — workspace, sessions and transcripts survive a reload.

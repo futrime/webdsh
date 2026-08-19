@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { FREE_ROUTES, loadRoster, type FreeModel } from './free-routes.ts'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const modules = join(root, 'node_modules')
@@ -504,30 +505,90 @@ function freeRoute(served: CatalogModel[]): { rows: string, count: number } | un
   if (typeof baseUrl !== 'string' || baseUrl.length === 0) return undefined
   if (!free.every(model => model.baseUrl === baseUrl)) return undefined
 
-  const models = free.map((model) => {
-    const lines = [`          - id: ${model.id}`]
+  const rows = routeRows({ id: FREE_ROUTE, displayName: 'OpenCode Zen (free)', baseURL: baseUrl }, free)
+  return { rows, count: free.length }
+}
+
+/**
+ * One declared route, as rows of the `llm-pi-ai` providers map.
+ *
+ * Every keyless route this build registers has the same shape, and the two
+ * fields that make it keyless are the reason this is one function rather than
+ * one per service: `api` and `baseURL` are what a route pi-ai ships no catalog
+ * for needs in order to resolve at all, and the empty `authorization` header is
+ * what keeps the request unauthenticated — it is also what gets pi-ai to
+ * dispatch one, since a route with no credential reference otherwise fails
+ * `No API key for provider` before a request is built.
+ *
+ * Model ids are quoted because several services put a `:` in them
+ * (`stepfun/step-3.7-flash:free`), and a quoted scalar is one less thing that
+ * depends on how a YAML parser reads a plain one.
+ * @param route - the route's identity and endpoint.
+ * @param models - the models it serves.
+ * @returns the indented YAML rows.
+ */
+function routeRows(
+  route: { id: string, displayName: string, baseURL: string },
+  models: readonly FreeModel[],
+): string {
+  const entries = models.map((model) => {
+    const lines = [`          - id: ${JSON.stringify(model.id)}`]
     if (model.name !== undefined) lines.push(`            name: ${JSON.stringify(model.name)}`)
     if (model.contextWindow !== undefined) lines.push(`            contextWindow: ${String(model.contextWindow)}`)
     if (model.maxTokens !== undefined) lines.push(`            maxTokens: ${String(model.maxTokens)}`)
+    // Narrowed rather than passed through: `input` reaches this from two
+    // sources — a measured roster and pi-ai's own catalog entries — and the
+    // profile schema accepts only these two names. A third one arriving from
+    // upstream would be rejected at settings-validation time, which is a long
+    // way from here.
+    const input = (['text', 'image'] as const).filter(name => model.input?.includes(name) === true)
+    if (input.length > 0) lines.push(`            input: [${input.join(', ')}]`)
     return lines.join('\n')
   })
-  const rows = [
-    `      ${FREE_ROUTE}:`,
-    '        displayName: OpenCode Zen (free)',
+  return [
+    `      ${route.id}:`,
+    `        displayName: ${JSON.stringify(route.displayName)}`,
     '        api: openai-completions',
-    `        baseURL: ${baseUrl}`,
+    `        baseURL: ${route.baseURL}`,
     // Empty on purpose: it is what makes the request unauthenticated, and it
     // is also what gets pi-ai to dispatch one at all.
     '        headers:',
     '          authorization: Bearer',
     '        models:',
-    ...models,
+    ...entries,
   ].join('\n')
-  return { rows, count: free.length }
 }
 
 /**
- * The provider route this build registers.
+ * Fail the build if the session's starting model is not one of the registered
+ * declared routes.
+ *
+ * The default lives in `browser.patch.yml` and the roster is measured against
+ * live endpoints, so the two drift independently: a service withdrawing one
+ * model is enough to leave every new session pointed at a route that serves it
+ * nothing. That failure is silent at runtime — the picker looks fine and the
+ * first message is what breaks — so it is worth catching here, where the two
+ * halves are both in hand.
+ *
+ * Only the declared routes are checked. `opencode-free` comes from the pi-ai
+ * catalog and is verified by `freeRoute` already.
+ * @param registered - route id → the models it serves.
+ */
+function assertDefaultIsRegistered(registered: ReadonlyMap<string, readonly FreeModel[]>): void {
+  const patch = readFileSync(join(root, 'src/host/browser.patch.yml'), 'utf8')
+  const block = /^- id: agent-default-model$[\s\S]*?^\s+provider:\s*(\S+)$[\s\S]*?^\s+model:\s*(\S+)$/m.exec(patch)
+  if (block === null) throw new Error('assemble: browser.patch.yml declares no agent-default-model provider and model')
+  const [, provider, model] = block
+  const models = registered.get(provider)
+  if (models === undefined) return
+  if (models.some(entry => entry.id === model)) return
+  throw new Error(`assemble: the default model ${provider}/${model} is not in scripts/free-routes.json;`
+    + ` ${provider} serves ${String(models.length)} models and none of them is "${model}".`
+    + ' Re-run `npm run refresh:models`, then point browser.patch.yml at a model that survived')
+}
+
+/**
+ * The provider routes this build registers.
  *
  * `dsh-llm-pi-ai` mounts dormant: it ships a multi-provider catalog and serves
  * none of it until a profile names a route. That is the right posture and it
@@ -536,33 +597,70 @@ function freeRoute(served: CatalogModel[]): { rows: string, count: number } | un
  * anyone who wants one. Registering all of them here would put a thousand
  * models in the picker that nobody can call.
  *
- * The one route registered is the one that needs no configuring, because it
- * needs no account: OpenCode Zen's free tier. It is what makes the page usable
- * the moment it opens, which is the only reason a deployment default belongs
- * here at all.
+ * The routes registered are the ones that need no configuring, because they
+ * need no account. They come from two places, and the difference is worth
+ * keeping:
+ *
+ * - OpenCode Zen is derived from the pi-ai catalog installed in
+ *   `node_modules`, so it tracks the dependency and needs no snapshot.
+ * - The rest — OVHcloud, Kilo, BlockRun, LLM7 — publish no catalog pi-ai
+ *   ships, so they are declared from the measured roster in
+ *   `scripts/free-routes.json`. That file is refreshed by
+ *   `npm run refresh:models`, deliberately not by this script: a build that
+ *   four third parties can break is not a build.
+ *
+ * Together they are what makes the page usable the moment it opens, which is
+ * the only reason a deployment default belongs here at all.
  * @returns the patch text, and what it covers.
  */
 async function emitModelCatalog(): Promise<{ patch: string, providers: number, models: number }> {
   const catalog = await import('@earendil-works/pi-ai/providers/all') as {
     getBuiltinModels(id: string): CatalogModel[]
   }
-  const free = freeRoute(catalog.getBuiltinModels(ZEN_PROVIDER))
-  if (free === undefined) {
+  const zen = freeRoute(catalog.getBuiltinModels(ZEN_PROVIDER))
+  if (zen === undefined) {
     throw new Error(`assemble: the pi-ai catalog no longer prices any ${ZEN_PROVIDER} model at zero;`
-      + ` ${FREE_ROUTE} would register nothing, and the deployment default names it`)
+      + ` ${FREE_ROUTE} would register nothing`)
   }
+
+  const roster = loadRoster()
+  const declared = FREE_ROUTES.map((route) => {
+    const models = roster.routes[route.id] ?? []
+    // An empty route is a snapshot that has gone stale against a service that
+    // withdrew its free tier, not a route to register silently: it would put a
+    // provider in Settings → Models serving nothing at all.
+    if (models.length === 0) {
+      throw new Error(`assemble: scripts/free-routes.json lists no models for ${route.id};`
+        + ' run `npm run refresh:models` and commit the result, or remove the route')
+    }
+    return { route, models, rows: routeRows(route, models) }
+  })
+
+  const models = zen.count + declared.reduce((sum, entry) => sum + entry.models.length, 0)
+  const providers = 1 + declared.length
+  assertDefaultIsRegistered(new Map(declared.map(entry => [entry.route.id, entry.models])))
   const patch = [
     '',
-    '# ── the model route this build registers ────────────────────────────────────',
+    '# ── the model routes this build registers ───────────────────────────────────',
     '#',
-    '# Generated by scripts/assemble.ts from the pi-ai catalog in node_modules.',
-    `# One route, ${String(free.count)} models. Do not edit here: bump the dependency and`,
-    '# re-run `npm run assemble`.',
+    '# Generated by scripts/assemble.ts. Do not edit here.',
+    `# ${String(providers)} routes, ${String(models)} models, none of which needs an account:`,
     '#',
-    `# \`${FREE_ROUTE}\` names no credential reference because it needs none: OpenCode`,
-    '# Zen serves these models to an unauthenticated request, and the empty',
-    '# `authorization` header is what keeps the request that way. It is the',
-    '# deployment default, so the page answers before it asks for anything.',
+    `# - \`${FREE_ROUTE}\` (${String(zen.count)}) is derived from the pi-ai catalog in`,
+    '#   node_modules; bump the dependency and re-run `npm run assemble`.',
+    ...declared.flatMap(entry => [
+      `# - \`${entry.route.id}\` (${String(entry.models.length)}) ${entry.route.note}.`,
+      `#   Reached ${entry.route.cors === 'direct'
+        ? 'directly: it sends `access-control-allow-origin: *`.'
+        : 'through the CORS proxy in Settings → Network: it publishes no CORS headers.'}`,
+    ]),
+    '#',
+    `# Those last ${String(declared.length)} come from the measured roster in`,
+    '# scripts/free-routes.json; re-pull and re-probe them with `npm run refresh:models`.',
+    '#',
+    '# None of these names a credential reference, because none needs one. The',
+    '# empty `authorization` header is what keeps each request unauthenticated —',
+    '# and, on OVHcloud, a non-empty one is refused with 403 rather than served.',
     '#',
     '# Every other provider pi-ai ships stays where upstream leaves it — offered by',
     '# the Models page\'s add-a-provider card, registered when a user configures one.',
@@ -575,10 +673,11 @@ async function emitModelCatalog(): Promise<{ patch: string, providers: number, m
     '- id: llm-pi-ai',
     '  config:',
     '    providers:',
-    free.rows,
+    zen.rows,
+    ...declared.map(entry => entry.rows),
     '',
   ].join('\n')
-  return { patch, providers: 1, models: free.count }
+  return { patch, providers, models }
 }
 
 const modelCatalog = await emitModelCatalog()

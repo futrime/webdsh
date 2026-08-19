@@ -1,0 +1,282 @@
+{
+  "measuredAt": "2026-08-19",
+  "routes": {
+    "ovh-free": [
+      {
+        "id": "Mistral-Small-3.2-24B-Instruct-2506",
+        "contextWindow": 131072,
+        "maxTokens": 131072
+      },
+      {
+        "id": "gpt-oss-20b",
+        "contextWindow": 131072,
+        "maxTokens": 131072
+      },
+      {
+        "id": "Qwen3-32B",
+        "contextWindow": 32768,
+        "maxTokens": 32768
+      },
+      {
+        "id": "Qwen3.6-27B",
+        "contextWindow": 262144,
+        "maxTokens": 262144
+      },
+      {
+        "id": "Mistral-Nemo-Instruct-2407",
+        "contextWindow": 65536,
+        "maxTokens": 65536
+      },
+      {
+        "id": "gpt-oss-120b",
+        "contextWindow": 131072,
+        "maxTokens": 131072
+      },
+      {
+        "id": "Qwen2.5-VL-72B-Instruct",
+        "contextWindow": 32768,
+        "maxTokens": 32768
+      },
+      {
+        "id": "Mistral-7B-Instruct-v0.3",
+        "contextWindow": 65536,
+        "maxTokens": 65536
+      },
+      {
+        "id": "Meta-Llama-3_3-70B-Instruct",
+        "contextWindow": 131072,
+        "maxTokens": 131072
+      },
+      {
+        "id": "Qwen3-Coder-30B-A3B-Instruct",
+        "contextWindow": 262144,
+        "maxTokens": 262144
+      },
+      {
+        "id": "Qwen3.5-9B",
+        "contextWindow": 262144,
+        "maxTokens": 262144
+      },
+      {
+        "id": "Qwen3.5-397B-A17B",
+        "contextWindow": 262144,
+        "maxTokens": 262144
+      }
+    ],
+    "kilo-free": [
+      {
+        "id": "kilo-auto/free",
+        "name": "Auto Free",
+        "contextWindow": 256000,
+        "maxTokens": 10000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "stepfun/step-3.7-flash:free",
+        "name": "StepFun: Step 3.7 Flash (free)",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "tencent/hy3:free",
+        "name": "Tencent: Hy3 (free)",
+        "contextWindow": 262144,
+        "maxTokens": 128000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "poolside/laguna-s-2.1:free",
+        "name": "Poolside: Laguna S 2.1 (free)",
+        "contextWindow": 262144,
+        "maxTokens": 32768,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "dots-studio/dots-3-note-preview:free",
+        "name": "Dots Studio: Dots3-Note Preview (free)",
+        "contextWindow": 512000,
+        "maxTokens": 512000,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "liquid/lfm-2.5-2.6b:free",
+        "name": "LiquidAI: LFM2.5-2.6B (free)",
+        "contextWindow": 128000,
+        "maxTokens": 8192,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "nvidia/nemotron-3.5-lightning:free",
+        "name": "NVIDIA: Nemotron 3.5 Lightning (free)",
+        "contextWindow": 1000000,
+        "maxTokens": 65536,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "poolside/laguna-xs-2.1:free",
+        "name": "Poolside: Laguna XS 2.1 (free)",
+        "contextWindow": 262144,
+        "maxTokens": 32768,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "cohere/north-mini-code:free",
+        "name": "Cohere: North Mini Code (free)",
+        "contextWindow": 256000,
+        "maxTokens": 64000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "name": "NVIDIA: Nemotron 3 Ultra (free)",
+        "contextWindow": 1000000,
+        "maxTokens": 65536,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "name": "NVIDIA: Nemotron 3 Nano Omni (free)",
+        "contextWindow": 256000,
+        "maxTokens": 65536,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "nvidia/nemotron-3-super-120b-a12b:free",
+        "name": "NVIDIA: Nemotron 3 Super (free)",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "openrouter/free",
+        "name": "OpenRouter Free Models Router",
+        "contextWindow": 200000,
+        "input": [
+          "text",
+          "image"
+        ]
+      }
+    ],
+    "blockrun-free": [
+      {
+        "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "name": "Nemotron 3 Nano Omni (Free)",
+        "contextWindow": 256000,
+        "maxTokens": 16384,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "nvidia/mistral-nemotron",
+        "name": "Mistral Nemotron (Free)",
+        "contextWindow": 131072,
+        "maxTokens": 16384
+      },
+      {
+        "id": "nvidia/step-3.7-flash",
+        "name": "StepFun Step 3.7 Flash (Free)",
+        "contextWindow": 131072,
+        "maxTokens": 16384
+      },
+      {
+        "id": "nvidia/nemotron-nano-9b-v2",
+        "name": "Nemotron Nano 9B v2 (Free)",
+        "contextWindow": 131072,
+        "maxTokens": 16384
+      },
+      {
+        "id": "nvidia/nemotron-nano-12b-v2-vl",
+        "name": "Nemotron Nano 12B v2 VL (Free)",
+        "contextWindow": 131072,
+        "maxTokens": 16384,
+        "input": [
+          "text",
+          "image"
+        ]
+      }
+    ],
+    "llm7-free": [
+      {
+        "id": "DeepSeek-V4-Flash-0731",
+        "contextWindow": 400000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "codestral-latest",
+        "contextWindow": 32000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "gemini-3.1-flash-lite",
+        "contextWindow": 256000,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "gpt-oss:20b",
+        "contextWindow": 128000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "minimax-m2.7",
+        "contextWindow": 180000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "mistral-Nemo-Instruct-2407",
+        "contextWindow": 128000,
+        "input": [
+          "text"
+        ]
+      }
+    ],
+    "ch-at": [
+      {
+        "id": "default",
+        "name": "ch.at",
+        "contextWindow": 32768,
+        "maxTokens": 4096
+      }
+    ]
+  }
+}
