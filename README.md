@@ -1,8 +1,8 @@
 # webdsh
 
-[![webdsh — DeepSeek Harness in a browser tab, with no server, no install and no key](https://capsule-render.vercel.app/api?type=rect&height=180&color=0:0d1117,55:15407e,100:2f81f7&text=webdsh&fontSize=68&fontColor=ffffff&fontAlignY=45&desc=DeepSeek+Harness+in+a+browser+tab+%C2%B7+no+server+%C2%B7+no+install+%C2%B7+no+key&descSize=19&descAlignY=70)](https://dsh.zjzh.me/)
+[![webdsh — DeepSeek Harness in a browser tab, with no server and no install](https://capsule-render.vercel.app/api?type=rect&height=180&color=0:0d1117,55:15407e,100:2f81f7&text=webdsh&fontSize=68&fontColor=ffffff&fontAlignY=45&desc=DeepSeek+Harness+in+a+browser+tab+%C2%B7+no+server+%C2%B7+no+install&descSize=19&descAlignY=70)](https://dsh.zjzh.me/)
 
-> DeepSeek Harness in a browser tab — the real agent, real Node, no server and no API key.
+> DeepSeek Harness in a browser tab — the real agent, real Node, no server to run.
 
 [![Live](https://img.shields.io/badge/live-dsh.zjzh.me-2ea44f)](https://dsh.zjzh.me/)
 [![Deploy](https://github.com/futrime/webdsh/actions/workflows/pages.yml/badge.svg)](https://github.com/futrime/webdsh/actions/workflows/pages.yml)
@@ -14,7 +14,7 @@ a browser client to it. **webdsh is that, as static files** — the host runs in
 the page, and the agent's commands run in [WebContainers](https://webcontainers.io):
 Node itself, in the tab.
 
-- 🔑 **No key.** The default model is OpenCode Zen's free tier — open the page and it answers.
+- ⚡ **Nothing to run.** No server, no install, no local Node — the harness boots in the page.
 - 🖥️ **Real Node.** `npm install` works, and the terminal and the agent share one container.
 - 🧩 **Real plugins.** Install from npm, a tarball, GitHub, or a path — from the browser.
 - 📦 **Real dsh.** The published `@deepseek-ai/*` packages, unmodified: 115 of 129 rows compose exactly as `dsh web` composes them.
@@ -67,7 +67,7 @@ Open the page, choose a workspace, start talking.
 - **Plugins** — Settings → Plugins, or `/plugin add <package>` in the composer.
   Takes an npm name, a tarball URL, `owner/repo#ref`, or a path.
 - **Models** — Settings → Models offers the whole provider catalog; typing a key
-  is the whole of configuring one. The default needs none.
+  is the whole of configuring one.
 - **Network** — Settings → Network picks the CORS proxy, used only after a
   direct request has actually failed, and reported to you when it is.
 - **Persistence** — workspace, sessions and transcripts survive a reload.
@@ -89,5 +89,6 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.
 
 ## License
 
-[Apache-2.0](LICENSE) © webdsh contributors. The `@deepseek-ai/*` packages it
-composes are published by DeepSeek AI under their own terms.
+[Apache-2.0](LICENSE) © [Zijian Zhang](https://github.com/futrime). The
+`@deepseek-ai/*` packages it composes are published by DeepSeek AI under their
+own terms.
