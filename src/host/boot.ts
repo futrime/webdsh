@@ -14,16 +14,16 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Group from '@deepseek-ai/cordis-plugin-group'
 import Include from '@deepseek-ai/cordis-plugin-include'
-import { loadOptionalPatches, loadOverlayPatches, mountRootInclude } from '@deepseek-ai/dsh-app-boot'
+import { mountRootInclude } from '@deepseek-ai/dsh-app-boot'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { hostModuleSystem, loadWorkerEntry, registerRuntimeModule } from './module-system.ts'
 import { BROWSER_PLUGINS } from './plugins.ts'
 import BrowserClientModules from './client-modules-browser.ts'
-import { seedFilesystem, DEPLOY_ROOT, SHIPPED_BUNDLES } from './seed.ts'
+import { seedFilesystem, DEPLOY_ROOT } from './seed.ts'
 import { installNodeGlobals } from '../node/registry.ts'
 import { setWorkerEntryLoader } from '../node/worker_threads.ts'
-import { installedPatchFiles, registerInstalledModules } from '../plugins/manager.ts'
+import { composePatchLayers, registerInstalledModules } from '../plugins/manager.ts'
 import { attachPersistence, type PersistenceHandle } from '../vfs/persist.ts'
 import { volume } from '../vfs/volume.ts'
 import { toText } from '../node/binary.ts'
@@ -33,6 +33,7 @@ import * as terminalPlugin from '../../packages/dsh-web-terminal/src/index.ts'
 import * as installPlugin from '../../packages/dsh-web-plugins/src/index.ts'
 import * as starPlugin from '../../packages/dsh-web-star/src/index.ts'
 import * as networkPlugin from '../../packages/dsh-web-network/src/index.ts'
+import * as filesPlugin from '../../packages/dsh-web-files/src/index.ts'
 
 /** What the boot produced, for the page to wire the transport onto. */
 export interface HostBoot {
@@ -79,6 +80,7 @@ export async function bootHost(): Promise<HostBoot> {
   registerRuntimeModule('@dsh-web/plugin-install', installPlugin)
   registerRuntimeModule('@dsh-web/star', starPlugin)
   registerRuntimeModule('@dsh-web/network', networkPlugin)
+  registerRuntimeModule('@dsh-web/files', filesPlugin)
 
   const ctx = new Context()
   ctx.baseUrl = pathToFileURL(`${DEPLOY_ROOT}/`).href
@@ -98,27 +100,9 @@ export async function bootHost(): Promise<HostBoot> {
   registerInstalledModules()
 
   const warnings: string[] = []
-  const patches = [
-    ...loadOverlayPatches('dsh-web', `${DEPLOY_ROOT}/bundles/dsh-base/cordis.patch.yml`),
-    ...loadOverlayPatches('dsh-web', `${DEPLOY_ROOT}/bundles/dsh-web-app/cordis.patch.yml`),
-    ...loadOverlayPatches('dsh-web', `${DEPLOY_ROOT}/bundles/browser/cordis.patch.yml`),
-    // The plugins this build ships, each as its own layer.
-    ...SHIPPED_BUNDLES
-      .filter(name => name !== 'browser')
-      .flatMap(name => loadOverlayPatches(name, `${DEPLOY_ROOT}/bundles/${name}/cordis.patch.yml`)),
-    // Installed plugin bundles, in the order they were added — the same place
-    // `dsh.profile.bundles` puts them.
-    ...installedPatchFiles().flatMap(({ label, path }) => {
-      try {
-        return loadOverlayPatches(label, path)
-      } catch (error) {
-        warnings.push(`${label}: patch layer failed to load (${error instanceof Error ? error.message : String(error)})`)
-        return []
-      }
-    }),
-    // The user's own layer, last, exactly as a profile's patch file is.
-    ...(loadOptionalPatches('dsh-web', dshHomePath('cordis.patch.yml')) ?? []),
-  ]
+  // Composed where `reload` composes it too, so a plugin toggle recomposes the
+  // same tree this boot built rather than a subset of it.
+  const patches = composePatchLayers(message => warnings.push(message))
 
   // The watchdog covers entry CREATION as well as the settle: mounting the
   // root include awaits every child entry's init, so a row that never returns

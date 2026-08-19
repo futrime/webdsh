@@ -13,7 +13,9 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
+import { loadOptionalPatches, loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
+import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { extractTarball } from './tar.ts'
 import { importInstalledPackage, PLUGIN_MODULES_ROOT, resolveInstalled } from './esm-loader.ts'
 import { isSharedModule, registerRuntimeLoader } from '../host/module-system.ts'
@@ -21,7 +23,7 @@ import { volume } from '../vfs/volume.ts'
 import { resolveSource, type PackageSource } from './sources.ts'
 import { toBytes, toText } from '../node/binary.ts'
 import { dirname } from '../vfs/path.ts'
-import { DEPLOY_ROOT } from '../host/seed.ts'
+import { DEPLOY_ROOT, SHIPPED_BUNDLES } from '../host/seed.ts'
 import { setPluginManager } from '../../packages/dsh-web-plugins/src/index.ts'
 
 /** Where the installed-plugin roster lives. */
@@ -272,20 +274,9 @@ export function installPluginManager(ctx: Context): PluginManager {
     if (loader === undefined) throw new Error('plugins: the loader service is gone')
     const include = [...loader.entries()].find(entry => entry.options.name === 'cordis:include')
     if (include === undefined) throw new Error('plugins: the root include entry is missing')
-    const patches = [
-      ...loadOverlayPatches('dsh-web', `${DEPLOY_ROOT}/bundles/dsh-base/cordis.patch.yml`),
-      ...loadOverlayPatches('dsh-web', `${DEPLOY_ROOT}/bundles/dsh-web-app/cordis.patch.yml`),
-      ...loadOverlayPatches('dsh-web', `${DEPLOY_ROOT}/bundles/browser/cordis.patch.yml`),
-    ]
-    for (const plugin of readRoster().plugins) {
-      if (!plugin.enabled || plugin.patch === undefined) continue
-      const path = `${PLUGIN_MODULES_ROOT}/${plugin.name}/${plugin.patch.replace(/^\.\//, '')}`
-      if (!volume.exists(path)) {
-        console.warn(`[plugins] ${plugin.name} declares a patch at ${plugin.patch}, which is missing`)
-        continue
-      }
-      patches.push(...loadOverlayPatches(plugin.name, path))
-    }
+    // The same stack the boot composed, not a shorter one that happens to
+    // contain the roster — see `composePatchLayers`.
+    const patches = composePatchLayers(message => { console.warn(`[plugins] ${message}`) })
     const options = include.options as { id: string, name: string, config: { path: string, patches?: unknown[] } }
     await loader.update(options.id, {
       ...options,
@@ -380,6 +371,44 @@ export function installedPatchFiles(): { label: string, path: string }[] {
       path: `${PLUGIN_MODULES_ROOT}/${plugin.name}/${plugin.patch!.replace(/^\.\//, '')}`,
     }))
     .filter(entry => volume.exists(entry.path))
+}
+
+/**
+ * Every patch layer this deployment composes, in application order.
+ *
+ * One function because there are two callers and they must not disagree: the
+ * boot builds this stack, and `reload` rebuilds it after the roster changes.
+ * They did disagree — `reload` knew only the three base layers and the roster,
+ * so the first `enable` of a session recomposed the tree *without* the layers
+ * this build ships (the terminal, this installer, the star, the network page)
+ * and without the user's own. The symptom was a plugin toggle that silently
+ * took the terminal away until the next reload, which is the opposite of what
+ * a toggle is for.
+ * @param onWarning - called with a layer that failed to load, rather than throwing.
+ * @returns the layers, base first and the user's own last.
+ */
+export function composePatchLayers(onWarning?: (message: string) => void): PatchOptions[] {
+  return [
+    ...loadOverlayPatches('dsh-web', `${DEPLOY_ROOT}/bundles/dsh-base/cordis.patch.yml`),
+    ...loadOverlayPatches('dsh-web', `${DEPLOY_ROOT}/bundles/dsh-web-app/cordis.patch.yml`),
+    ...loadOverlayPatches('dsh-web', `${DEPLOY_ROOT}/bundles/browser/cordis.patch.yml`),
+    // The plugins this build ships, each as its own layer.
+    ...SHIPPED_BUNDLES
+      .filter(name => name !== 'browser')
+      .flatMap(name => loadOverlayPatches(name, `${DEPLOY_ROOT}/bundles/${name}/cordis.patch.yml`)),
+    // Installed plugin bundles, in the order they were added — the same place
+    // `dsh.profile.bundles` puts them.
+    ...installedPatchFiles().flatMap(({ label, path }) => {
+      try {
+        return loadOverlayPatches(label, path)
+      } catch (error) {
+        onWarning?.(`${label}: patch layer failed to load (${error instanceof Error ? error.message : String(error)})`)
+        return []
+      }
+    }),
+    // The user's own layer, last, exactly as a profile's patch file is.
+    ...(loadOptionalPatches('dsh-web', dshHomePath('cordis.patch.yml')) ?? []),
+  ]
 }
 
 /**
