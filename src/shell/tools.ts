@@ -301,12 +301,30 @@ export const tools: Record<string, CommandImpl> = {
   },
 
   python3(context) {
-    context.stderr.write('python3: not available in the browser host. Use `node` for scripting.\n')
+    // The real one is CPython compiled to WebAssembly, and it runs inside the
+    // container — see `src/python/container-python.ts`. This shell is what
+    // answers when the container could not start at all, and it has nowhere to
+    // put a 14 MB interpreter, so it says which of the two is missing rather
+    // than implying Python was never on offer.
+    context.stderr.write(
+      'python3: the runtime did not start, and Python runs inside it. Reload the page, '
+      + 'or use `node` for scripting here.\n',
+    )
     return 127
   },
 }
 
 tools.python = tools.python3
+// `pip` says `pip:`, not `python3:` — a message that names a command the caller
+// did not type reads as a bug in the harness rather than an answer.
+for (const name of ['pip', 'pip3']) {
+  tools[name] = (context) => {
+    context.stderr.write(
+      `${name}: the runtime did not start, and Python runs inside it. Reload the page.\n`,
+    )
+    return 127
+  }
+}
 tools.shasum = tools.sha1sum
 
 /** `tar` is accepted with the common flag spellings and delegates to the zip container. */

@@ -75,7 +75,10 @@ function browserSurfacePrompt(): string {
     + 'The browser provides no implicit DOM, route, or screenshot context. '
     + 'There is no server process and no host machine: the filesystem you read and write is a virtual filesystem stored in the browser, '
     + 'shell commands run in an in-browser POSIX shell, and network access is limited to origins that permit cross-origin reads. '
-    + 'Native toolchains (a system package manager, python, compilers) are not installed and cannot be installed. '
+    + 'When the in-page container is running — the normal case — its shell carries Node, npm, and a real CPython '
+    + 'with pip; if it could not start, commands fall back to the page\'s own shell, which has Node but no Python. '
+    + 'Neither has a system package manager or a C compiler, so a package that must compile at install time cannot '
+    + 'be installed. '
     + 'Do not offer to start a server or open a port; neither is reachable from here. '
     + 'Changes to files persist in the browser across reloads and can be exported by the user.'
 }

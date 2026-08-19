@@ -198,6 +198,9 @@ const scenarios: Scenario[] = [
         ['node -e "let s=0; for (const n of [1,2,3]) s+=n; console.log(s)"', /\b6\b/],
         ['python3 -c "print(6*7)"', /42/],
         ['python3 -c "import json; print(json.dumps({\'a\': 1}))"', /\{"a": 1\}/],
+        // `pathlib` is the shortest proof that this is CPython and not the
+        // RustPython the container ships, which has no such module.
+        ['python3 -c "import pathlib; print(pathlib.Path(\'.\').resolve().name)"', /workspace/],
         ['npm --version', /\d+\.\d+\.\d+/],
         ['jq --version', /jq-\d/],
       ]
@@ -281,7 +284,7 @@ const scenarios: Scenario[] = [
       // The description the model plans against, read off the wire rather than
       // out of a registry.
       const described = JSON.stringify((tools ?? []).find(tool => tool.function?.name === 'jsh'))
-      for (const claim of ['$(...)', 'heredocs', 'node -e', 'python3 -c', 'there is no `bash` tool']) {
+      for (const claim of ['$(...)', 'heredocs', 'node -e', 'python3 -c', 'pip install', 'there is no `bash` tool']) {
         expect(described.includes(claim), `the jsh tool description does not mention ${claim}`)
       }
 

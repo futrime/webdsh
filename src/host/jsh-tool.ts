@@ -53,12 +53,14 @@ export const name = 'web-jsh'
  * Read out of the container rather than remembered: `ls /bin /usr/bin
  * /usr/local/bin`. `bash`, `sh`, and `zsh` are in there too and are all `jsh`
  * under another name, which is exactly the trap this list exists to close.
+ * `python3`, `pip` and `pip3` are the harness's, installed ahead of the
+ * container's own on `$PATH` — see `src/runtime/python.ts`.
  */
 const COMMANDS = [
   'alias', 'cat', 'cd', 'chmod', 'clear', 'cp', 'curl', 'echo', 'env', 'false', 'getconf',
-  'head', 'hostname', 'jq', 'kill', 'ln', 'ls', 'mkdir', 'mv', 'node', 'npm', 'npx', 'pnpm',
-  'ps', 'pwd', 'python3', 'rm', 'rmdir', 'sort', 'tail', 'touch', 'true', 'uptime', 'which',
-  'xxd', 'yarn',
+  'head', 'hostname', 'jq', 'kill', 'ln', 'ls', 'mkdir', 'mv', 'node', 'npm', 'npx', 'pip',
+  'pip3', 'pnpm', 'ps', 'pwd', 'python3', 'rm', 'rmdir', 'sort', 'tail', 'touch', 'true',
+  'uptime', 'which', 'xxd', 'yarn',
 ].join(' ')
 
 /**
@@ -146,9 +148,21 @@ function jshDescription(background: boolean): string {
     'belongs in one of these, not in a pipeline:',
     '  `node -e \'...\'`      Node v22 with its whole standard library. `npm install` works: the',
     '                      registry is reachable. This is the one to reach for.',
-    '  `python3 -c \'...\'`   RustPython 3.11. `json`, `re`, `os`, `math`, `csv`, `collections`,',
-    '                      `itertools`, `hashlib`, `base64`, `datetime`, `random`, `shutil` and',
-    '                      `glob` all work; `pathlib` and `subprocess` do not, and there is no pip.',
+    '  `python3 -c \'...\'`   CPython 3.14 (Pyodide, WebAssembly) and the standard library, minus',
+    '                      what needs an operating system: no `multiprocessing`, `venv` or',
+    '                      `ensurepip`. `pip install <name>` works for pure-Python wheels on PyPI',
+    '                      and for the ~350 packages Pyodide builds (numpy, pandas, scipy, sympy).',
+    '                      Write `python3`, never `python`: jsh aliases `python` to `python3` and',
+    '                      loses the quoting doing it, so `python -c "print(1)"` is a syntax error.',
+    '                      No threads and no sockets: `Thread.start` and `urllib.request.urlopen`',
+    '                      (so `requests` too) raise, and `subprocess` and `os.popen` cannot start',
+    '                      anything. `os.system("...")` is the exception and does work — it runs',
+    '                      the command in this same jsh, without capturing its output. To fetch a',
+    '                      URL from Python, `asyncio.run` a `pyodide.http.pyfetch` coroutine; it',
+    '                      goes through the browser, so the CORS paragraph below applies to it.',
+    '                      Starting it costs ~3s per command, and the first call in a session also',
+    '                      downloads the 14 MB interpreter — so put a whole task in one call, and',
+    '                      give the first one room.',
     '  `jq`                for JSON on the command line.',
     'For reading, writing, editing, and searching files, prefer the dedicated tools over any shell',
     'command — they are faster here and they do not go through jsh at all.',
@@ -292,8 +306,8 @@ export function apply(ctx: Context): void {
       'There is no `bash` tool in this session. The only shell is the `jsh` tool, and `jsh` is '
       + 'not a POSIX shell: `$(...)`, `$((...))`, `for`, `if`, `while`, `case`, functions, '
       + 'heredocs, `<`, and `[ ]` do not work, and the first two fail silently by expanding to '
-      + 'nothing. Use `node -e` or `python3 -c` for anything with logic in it, and check the '
-      + '[exit code: N] marker on every result.',
+      + 'nothing. Use `node -e` or `python3 -c` (CPython 3.14, with `pip`) for anything with '
+      + 'logic in it, and check the [exit code: N] marker on every result.',
   })
 
   ctx.tools.register(defineTool({

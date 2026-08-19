@@ -151,9 +151,21 @@ const WORKLOADS: Workload[] = [
     expect: /esm-ok/,
   },
   {
-    name: 'python',
-    script: 'python3 -c "import json; print(json.dumps({\'py\': 3}))"',
-    expect: /\{"py": 3\}/,
+    // CPython, not the RustPython the container ships: `pathlib` is one of the
+    // things that told the two apart, and `sys.version` is the other.
+    name: 'python is CPython',
+    script: 'python3 -c "import sys, json, pathlib; print(json.dumps({\'py\': sys.version_info[:2], \'here\': str(pathlib.Path(\'.\').resolve())}))"',
+    expect: /\{"py": \[3, 1[4-9]\], "here": "\/home\/dsh\/workspace"\}/,
+    timeoutMs: 180_000,
+  },
+  {
+    // The other half of a working Python: a package from PyPI, installed and
+    // then imported by a *different* process, which is what proves it landed on
+    // the machine rather than in one interpreter's memory.
+    name: 'pip installs from PyPI',
+    script: 'pip install six 2>&1 | tail -n 2 && python3 -c "import six; print(\'six\', six.__version__)"',
+    expect: /six 1\./,
+    timeoutMs: 300_000,
   },
   {
     name: 'workspace write',

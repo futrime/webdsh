@@ -9,7 +9,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "assemble": "npm run build:plugins && npm run build:shell && tsx scripts/assemble.ts",
+    "assemble": "npm run build:plugins && npm run build:shell && npm run build:python && tsx scripts/assemble.ts",
     "dev": "npm run assemble && vite",
     "build": "npm run assemble && vite build",
     "preview": "vite preview --port 4173",
@@ -20,8 +20,10 @@
     "test:task": "tsx scripts/task-e2e.ts",
     "test:fallback": "tsx scripts/fallback-e2e.ts",
     "test:shell": "node scripts/shell-diff.mjs",
+    "test:python": "tsx scripts/python-e2e.ts",
     "build:plugins": "node scripts/build-plugins.mjs",
-    "build:shell": "node scripts/build-container-shell.mjs"
+    "build:shell": "node scripts/build-container-shell.mjs",
+    "build:python": "node scripts/build-container-python.mjs"
   },
   "dependencies": {
     "@bokuweb/zstd-wasm": "^0.0.27",

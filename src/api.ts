@@ -10,7 +10,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { runShell, type RunResult } from './shell/index.ts'
-import { execute as executeInRuntime, runtimeReady, runtimePersistence } from './runtime/webcontainer.ts'
+import { execute as executeInRuntime, runtimeReady, runtimePersistence, runtimePythonPersistence } from './runtime/webcontainer.ts'
 import { volume } from './vfs/volume.ts'
 import { toBytes, toText } from './node/binary.ts'
 import type { PersistenceHandle } from './vfs/persist.ts'
@@ -70,7 +70,7 @@ export function installWindowApi(ctx: Context, persistence: PersistenceHandle): 
     },
 
     async flush() {
-      await Promise.all([persistence.flush(), runtimePersistence()?.flush()])
+      await Promise.all([persistence.flush(), runtimePersistence()?.flush(), runtimePythonPersistence()?.flush()])
     },
 
     readFile(path) {
@@ -107,7 +107,7 @@ export function installWindowApi(ctx: Context, persistence: PersistenceHandle): 
     },
 
     async reset() {
-      await Promise.all([persistence.clear(), runtimePersistence()?.clear()])
+      await Promise.all([persistence.clear(), runtimePersistence()?.clear(), runtimePythonPersistence()?.clear()])
       localStorage.clear()
       location.reload()
     },

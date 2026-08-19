@@ -7,10 +7,10 @@
  * something reconstructed from shell commands.
  *
  * The trade against virtualizing x86 is deliberate: this is newer and far
- * faster, and it is only JavaScript. There is no Python, no compiler, and no
- * arbitrary binary — what the container has is what Node and its `jsh` shell
- * provide. For a harness whose work is code, that is the better half of the
- * trade.
+ * faster, and what it runs is what a browser can run. There is no compiler and
+ * no arbitrary binary — but there is Node, and there is CPython, compiled to
+ * WebAssembly and installed by `python.ts` into this same filesystem. For a
+ * harness whose work is code, that is the better half of the trade.
  *
  * Two requirements shape the code below:
  *
@@ -23,6 +23,7 @@
 
 import type { WebContainer, WebContainerProcess } from '@webcontainer/api'
 import { persistWorkspace, restoreWorkspace, type RuntimePersistence } from './persist.ts'
+import { installPython, persistPython, pythonBin, restorePython, type PythonPersistence } from './python.ts'
 import { CONTAINER_SHELL } from '../generated/container-shell.ts'
 
 /**
@@ -58,6 +59,35 @@ export const HARNESS_DIR = '.dsh'
 
 /** The same, under the name the rest of this file uses. */
 const PRIVATE_DIR = HARNESS_DIR
+
+/**
+ * The environment a command runs in, with the harness's programs reachable.
+ *
+ * `jsh` resolves a command against the `PATH` it was *spawned* with and never
+ * re-reads it, so this is the only moment `python3` can be put in front of the
+ * container's own RustPython — a script that exports `PATH` itself is already
+ * too late. The harness's directory goes first for exactly that reason, and it
+ * is prepended to what the container would have used rather than replacing it:
+ * an environment handed to `spawn` is the whole of it, so a `PATH` written out
+ * here by hand would silently drop whatever the runtime adds to its own.
+ * @param runtime - the booted container, which reports its default `PATH`.
+ * @param requested - environment the caller wants the command to have.
+ * @returns the environment to spawn with.
+ */
+function environment(
+  runtime: WebContainer,
+  requested: Record<string, string | undefined> = {},
+): Record<string, string> {
+  // The container's own `HOME` is `/home`, one level above the working
+  // directory, so `~` and `cd` with no argument would land somewhere the user
+  // has nothing. The page reports the same home, and the two must agree.
+  const env: Record<string, string> = { HOME: WORKDIR, PATH: runtime.path }
+  for (const [name, value] of Object.entries(requested)) {
+    if (value !== undefined) env[name] = value
+  }
+  env.PATH = `${WORKDIR}/${pythonBin()}:${env.PATH}`
+  return env
+}
 
 /** Where the shell program lives, as the container itself addresses it. */
 const SHELL_PATH = `${WORKDIR}/${PRIVATE_DIR}/sh.cjs`
@@ -98,7 +128,7 @@ export function setShellMode(next: ShellMode): void {
 }
 
 /**
- * Install the shell the agent's commands run in.
+ * Install the two programs the page puts on the machine.
  *
  * The container ships `jsh`, which is not a shell in the sense a harness needs:
  * no `for`, `if`, `while`, `case`, functions, heredocs or `<` redirection, and
@@ -107,11 +137,17 @@ export function setShellMode(next: ShellMode): void {
  * error. `dsh` on a machine gets a real bash; this writes in the interpreter
  * from `src/shell/`, which is a real shell, and runs it on the container's own
  * files through `node:fs`.
+ *
+ * The `python3` it ships is RustPython, which is not a Python in that sense
+ * either — no `pathlib`, no `subprocess`, no pip — so `python.ts` writes in a
+ * real one the same way, and for the same reason: a program the page installs
+ * cannot fail to arrive, and can be put back when a mount takes it.
  * @param runtime - the booted container.
  */
-async function installShell(runtime: WebContainer): Promise<void> {
+async function installPrograms(runtime: WebContainer): Promise<void> {
   await ensureStaging(runtime)
   await runtime.fs.writeFile(`${PRIVATE_DIR}/sh.cjs`, CONTAINER_SHELL)
+  await installPython(runtime)
 }
 
 /**
@@ -163,6 +199,7 @@ export function runtimeSupported(): { ok: boolean, reason?: string } {
 
 let container: Promise<WebContainer> | undefined
 let durability: RuntimePersistence | undefined
+let pythonDurability: PythonPersistence | undefined
 
 /**
  * How long the container gets to start before it is treated as unavailable.
@@ -202,6 +239,35 @@ async function withDeadline(attempt: Promise<WebContainer>): Promise<WebContaine
 }
 
 /**
+ * How long the stored Python may take to come back before it is given up on.
+ *
+ * Generous next to the read it covers and small next to {@link BOOT_TIMEOUT_MS},
+ * which is the point: whatever this costs is taken out of the budget the whole
+ * boot has.
+ */
+const RESTORE_BUDGET_MS = 10_000
+
+/**
+ * Give one step of the boot its own deadline.
+ * @param step - the work to bound.
+ * @param budgetMs - how long it may take.
+ * @returns what the step returned, or false if it ran out of time or failed.
+ */
+async function withinBudget(step: Promise<boolean>, budgetMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      step,
+      new Promise<boolean>((resolve) => { timer = setTimeout(() => { resolve(false) }, budgetMs) }),
+    ])
+  } catch {
+    return false
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/**
  * Why the runtime is not usable, once an attempt to start it has failed.
  *
  * The checks in {@link runtimeSupported} are about the browser's capabilities,
@@ -221,6 +287,11 @@ export function runtimeFailure(): string | undefined {
 /** The workspace's durability handle, once the runtime has started. */
 export function runtimePersistence(): RuntimePersistence | undefined {
   return durability
+}
+
+/** Python's durability handle, once the runtime has started. */
+export function runtimePythonPersistence(): PythonPersistence | undefined {
+  return pythonDurability
 }
 
 /**
@@ -243,9 +314,6 @@ export async function bootRuntime(onProgress?: (step: string) => void): Promise<
     onProgress?.('Starting Node')
     const booted = await Runtime.boot({ workdirName: 'dsh' })
 
-    onProgress?.('Installing the shell')
-    await installShell(booted)
-
     onProgress?.('Preparing the workspace')
     // The runtime's filesystem is in memory, so without this a reload loses the
     // user's work — which is not a limitation to accept in a harness.
@@ -256,7 +324,18 @@ export async function bootRuntime(onProgress?: (step: string) => void): Promise<
     // workspace inside it. Re-asserting costs two idempotent calls and covers
     // the case where the first command would otherwise have nowhere to stage.
     await ensureStaging(booted)
+    // After the mount, never before it: a snapshot is written over the whole
+    // working directory, so a shell installed first is a shell the restore
+    // deletes. Python's own interpreter comes back the same way, from its own
+    // record, so a returning visitor does not download it twice.
+    // Bounded on its own, because it happens inside the boot deadline: a stored
+    // interpreter is tens of megabytes, and a slow read of it must cost the
+    // first `python3` a download rather than cost the page its container.
+    if (await withinBudget(restorePython(booted), RESTORE_BUDGET_MS)) onProgress?.('Restored Python')
+    onProgress?.('Installing the shell and Python')
+    await installPrograms(booted)
     durability = persistWorkspace(booted)
+    pythonDurability = persistPython(booted)
     return booted
   })()).catch((error: unknown) => {
     // Recorded rather than only thrown: the callers that ask `runtimeAvailable`
@@ -334,13 +413,7 @@ export function runtimeAvailable(): boolean {
  */
 export async function execute(script: string, options: RunOptions = {}): Promise<RunResult> {
   const runtime = await bootRuntime()
-  // The container's own `HOME` is `/home`, one level above the working
-  // directory, so `~` and `cd` with no argument would land somewhere the user
-  // has nothing. The page reports the same home, and the two must agree.
-  const env: Record<string, string> = { HOME: WORKDIR }
-  for (const [name, value] of Object.entries(options.env ?? {})) {
-    if (value !== undefined) env[name] = value
-  }
+  const env = environment(runtime, options.env)
 
   // Not `-c <script>`: the runtime unescapes backslashes in argv, so a script
   // passed as an argument arrives subtly different from the one the agent wrote
@@ -354,7 +427,7 @@ export async function execute(script: string, options: RunOptions = {}): Promise
     // writing again turns a session that fails every command until reload into
     // one command that took a moment longer, and restores the shell program
     // beside it, which a tree-wide clobber would have taken too.
-    await installShell(runtime)
+    await installPrograms(runtime)
     await runtime.fs.writeFile(scriptFile, script)
   }
   // `$0` and the positional parameters follow the script, as they do for
@@ -404,6 +477,9 @@ export async function execute(script: string, options: RunOptions = {}): Promise
   // A command is the coarsest thing that can change the workspace, and the
   // cheapest place to notice: the snapshot itself is debounced.
   durability?.touch()
+  // The same for anything a command installed into Python, which is compared
+  // before it is copied — most commands change nothing there.
+  pythonDurability?.touch()
   return { status, stdout: output, stderr: '' }
 }
 
@@ -443,7 +519,7 @@ export async function startShell(size: { cols: number, rows: number }): Promise<
   const argv: [string, string[]] = mode === 'jsh' ? ['jsh', []] : ['node', [SHELL_PATH, '-i']]
   return runtime.spawn(argv[0], argv[1], {
     cwd: toContainerPath(WORKSPACE),
-    env: { HOME: WORKDIR },
+    env: environment(runtime),
     terminal: { cols: size.cols, rows: size.rows },
   })
 }

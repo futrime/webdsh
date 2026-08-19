@@ -56,6 +56,15 @@ jobs:
           sleep 3
           npx tsx scripts/runtime-e2e.ts --url http://127.0.0.1:4175/
 
+      - name: Python
+        # A real CPython, a real pip, and the same interpreter from the terminal
+        # and from the agent — including across a reload, which is the only
+        # check that the installation is actually stored.
+        run: |
+          node scripts/serve.mjs 4176 &
+          sleep 3
+          npx tsx scripts/python-e2e.ts --url http://127.0.0.1:4176/
+
       - name: Plugin compatibility
         # Installs real community plugins from npm into the built app. Runs only
         # on the default branch: it reaches the network for every package.

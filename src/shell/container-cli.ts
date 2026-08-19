@@ -13,8 +13,8 @@
  * program and run inside the container, where `node:fs` gives it the
  * container's own files and `child_process` gives it the container's own
  * executables. What the agent gets is this shell's language and builtins over
- * the runtime's filesystem, with `node`, `npm`, and `python3` still being the
- * real ones.
+ * the runtime's filesystem, with `node`, `npm`, `python3` and `pip` still being
+ * the real ones.
  *
  * Invoked as `node sh.cjs <file> [args…]`, `node sh.cjs -c <script> [args…]`,
  * or `node sh.cjs -i` for the terminal's interactive session — the same shell
@@ -49,7 +49,9 @@ import {
  * page has no processes, and registering them here would replace a working
  * toolchain with an imitation of it. The rest are simply present in `$PATH`.
  */
-const PREFER_EXTERNAL = new Set(['node', 'npm', 'npx', 'pnpm', 'yarn', 'python3', 'python', 'jq', 'curl', 'code'])
+const PREFER_EXTERNAL = new Set([
+  'node', 'npm', 'npx', 'pnpm', 'yarn', 'python3', 'python', 'pip', 'pip3', 'jq', 'curl', 'code',
+])
 
 /** Build the command table for a shell running inside the container. */
 function buildRegistry(): Map<string, CommandImpl> {

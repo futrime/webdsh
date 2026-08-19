@@ -126,8 +126,8 @@ export interface ShellState {
    *
    * In the page there is nothing else to try and the shell reports
    * `command not found`. Running inside the container there is: a real `$PATH`
-   * with `node`, `npm`, and `python3` on it, which this shell must not shadow
-   * with an emulation. Left unset, dispatch is unchanged.
+   * with `node`, `npm`, `python3` and `pip` on it, which this shell must not
+   * shadow with an emulation. Left unset, dispatch is unchanged.
    */
   external?: CommandImpl
   /** `set -e` / `set -x` / `set -u`. */

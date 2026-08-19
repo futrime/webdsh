@@ -15,7 +15,7 @@ the page, and the agent's commands run in [WebContainers](https://webcontainers.
 Node itself, in the tab.
 
 - ⚡ **Nothing to run.** No server, no install, no local Node — the harness boots in the page.
-- 🖥️ **Real Node.** `npm install` works, and the terminal and the agent share one container.
+- 🖥️ **Real Node, real Python.** `npm install` and `pip install` both work, and the terminal and the agent share one container.
 - 🧩 **Real plugins.** Install from npm, a tarball, GitHub, or a path — from the browser.
 - 📦 **Real dsh.** The published `@deepseek-ai/*` packages, unmodified: 115 of 129 rows compose exactly as `dsh web` composes them.
 - 🔒 **Yours.** Files, sessions and keys live in your browser's storage. Nothing is uploaded.
@@ -64,6 +64,10 @@ Open the page, choose a workspace, start talking.
 
 - **Terminal** — `` Ctrl+` `` or the sidebar action. It is Node in this tab, and
   the same machine the agent's tools run in.
+- **Python** — `python3` and `pip` are there for both of them. The first call
+  fetches a 14 MB interpreter; after that it is stored, and packages installed
+  with `pip` survive a reload. Write `python3`: `jsh` aliases `python` to it and
+  loses the quoting on the way, so `python -c "…"` is a syntax error.
 - **Plugins** — Settings → Plugins, or `/plugin add <package>` in the composer.
   Takes an npm name, a tarball URL, `owner/repo#ref`, or a path.
 - **Models** — 42 models across six routes are registered up front and need no
@@ -76,8 +80,10 @@ Open the page, choose a workspace, start talking.
   `window.dsh.exportFs()` downloads a zip; `window.dsh.reset()` clears it all.
 
 Worth knowing: the container's shell is `jsh`, not bash, and it ships no `git`;
-`python3` is RustPython, with no pip; and a host that refuses browsers is
-reachable only through the proxy, which does not extend to the container.
+`python3` is CPython 3.14 compiled to WebAssembly, fetched on first use and kept
+afterwards, so it has pip but no compiler, no subprocesses and no sockets; and a
+host that refuses browsers is reachable only through the proxy, which does not
+extend to the container.
 
 ## Maintainers
 

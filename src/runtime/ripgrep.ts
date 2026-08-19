@@ -19,11 +19,11 @@
  * the difference between an empty result and a broken tool.
  */
 
-import { runtimeFs, toContainerPath, WORKSPACE } from './webcontainer.ts'
+import { HARNESS_DIR, runtimeFs, toContainerPath, WORKSPACE } from './webcontainer.ts'
 import { globToRegExp } from '../node/path.ts'
 
 /** Directories never worth walking. */
-const ALWAYS_SKIP = new Set(['.git', 'node_modules'])
+const ALWAYS_SKIP = new Set(['.git', 'node_modules', HARNESS_DIR])
 
 /** One `--glob` filter. */
 interface GlobFilter {
