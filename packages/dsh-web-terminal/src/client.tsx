@@ -59,10 +59,19 @@ function bridge(): RuntimeBridge | undefined {
 }
 
 /** The panel, drawn into the surface's shell overlay. */
-function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }): JSX.Element | null {
+function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }): JSX.Element {
   const host = useRef<HTMLDivElement | null>(null)
   const started = useRef(false)
+  const fitter = useRef<FitAddon | undefined>(undefined)
   const [message, setMessage] = useState<string | undefined>(undefined)
+
+  // A hidden element has no size, so xterm measured zero while it was closed.
+  // Re-fitting on the way back is what makes the grid match the window again.
+  useEffect(() => {
+    if (!open) return
+    const frame = requestAnimationFrame(() => { fitter.current?.fit() })
+    return () => { cancelAnimationFrame(frame) }
+  }, [open])
 
   useEffect(() => {
     if (!open || started.current || host.current === null) return
@@ -103,6 +112,7 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
         theme: { background: '#0d1017', foreground: '#dfe3ea', cursor: '#7fd1a0' },
       })
       const fit = new FitAddon()
+      fitter.current = fit
       terminal.loadAddon(fit)
       terminal.open(host.current!)
       fit.fit()
@@ -144,9 +154,13 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
     }
   }, [open])
 
-  if (!open) return null
+  // Hidden rather than unmounted. Closing used to drop the element, which took
+  // the emulator with it through this effect's cleanup, while `started` stayed
+  // true — so the next open drew nothing at all. Keeping it mounted fixes that
+  // and buys the behaviour a terminal is supposed to have: the session, its
+  // scrollback and its working directory are still there when it comes back.
   return (
-    <div className="dsh-web-terminal" data-open="">
+    <div className="dsh-web-terminal" {...(open ? { 'data-open': '' } : { hidden: true })}>
       <div className="dsh-web-terminal-bar">
         <span className="dsh-web-terminal-title">Terminal</span>
         <span className="dsh-web-terminal-hint">the same runtime the agent runs in</span>
@@ -197,6 +211,7 @@ function TerminalAction({ open, onToggle, wide }: { open: boolean, onToggle: () 
 }
 
 const STYLE = `
+.dsh-web-terminal[hidden]{display:none}
 .dsh-web-terminal{position:fixed;left:0;right:0;bottom:0;height:min(52vh,32rem);z-index:60;display:flex;
  flex-direction:column;background:#0d1017;border-top:1px solid rgba(127,127,127,.3);box-shadow:0 -8px 32px rgba(0,0,0,.35)}
 .dsh-web-terminal-bar{display:flex;align-items:center;gap:.75rem;padding:.4rem .75rem;color:#dfe3ea;flex:none;

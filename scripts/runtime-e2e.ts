@@ -229,6 +229,29 @@ async function main(): Promise<void> {
       }
     }
 
+    // Closing a terminal and opening it again used to give back an empty panel:
+    // the element was unmounted, which disposed the emulator, while the guard
+    // that stops it being built twice stayed set. A terminal that loses your
+    // session when you glance away is not one you can work in, and nothing
+    // above notices — every workload runs in the first session.
+    process.stdout.write('▶ the session survives being closed\n')
+    try {
+      await run(page, 'echo before-the-close > closed.txt')
+      const action = page.getByRole('button', { name: 'Terminal', exact: true })
+      await action.first().evaluate((node: HTMLElement) => { node.click() })
+      await page.waitForTimeout(1000)
+      await action.first().evaluate((node: HTMLElement) => { node.click() })
+      await page.waitForTimeout(1500)
+      const shown = await screen(page)
+      expect(/before-the-close/.test(shown), `the scrollback did not survive:\n${shown.slice(-400)}`)
+      const after = await run(page, 'cat closed.txt')
+      expect(/before-the-close/.test(after), `the session did not survive being closed:\n${after.slice(-400)}`)
+      process.stdout.write('  ✓\n')
+    } catch (error) {
+      failures++
+      process.stdout.write(`  ✗ ${error instanceof Error ? error.message : String(error)}\n`)
+    }
+
     // The point of running the agent in the runtime: what the terminal writes,
     // the agent reads, and the reverse. Two machines that merely look alike
     // would pass every test above and fail both of these.
