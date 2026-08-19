@@ -9,20 +9,43 @@
  * Every source the installer accepts is offered: a registry name, a tarball
  * URL, a GitHub repository, a path in the virtual filesystem, or a file from
  * the user's own machine.
+ *
+ * Two tabs, because installing and managing are different readings. The second
+ * one is the roster with its switches — the manager has had `enable`, `disable`
+ * and `remove` since it was written, and `/plugin disable x` has always worked,
+ * but a switch is where a person looks for it. What the roster holds is only
+ * what a user installed: the plugins this build ships travel as build-time
+ * layers and have no entry here, which is also why nothing on this page can
+ * turn the terminal off.
  */
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 
 /** The installer the app publishes. */
 interface InstallerBridge {
   install(spec: string): Promise<{ name: string, version: string, patch?: string }>
-  list(): { name: string, version: string, enabled: boolean, hasClient: boolean }[]
+  list(): InstalledPlugin[]
   enable(name: string): Promise<void>
   disable(name: string): Promise<void>
   remove(name: string): Promise<void>
   /** Stage an uploaded file where the installer can read it. */
   stage(name: string, bytes: ArrayBuffer): string
+}
+
+/** One row of the installed roster. */
+interface InstalledPlugin {
+  name: string
+  version: string
+  enabled: boolean
+  hasClient: boolean
+  /**
+   * The composition layer it declares, when it declares one.
+   *
+   * A package without one is a plain dependency: enabling it writes `true` and
+   * mounts nothing, so the switch says that instead of pretending.
+   */
+  patch?: string
 }
 
 /** Where the app publishes it. */
@@ -45,6 +68,16 @@ const STYLE = `
 .dsh-web-install-status{font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;
  padding:.5rem .6rem;border-radius:.4rem;background:var(--dsw-alias-markdown-code-block,rgba(127,127,127,.12))}
 .dsh-web-install-status[data-error]{color:var(--dsw-alias-state-error-primary,#d33)}
+.dsh-web-roster{display:flex;flex-direction:column;gap:.5rem;padding:.75rem 0}
+.dsh-web-roster-row{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;padding:.5rem .6rem;border-radius:.5rem;
+ border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.25))}
+.dsh-web-roster-name{font-weight:600}
+.dsh-web-roster-version{opacity:.6;font-size:12px}
+.dsh-web-roster-note{opacity:.6;font-size:12px;flex:1;min-width:8rem}
+.dsh-web-roster-state{font-size:12px;padding:.1rem .45rem;border-radius:999px;
+ border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4))}
+.dsh-web-roster-state[data-enabled]{color:var(--dsw-alias-state-success-primary,#2a7);border-color:currentColor}
+.dsh-web-roster-actions{display:flex;gap:.4rem;margin-left:auto}
 `
 
 /** The install form, rendered inside the surface's plugins tab. */
@@ -123,6 +156,129 @@ function InstallPanel(): JSX.Element {
   )
 }
 
+/**
+ * The installed roster, with a switch per row.
+ *
+ * Everything a switch here does is durable and none of it is live: the manager
+ * writes the roster and recomposes the host tree, but a browser surface is
+ * decided at boot — the client bundles were snapshotted before the shell
+ * loaded. So a row shows what the roster now says and the panel says plainly
+ * that the running page is still the old composition, with the reload that
+ * fixes that one button away. Claiming the change had already taken effect is
+ * the one thing this must not do.
+ */
+function InstalledPanel(): JSX.Element {
+  const [installed, setInstalled] = useState<InstalledPlugin[]>([])
+  const [status, setStatus] = useState<{ text: string, error?: boolean } | undefined>(undefined)
+  const [changed, setChanged] = useState(false)
+  const [busy, setBusy] = useState<string | undefined>(undefined)
+
+  const refresh = useCallback(() => {
+    // Read once into state rather than on every render: `list()` parses the
+    // roster afresh each call, so a new array identity per render would be a
+    // render loop for anything subscribing to it.
+    setInstalled(installer()?.list() ?? [])
+  }, [])
+  useEffect(refresh, [refresh])
+
+  const act = useCallback(async (plugin: InstalledPlugin, verb: 'enable' | 'disable' | 'remove') => {
+    const api = installer()
+    if (api === undefined) {
+      setStatus({ text: 'The installer is not available in this build.', error: true })
+      return
+    }
+    if (verb === 'remove' && !globalThis.confirm(`Remove ${plugin.name}? Its files are deleted from this browser.`)) {
+      return
+    }
+    setBusy(plugin.name)
+    try {
+      await api[verb](plugin.name)
+      setChanged(true)
+      setStatus({
+        text: verb === 'remove'
+          ? `Removed ${plugin.name}. Reload to apply — the composition is fixed at boot.`
+          : `${plugin.name} is now ${verb}d. Reload to apply — the composition is fixed at boot.`,
+      })
+    } catch (error) {
+      setStatus({ text: error instanceof Error ? error.message : String(error), error: true })
+    } finally {
+      setBusy(undefined)
+      refresh()
+    }
+  }, [refresh])
+
+  // Read again on demand. The section keeps a tab mounted once it has been
+  // visited, so coming back to this one does not re-run the read — and the
+  // roster is not this panel's alone: `/plugin add` in the composer writes to
+  // the same file.
+  const header = (
+    <div className="dsh-web-install-row">
+      <span className="dsh-web-install-note">
+        {installed.length === 0 ? 'Nothing installed yet' : `${String(installed.length)} installed`}
+      </span>
+      <button type="button" onClick={refresh}>Refresh</button>
+    </div>
+  )
+
+  if (installed.length === 0) {
+    return (
+      <div className="dsh-web-install dsh-web-roster">
+        {header}
+        <p className="dsh-web-install-note">
+          Nothing installed here yet. This lists the plugins <em>you</em> add; the ones this build
+          ships are composed at build time and appear under Plugin list.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="dsh-web-install dsh-web-roster">
+      {header}
+      {installed.map(plugin => (
+        <div className="dsh-web-roster-row" key={plugin.name}>
+          <span className="dsh-web-roster-name">{plugin.name}</span>
+          <span className="dsh-web-roster-version">{plugin.version}</span>
+          <span className="dsh-web-roster-state" {...(plugin.enabled ? { 'data-enabled': '' } : {})}>
+            {plugin.enabled ? 'Enabled' : 'Disabled'}
+          </span>
+          <span className="dsh-web-roster-note">
+            {plugin.patch === undefined
+              ? 'a plain dependency — it declares no composition layer, so there is nothing to turn on'
+              : plugin.hasClient ? 'host rows and a browser surface' : 'host rows'}
+          </span>
+          <span className="dsh-web-roster-actions">
+            <button
+              type="button"
+              disabled={busy !== undefined || plugin.patch === undefined}
+              title={plugin.patch === undefined ? 'This package adds no rows to the composition.' : undefined}
+              onClick={() => { void act(plugin, plugin.enabled ? 'disable' : 'enable') }}
+            >
+              {plugin.enabled ? 'Disable' : 'Enable'}
+            </button>
+            <button type="button" disabled={busy !== undefined} onClick={() => { void act(plugin, 'remove') }}>
+              Remove
+            </button>
+          </span>
+        </div>
+      ))}
+      {status !== undefined && (
+        <div className="dsh-web-install-status" {...(status.error === true ? { 'data-error': '' } : {})}>
+          {status.text}
+        </div>
+      )}
+      {changed && (
+        <div className="dsh-web-install-row">
+          <button type="button" onClick={() => { location.reload() }}>Reload now</button>
+          <span className="dsh-web-install-note">
+            Until then this page is still running the composition it booted with.
+          </span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Services this half waits for. */
 export const inject = ['slots']
 
@@ -140,14 +296,27 @@ export function apply(ctx: Context): void {
 
   const slots = ctx.get('slots') as {
     inject(name: string, factory: () => unknown): void
-    register(options: { name: string, id: string }, component: unknown): unknown
+    register(
+      options: { name: string, id: string, order?: number, label?: () => string },
+      component: unknown,
+    ): unknown
   } | undefined
   if (slots === undefined) return
 
-  // The surface's own plugins page, where a user already goes to see what is
-  // installed. Both holes are offered because a deployment may declare either.
-  for (const name of ['settings.plugins.tab', 'settings.plugin.item']) {
-    slots.inject(name, () => slots.register({ name, id: 'web-plugin-install' }, InstallPanel))
+  // Two tabs on the surface's own plugins page, where a user already goes to
+  // see what is installed. Both carry a label and an order: the section renders
+  // a tab button out of the label, so an entry without one is a blank button,
+  // and the orders put these between the shipped "Plugin configuration" (0) and
+  // "Plugin list" (10).
+  const tabs = [
+    { id: 'web-plugin-installed', order: 4, label: 'Installed', component: InstalledPanel },
+    { id: 'web-plugin-install', order: 5, label: 'Add a plugin', component: InstallPanel },
+  ]
+  for (const tab of tabs) {
+    slots.inject('settings.plugins.tab', () => slots.register(
+      { name: 'settings.plugins.tab', id: tab.id, order: tab.order, label: () => tab.label },
+      tab.component,
+    ))
   }
 }
 
