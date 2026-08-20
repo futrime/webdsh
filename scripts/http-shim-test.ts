@@ -173,12 +173,19 @@ async function main(): Promise<void> {
 
   console.log('▶ abort before headers rejects and closes the Node response')
   let abortBeforeCloseCount = 0
+  let markAbortHandlerReady: (() => void) | undefined
+  const abortHandlerReady = new Promise<void>((resolve) => { markAbortHandlerReady = resolve })
   await withServer((_request, response) => {
     response.on('close', () => { abortBeforeCloseCount += 1 })
+    // Coordinate with the test so the abort happens after dispatch has made a
+    // response, but before the handler commits headers. Request.arrayBuffer()
+    // resolves at different microtask boundaries across Node releases.
+    markAbortHandlerReady?.()
   }, async () => {
     const controller = new AbortController()
     const pending = dispatchVirtualRequest(request(controller.signal))
-    queueMicrotask(() => { controller.abort(new Error('request aborted before headers')) })
+    await within(abortHandlerReady)
+    controller.abort(new Error('request aborted before headers'))
     const error = await rejected(pending)
     expect(error.includes('request aborted before headers'), `the abort reason was lost: ${error}`)
     expect(abortBeforeCloseCount === 1, `close fired ${String(abortBeforeCloseCount)} times`)
