@@ -132,7 +132,51 @@ function webkitNativeSourceChecks(): Plugin {
   }
 }
 
+/**
+ * The environment test v86 uses to decide how it reads a file.
+ *
+ * It asks whether it is running under Node, and this build answers yes: the
+ * vendored dsh loader probes `process.versions.node`, so the define below
+ * substitutes a version string into *every* module in the bundle, v86's
+ * included. v86 then reads its BIOS and its disk images through `node:fs`,
+ * which here is the page's virtual filesystem — so the first boot fails with
+ * `ENOENT … /home/dsh/workspace/http:/…/v86.wasm`, naming a path nothing ever
+ * meant to create.
+ *
+ * The condition is replaced with the half of it that is actually a question in
+ * a browser. Matched as a literal and asserted to appear exactly once, so a
+ * v86 upgrade that rewrites it fails the build loudly instead of quietly
+ * putting the emulator back on the filesystem path.
+ */
+const V86_ENVIRONMENT_TEST
+  = '"undefined"===typeof XMLHttpRequest||"undefined"!==typeof process&&process.versions&&process.versions.node'
+
+/**
+ * Tell v86 it is in a browser, because it is.
+ * @returns the plugin.
+ */
+function v86InBrowser(): Plugin {
+  return {
+    name: 'dsh-web:v86-in-browser',
+    // Before the define plugin rewrites `process.versions.node` into a literal
+    // and there is no longer a condition to recognise.
+    enforce: 'pre',
+    transform(code: string, id: string) {
+      if (!id.includes('/v86/build/libv86')) return undefined
+      const occurrences = code.split(V86_ENVIRONMENT_TEST).length - 1
+      if (occurrences !== 1) {
+        throw new Error(
+          `v86's environment test was found ${String(occurrences)} times, expected exactly once. `
+          + 'The emulator will read its disk images through node:fs — see vite.config.ts.',
+        )
+      }
+      return { code: code.replace(V86_ENVIRONMENT_TEST, '"undefined"===typeof XMLHttpRequest'), map: null }
+    },
+  }
+}
+
 export default defineConfig({
+  plugins: [v86InBrowser(), webkitNativeSourceChecks()],
   // Relative asset URLs so the same build works at a GitHub Pages project path,
   // a user/organization site root, or a plain file:// checkout.
   base: './',
@@ -165,16 +209,21 @@ export default defineConfig({
     'process.env.CORDIS_SHARED': 'undefined',
     'process.env.NODE_ENV': '"production"',
   },
-  plugins: [webkitNativeSourceChecks()],
   optimizeDeps: {
     // The shims must win over esbuild's prebundling of the same specifiers.
     // These four packages also carry the WebKit source-format check above and
     // must reach the transform rather than disappear inside a prebundle.
+    // These four packages carry the WebKit source-format check above and must
+    // reach the transform rather than disappear inside a prebundle; `v86` is
+    // excluded for the mirror-image reason — prebundling would hand
+    // `vite:define` a copy the `pre` transform never saw, and dev and build
+    // would then disagree about which filesystem the emulator reads.
     exclude: [
       '@deepseek-ai/dsh-session',
       '@deepseek-ai/dsh-cordis-host-runner',
       '@deepseek-ai/dsh-tools',
       '@deepseek-ai/dsh-code-runtime-worker-thread',
+      'v86',
     ],
     esbuildOptions: { target: 'es2022' },
   },

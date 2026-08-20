@@ -59,9 +59,15 @@ export function installWindowApi(ctx: Context, persistence: PersistenceHandle): 
     ctx,
 
     async shell(script, options) {
-      // The same routing a tool call takes, so what this surface reports is
-      // what the agent would actually see — running it against the in-page
-      // shell while tool calls ran in the runtime would make it a liar.
+      // The page's own machine, which on the default runtime is the container
+      // the agent's tool calls also run in — running this against the in-page
+      // shell while tool calls ran in the container would make it a liar.
+      //
+      // Under an emulated runtime the two are deliberately different things.
+      // This still runs the page's shell over the page's filesystem, which is
+      // where the workspace and the agent's file tools are; the emulated
+      // machine has its own disk and its own console, and is reached through
+      // `window.__DSH_WEB_MACHINE__.console`.
       if (await runtimeReady()) {
         const result = await executeInRuntime(script, { cwd: options?.cwd ?? WORKSPACE_ROOT })
         return { status: result.status, stdout: result.stdout, stderr: result.stderr, truncated: false }

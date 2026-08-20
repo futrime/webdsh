@@ -238,7 +238,7 @@ function emitSeed(): { files: [string, string][], specifiers: Set<string> } {
       files.push([path, contents])
     }
     if (replaced === 0) throw new Error('assemble: no agent preset mounted a bash tool; the shell replacement did not apply')
-    console.log(`[assemble] ${String(replaced)} agent preset(s) now mount the jsh shell tool`)
+    console.log(`[assemble] ${String(replaced)} agent preset(s) now mount this machine's tool row`)
   } else {
     console.warn('[assemble] @deepseek-ai/dsh is not installed; no agent presets will ship')
   }
@@ -297,13 +297,16 @@ const BASH_BACKED = [
 function replaceBashTool(contents: string): string {
   return contents
     .replace(BASH_ROW, (_match, indent: string) =>
-      `${indent}# Replaced by scripts/assemble.ts: this machine's shell is jsh, not bash.\n`
-      + `${indent}- id: tool-jsh\n${indent}  name: 'browser:jsh'\n`)
+      `${indent}# Replaced by scripts/assemble.ts: the tools of whichever machine this\n`
+      + `${indent}# session runs — jsh in the container, the emulated PC's own console,\n`
+      + `${indent}# keyboard and screen under v86. See src/host/machine-tools.ts.\n`
+      + `${indent}- id: tool-machine\n${indent}  name: 'browser:machine'\n`)
     .replace(PERSISTENT_SHELL_GROUP,
       '# Replaced by scripts/assemble.ts: this machine\'s shell is jsh, and there is\n'
       + '# no bash here to hold a session open between calls. The preset keeps its\n'
-      + '# shape — one shell, one editor — with the shell this machine has.\n'
-      + '- id: tool-jsh\n  name: \'browser:jsh\'\n\n')
+      + '# shape — one shell, one editor — with the shell this machine has. Under an\n'
+      + '# emulated runtime the same row mounts that machine\'s tools instead.\n'
+      + '- id: tool-machine\n  name: \'browser:machine\'\n\n')
     .replace(PERSISTENT_SHELL_PROSE, '`jsh` and `str_replace_editor`')
 }
 

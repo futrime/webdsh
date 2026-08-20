@@ -15,7 +15,11 @@ import { bootHost } from './host/boot.ts'
 import { disableAllPlugins, installedPluginNames, installPluginManager } from './plugins/manager.ts'
 import { installWindowApi } from './api.ts'
 import { bootRuntime, runtimeSupported } from './runtime/webcontainer.ts'
-import { publishFilesBridge, publishInstallerBridge, publishNetworkBridge, publishRuntimeBridge } from './host/bridges.ts'
+import { bootMachine } from './runtime/v86.ts'
+import { isEmulated } from './runtime/selection.ts'
+import {
+  publishFilesBridge, publishInstallerBridge, publishMachineBridge, publishNetworkBridge, publishRuntimeBridge,
+} from './host/bridges.ts'
 import { SHELL_ENTRY, SHELL_STYLES } from './generated/shell-assets.ts'
 import { renderBootFailure, renderBootProgress, type BootRecovery } from './boot-screen.ts'
 import { attachPersistence } from './vfs/persist.ts'
@@ -75,8 +79,8 @@ async function main(): Promise<void> {
     // Before the host, not after it: a plugin reads this while it applies, and
     // the host applying plugins is what `bootHost` does. The runtime bridge
     // closes over nothing the host provides, so there is nothing to wait for —
-    // `@dsh-web/jsh` chooses the shell here, and a bridge published later would
-    // mean it silently chose nothing.
+    // the tool row reads it while it mounts, and a bridge published later
+    // would mean it silently read nothing.
     publishRuntimeBridge()
     // The same reason, and one more: the CORS policy is already in force —
     // `installVirtualNetwork` applies it to every cross-origin request — so
@@ -87,6 +91,10 @@ async function main(): Promise<void> {
     // two filesystems is the real one right now, which is a question only this
     // app can answer.
     publishFilesBridge()
+    // And which machine this session is, which the Runtime panel both reports
+    // and changes. Published before the host for the same reason the runtime
+    // is: the tool row reads the selection while it applies.
+    publishMachineBridge()
 
     progress.step('Starting the harness host')
     const { ctx, persistence, warnings } = await bootHost()
@@ -122,12 +130,19 @@ async function main(): Promise<void> {
     if (router.reloading) return
 
     // Started here rather than on first use, and not waited for. Whether the
-    // container can run at all is something the shell and the agent's file
+    // machine can run at all is something the shell and the agent's file
     // tools consult before every command, and finding out during the first one
     // means that command fails for a reason the user cannot act on. Capability
     // checks still cannot prove that the remote runtime frame, workers and
     // filesystem will finish starting on this particular device and network.
-    if (runtimeSupported().ok) void bootRuntime().catch(() => undefined)
+    //
+    // Which machine is whichever one this deployment is set to. An emulated
+    // runtime is started here for the same reason and one more: choosing it is
+    // already the decision to download an operating system, so starting it now
+    // means it is at a prompt when the user first asks it for something rather
+    // than a minute after.
+    if (isEmulated()) void bootMachine().catch(() => undefined)
+    else if (runtimeSupported().ok) void bootRuntime().catch(() => undefined)
 
     progress.step('Loading the web client')
     injectStyles()

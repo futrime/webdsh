@@ -19,6 +19,8 @@ import installPatchSource from '../../packages/dsh-web-plugins/cordis.patch.yml?
 import starPatchSource from '../../packages/dsh-web-star/cordis.patch.yml?raw'
 import networkPatchSource from '../../packages/dsh-web-network/cordis.patch.yml?raw'
 import filesPatchSource from '../../packages/dsh-web-files/cordis.patch.yml?raw'
+import runtimePatchSource from '../../packages/dsh-web-runtime/cordis.patch.yml?raw'
+import { selectedGuest } from '../runtime/selection.ts'
 
 /**
  * Bundle layers for the plugins this repository ships.
@@ -33,6 +35,7 @@ const SHIPPED_PLUGIN_PATCHES: Record<string, string> = {
   'web-star': starPatchSource,
   'web-network': networkPatchSource,
   'web-files': filesPatchSource,
+  'web-runtime-picker': runtimePatchSource,
 }
 
 /** The bundle layers this build lays down, in application order. */
@@ -109,17 +112,48 @@ function writeSkeleton(): void {
   const home = env.HOME ?? '/home'
   volume.mkdirp(`${home}/.dsh`)
   if (!volume.exists(`${WORKSPACE_ROOT}/README.md`)) {
-    volume.writeFile(`${WORKSPACE_ROOT}/README.md`, toBytes(WORKSPACE_README))
+    volume.writeFile(`${WORKSPACE_ROOT}/README.md`, toBytes(workspaceReadme()))
   }
 }
 
-/** The starter file a first-time visitor finds in the default workspace. */
-const WORKSPACE_README = `# Workspace
+/**
+ * The starter file a first-time visitor finds in the default workspace.
+ *
+ * Written for the machine this session actually runs. The agent reads this
+ * directory, so the file is not only documentation for a person: a session on
+ * an emulated PC that found "Node and npm — install a package from the
+ * registry" here would have a workspace contradicting its own system prompt,
+ * in a file it is likely to open first.
+ * @returns the README's text.
+ */
+function workspaceReadme(): string {
+  const guest = selectedGuest()
+  const shared = `# Workspace
 
 This is a virtual filesystem that lives in your browser. Files you and the agent
 create here persist across reloads (they are stored in IndexedDB for this
 origin) and are private to this browser — nothing is uploaded anywhere.
+`
+  if (guest !== undefined) {
+    return `${shared}
+This session runs an emulated PC — ${guest.name} — and this directory is **not**
+its disk. The two share nothing: the agent's file tools read and write here, and
+its machine tools drive a computer with a filesystem of its own. The Runtime
+panel in the sidebar is where that choice is made, and where you can watch the
+machine and type at it.
 
+Things that work here:
+
+- reading, writing, searching, and editing files
+- taking files in and out of the tab, through the Files panel
+
+Things that do not:
+
+- Node, npm, Python, or a shell — this session has none; the emulated machine
+  has whatever its own operating system came with
+`
+  }
+  return `${shared}
 The agent and the terminal share this directory: a file either of them creates,
 the other sees immediately.
 
@@ -134,6 +168,7 @@ Things that do not:
 - native toolchains (a compiler, python, a system package manager)
 - listening on a port, or reaching a host that refuses cross-origin reads
 `
+}
 
 /** Populate the virtual filesystem. Safe to call once per boot. */
 export function seedFilesystem(): void {

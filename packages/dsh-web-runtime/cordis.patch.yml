@@ -1,0 +1,14 @@
+# The runtime picker, as a profile bundle layer.
+#
+# `dsh web` has one machine and no reason to name it: on a developer's laptop
+# the machine is the laptop. In a browser there is a choice — Node in a
+# container, or an x86 PC emulated instruction by instruction — and a choice
+# nobody can see or change is not a feature, it is a constant.
+#
+# The node half is a plain host row; the `dsh.client` declaration in
+# package.json is what puts the panel in the client roster. Neither half boots
+# anything: the machine is a page capability, and which one this session runs
+# was decided before this row mounted.
+- insert:
+    - id: web-runtime-picker
+      name: '@dsh-web/runtime'

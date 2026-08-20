@@ -14,7 +14,8 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-shell-env'
 import { SandboxProvider, type ConfinedArgv, type SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import * as TypertLoaderBrowser from './typert-loader-browser.ts'
-import * as jshToolPlugin from './jsh-tool.ts'
+import * as machineToolsPlugin from './machine-tools.ts'
+import { isEmulated, selectedGuest } from '../runtime/selection.ts'
 
 // ---- browser:web-startup ----------------------------------------------------
 
@@ -68,8 +69,31 @@ export interface WebRuntimeConfig {
   surfaceContext: boolean
 }
 
-/** Orientation text for a session running inside the static browser build. */
+/**
+ * Orientation text for a session running inside the static browser build.
+ *
+ * Two paragraphs of it depend on which machine this session chose, and getting
+ * that wrong is not a nuance: a model told it has Node and pip on a machine
+ * that is a 486 running DOS will spend a turn discovering it, and blame the
+ * tool. The runtime-specific half is written from the selection, once, at the
+ * only moment it can still be true for the whole session.
+ * @returns the section text.
+ */
 function browserSurfacePrompt(): string {
+  const guest = selectedGuest()
+  if (isEmulated() && guest !== undefined) {
+    return 'You are interacting with the user through the DeepSeek Harness Web UI, running entirely inside their browser tab. '
+      + 'When the user refers to "this page", "this GUI", or "this app" without naming another target, they mean this UI. '
+      + 'The browser provides no implicit DOM, route, or screenshot context. '
+      + 'There is no server process and no host machine. The filesystem your file tools read and write is a virtual '
+      + 'filesystem stored in the browser, and it is where the user\'s workspace lives. '
+      + `This session's machine is an emulated 32-bit PC running ${guest.name}, which has its own disk and shares `
+      + 'nothing with that workspace — see the section describing it for how to drive it. There is no Node, no npm and '
+      + 'no Python in this session. '
+      + 'Do not offer to start a server or open a port; neither is reachable from here. '
+      + 'Changes to the workspace persist in the browser across reloads and can be exported by the user; changes inside '
+      + 'the emulated machine do not survive a reload.'
+  }
   return 'You are interacting with the user through the DeepSeek Harness Web UI, running entirely inside their browser tab. '
     + 'When the user refers to "this page", "this GUI", or "this app" without naming another target, they mean this UI. '
     + 'The browser provides no implicit DOM, route, or screenshot context. '
@@ -172,10 +196,12 @@ export const BROWSER_PLUGINS: Record<string, unknown> = {
   'browser:web-runtime': webRuntimePlugin,
   'browser:sandbox': { default: browserSandboxPlugin, name: 'browser-sandbox' },
   'browser:typert-loader': TypertLoaderBrowser,
-  // The shell tool. Mounted from the agent presets rather than from the
-  // overlay — `scripts/assemble.ts` rewrites their `tool-bash` row to name it —
-  // because that is where the tool it replaces is mounted.
-  'browser:jsh': jshToolPlugin,
+  // The machine's tools: `jsh` when this session runs the container, the
+  // emulated PC's keyboard, screen and console when it runs v86. Mounted from
+  // the agent presets rather than from the overlay — `scripts/assemble.ts`
+  // rewrites their `tool-bash` row to name it — because that is where the tool
+  // it replaces is mounted. See `src/host/machine-tools.ts`.
+  'browser:machine': machineToolsPlugin,
 }
 
 /** Re-exported so `boot.ts` can register the client-module table under the same scheme. */

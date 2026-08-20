@@ -27,7 +27,7 @@ interface RuntimeBridge {
   }>
   /** Boot the runtime, reporting progress. */
   boot(onProgress?: (step: string) => void): Promise<unknown>
-  /** Why the runtime cannot start here, when it cannot. */
+  /** Why a terminal cannot open here, when it cannot; the whole message. */
   unavailable(): string | undefined
   /** The terminal emulator and its fit addon, supplied by the app's bundle. */
   terminal(): Promise<{ Terminal: new (options: unknown) => XTerm, FitAddon: new () => FitAddon, styles: string }>
@@ -101,14 +101,14 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
       setMessage('The runtime bridge is not available in this build.')
       return
     }
+    // The whole message, not a fragment: there is more than one reason a
+    // terminal cannot open here — a browser that cannot be cross-origin
+    // isolated, or a machine whose console is its own screen — and only the
+    // app knows which one applies. A panel that appended its own paragraph
+    // about `SharedArrayBuffer` told half its readers to fix the wrong thing.
     const reason = runtime.unavailable()
     if (reason !== undefined) {
-      const isolationProblem = reason.includes('SharedArrayBuffer') || reason.includes('cross-origin isolated')
-      setMessage(isolationProblem
-        ? `${reason}. The runtime needs SharedArrayBuffer, which a browser grants only a `
-          + 'cross-origin isolated page; reloading usually fixes it, because the worker that '
-          + 'adds the required headers only controls the page after its first load.'
-        : reason)
+      setMessage(reason)
       return
     }
     started.current = true

@@ -125,8 +125,9 @@ for (const source of upstream) {
 
 const { inserted: added, patched: changed } = readRows(overlay)
 const shippedRows = shipped.flatMap(source => readRows(source).inserted)
-// A shipped plugin may turn a row off as well as add one — `@dsh-web/jsh`
-// disables `tool-bash` because it replaces the model's shell tool outright.
+// A shipped plugin may turn a row off as well as add one — the browser
+// overlay disables `tool-bash` because `browser:machine` replaces the
+// model's shell tool outright.
 // Counting only the overlay's own patches would report that row as composing
 // exactly as upstream does, which is the one thing this script exists to catch.
 const shippedPatches = shipped.flatMap(source => readRows(source).patched)

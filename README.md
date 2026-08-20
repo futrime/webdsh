@@ -16,6 +16,7 @@ Node itself, in the tab.
 
 - ⚡ **Nothing to run.** No server, no install, no local Node — the harness boots in the page.
 - 🖥️ **Real Node, real Python.** `npm install` and `pip install` both work, and the terminal and the agent share one container.
+- 💾 **Or a whole PC.** Switch the runtime to [v86](https://github.com/copy/v86) and the session runs FreeDOS, Windows 1.01, Windows 3.1, Windows 98 or Linux — emulated x86, booted from a disk image, with the tool set that machine actually has.
 - 🧩 **Real plugins.** Install from npm, a tarball, GitHub, or a path — from the browser.
 - 📦 **Real dsh.** The published `@deepseek-ai/*` packages, unmodified: 114 of 129 rows compose exactly as `dsh web` composes them.
 - 🔒 **Yours.** Files, sessions and keys live in your browser's storage. Nothing is uploaded.
@@ -37,9 +38,10 @@ the entire web client come from npm at install time; the only modification is a
 
 What this repository adds is the platform underneath: a synchronous POSIX
 filesystem mirrored to IndexedDB (`src/vfs`), `node:*` implemented over it
-(`src/node`), the WebContainers runtime (`src/runtime`), an in-page virtual
-server for `/api` plus the CORS policy every outbound request goes through
-(`src/net`), and the plugins this build ships (`packages/`).
+(`src/node`), the two runtimes a session can run on — WebContainers and an
+emulated x86 PC (`src/runtime`) — an in-page virtual server for `/api` plus the
+CORS policy every outbound request goes through (`src/net`), and the plugins
+this build ships (`packages/`).
 
 Six composition rows are swapped, each because the shipped one names something a
 page cannot have — or, in the shell's case, cannot honestly describe. Four more
@@ -76,6 +78,20 @@ Open the page, choose a workspace, start talking.
   fetches a 14 MB interpreter; after that it is stored, and packages installed
   with `pip` survive a reload. Write `python3`: `jsh` aliases `python` to it and
   loses the quoting on the way, so `python -c "…"` is a syntax error.
+- **Runtime** — the sidebar action below the terminal. A session runs on one
+  machine and this is where you pick it. The default is the Node container
+  above; the alternative is an emulated 32-bit PC, and the panel is that PC's
+  screen — live, with a working keyboard, showing what the assistant is doing.
+  Five machines need no setup at all: **Linux** (busybox on a serial console,
+  the shortest way here to a real POSIX shell), **FreeDOS**, **MS-DOS 7**,
+  **Windows 1.01** and **KolibriOS**. Eleven more boot exactly the same way but
+  are not this deployment's to serve a disk for — **Windows 2.03**, **3.0**,
+  **3.1**, **95**, **98**, **ME**, **NT 4.0** and **2000**, **MS-DOS 6.22**,
+  **Buildroot Linux**, and **Arch Linux**, which is a 2022 kernel with bash,
+  python3 and gcc and resumes from a saved machine in about two seconds. For
+  those, open a disk image from your computer or point the panel at a host that
+  has one. Nothing is downloaded until you choose a machine, and a change
+  applies on the next load.
 - **Plugins** — Settings → Plugins, or `/plugin add <package>` in the composer.
   Takes an npm name, a tarball URL, `owner/repo#ref`, or a path. The *Installed*
   tab turns one off or removes it; the composition is fixed at boot, so a change
@@ -88,6 +104,15 @@ Open the page, choose a workspace, start talking.
   direct request has actually failed, and reported to you when it is.
 - **Persistence** — workspace, sessions and transcripts survive a reload.
   `window.dsh.exportFs()` downloads a zip; `window.dsh.reset()` clears it all.
+
+On an emulated machine the assistant is given different tools, because it is a
+different machine: `sh` on the Linux guest, `dos` on the DOS ones — both reading
+a real character stream, so a command's whole output comes back rather than the
+last 25 lines of it — and `vm_screenshot`, `vm_screen`, `vm_key`, `vm_type`,
+`vm_mouse` and `vm_wait` everywhere, which is the whole of the tool set on a
+guest that only draws pixels. There is no `jsh`, no Node and no Python in that
+session, and the guest's disk shares nothing with the workspace your file tools
+read. The panel and the tools say so.
 
 Worth knowing: the container's shell is `jsh`, not bash, and it ships no `git`;
 `python3` is CPython 3.14 compiled to WebAssembly, fetched on first use and kept

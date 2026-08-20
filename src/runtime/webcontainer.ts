@@ -25,6 +25,7 @@ import type { WebContainer, WebContainerProcess } from '@webcontainer/api'
 import { persistWorkspace, restoreWorkspace, type RuntimePersistence } from './persist.ts'
 import { installPython, persistPython, pythonBin, restorePython, type PythonPersistence } from './python.ts'
 import { CONTAINER_SHELL } from '../generated/container-shell.ts'
+import { isEmulated, selectedGuest } from './selection.ts'
 
 /**
  * Where a session starts.
@@ -187,8 +188,28 @@ export function toContainerPath(absolute: string): string {
   return absolute.replace(/^\/+/, '')
 }
 
-/** Whether this page can host the runtime at all. */
+/**
+ * Whether this page can host the runtime at all.
+ *
+ * The first question is not a capability at all: this deployment can be
+ * configured to run an emulated PC instead, and when it is, the container must
+ * not start. Two machines in one tab is two filesystems, two shells and a
+ * session that cannot say which one it just wrote to — and the whole reason
+ * the runtime is selectable is that a session runs on exactly one machine.
+ *
+ * Reported as "unsupported" rather than silently skipped so that every caller
+ * that already handles an unavailable container — the file bridge, the Files
+ * panel, the terminal — handles this too, and says which machine is running.
+ * @returns whether the container may start, and why not when it may not.
+ */
 export function runtimeSupported(): { ok: boolean, reason?: string } {
+  if (isEmulated()) {
+    const guest = selectedGuest()
+    return {
+      ok: false,
+      reason: `this session runs ${guest?.name ?? 'an emulated PC'} instead of the Node container`,
+    }
+  }
   if (typeof SharedArrayBuffer === 'undefined') {
     return { ok: false, reason: 'SharedArrayBuffer is unavailable — the page is not cross-origin isolated' }
   }

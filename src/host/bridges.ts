@@ -17,6 +17,15 @@ import {
   bootRuntime, runtimeFs, runtimePersistence, runtimeReady, runtimeSupported,
   setShellMode, shellMode, startShell, toContainerPath, WORKDIR, WORKSPACE, type ShellMode,
 } from '../runtime/webcontainer.ts'
+import {
+  bootMachine, currentMachine, machineFailure, machineGuest, machineSupported, machineStarted,
+  parkScreen, stopMachine, unparkScreen,
+} from '../runtime/v86.ts'
+import {
+  DEFAULT_IMAGE_HOST, GUESTS, UPSTREAM_IMAGE_HOST, imageHost, setImageHost, type GuestSpec,
+} from '../runtime/guests.ts'
+import { forgetDisk, storeDisk, storedDisks } from '../runtime/disks.ts'
+import { isEmulated, runtimeSelection, setRuntimeSelection, type RuntimeSelection } from '../runtime/selection.ts'
 import { ripgrep } from '../runtime/ripgrep.ts'
 import type { PluginManager } from '../plugins/manager.ts'
 import { volume } from '../vfs/volume.ts'
@@ -44,18 +53,26 @@ const UPLOAD_DIR = '/tmp/dsh-plugin-uploads'
  */
 export function publishRuntimeBridge(): void {
   ;(globalThis as Record<string, unknown>).__DSH_WEB_RUNTIME__ = {
-    boot: async (onProgress?: (step: string) => void) => bootRuntime(onProgress),
-    startShell,
-    unavailable: () => {
-      const support = runtimeSupported()
-      return support.ok ? undefined : support.reason ?? 'the runtime is unavailable'
-    },
+    boot: async (onProgress?: (step: string) => void) => (
+      isEmulated() ? bootMachine(onProgress) : bootRuntime(onProgress)
+    ),
+    startShell: async (size: { cols: number, rows: number }) => (
+      isEmulated() ? machineShell() : startShell(size)
+    ),
+    // The whole message rather than a fragment. There are now two reasons a
+    // terminal cannot open and they need different advice — one is a browser
+    // that cannot be cross-origin isolated, the other is a machine whose
+    // console is its screen — and a panel that appends a fixed paragraph about
+    // `SharedArrayBuffer` to either of them is telling half of its users to go
+    // fix something that is not broken.
+    unavailable: () => terminalUnavailable(),
     // The search backend, published so a test can exercise the same code the
     // `grep` and `glob` tools reach through the subprocess seam.
     search: (args: string[], cwd?: string) => ripgrep(args, cwd),
-    // Which shell a command's script is handed to. A plugin may swap it — see
-    // `packages/dsh-web-jsh` — and the runtime is a page capability, so the
-    // choice has to be reachable from outside this bundle.
+    // Which shell a command's script is handed to inside the container. The
+    // runtime is a page capability, so the choice has to be reachable from
+    // outside this bundle; it says nothing about an emulated machine, which
+    // has whatever shell its own operating system has.
     shellMode: (): ShellMode => shellMode(),
     setShellMode: (next: ShellMode): void => { setShellMode(next) },
     terminal: async () => {
@@ -66,6 +83,211 @@ export function publishRuntimeBridge(): void {
       ])
       return { Terminal, FitAddon, styles: styles.default }
     },
+  }
+}
+
+/**
+ * Why a terminal cannot open here, when it cannot.
+ * @returns the message the panel shows, or undefined when a terminal will open.
+ */
+function terminalUnavailable(): string | undefined {
+  if (isEmulated()) {
+    const guest = machineGuest()
+    if (guest === undefined) return 'This session names a machine this build does not have.'
+    if (guest.console === 'serial') return undefined
+    return `This session runs ${guest.name}, whose console is its own screen rather than a serial port. `
+      + 'Open the Runtime panel to see it and type at it.'
+  }
+  const support = runtimeSupported()
+  if (support.ok) return undefined
+  const reason = support.reason ?? 'the runtime is unavailable'
+  // The reload advice belongs only to the one cause a reload fixes. Cross-origin
+  // isolation arrives with the service worker and so is missing on a first load
+  // and present on the next; a browser that has no `Atomics.waitAsync` will
+  // still have none after any number of reloads, and telling someone on iOS to
+  // try again is sending them round a loop.
+  const isolation = reason.includes('SharedArrayBuffer') || reason.includes('cross-origin isolated')
+  if (!isolation) return reason
+  return `${reason}. The runtime needs SharedArrayBuffer, which a browser grants only a cross-origin `
+    + 'isolated page; reloading usually fixes it, because the worker that adds the required headers only '
+    + 'controls the page after its first load.'
+}
+
+/**
+ * A terminal on the emulated machine's serial console.
+ *
+ * The same shape a container process has, so the terminal plugin does not need
+ * to know which machine it is drawing. There is no process to exit and no grid
+ * to resize — a serial console is a character stream and the guest decides how
+ * wide it thinks it is — so those two are honest no-ops rather than pretend
+ * implementations.
+ *
+ * It is the same console the `sh` tool uses, deliberately: one machine, one
+ * session, and what the user types the agent can see in its next command's
+ * output. That is the property the container terminal already has.
+ * @returns the stream pair the terminal wires itself to.
+ */
+async function machineShell(): Promise<{
+  output: ReadableStream<string>
+  input: WritableStream<string>
+  exit: Promise<number>
+  resize(size: { cols: number, rows: number }): void
+}> {
+  const machine = await bootMachine()
+  let release: (() => void) | undefined
+  return {
+    output: new ReadableStream<string>({
+      start(controller) {
+        // The backlog first: a terminal opened after the boot should show the
+        // boot, not an empty screen with a prompt somewhere above it.
+        const backlog = machine.console.read()
+        if (backlog.text !== '') controller.enqueue(backlog.text)
+        release = machine.console.subscribe(chunk => { controller.enqueue(chunk) })
+      },
+      cancel() { release?.() },
+    }),
+    input: new WritableStream<string>({
+      write(chunk) { machine.console.write(chunk) },
+    }),
+    exit: new Promise<number>(() => undefined),
+    resize: () => undefined,
+  }
+}
+
+/**
+ * Publish the emulated machine, for the panel that chooses and shows one.
+ *
+ * The same seam the runtime has, for the same reason: the panel is a client
+ * plugin in a separate bundle and cannot import any of this. What it gets is
+ * the choice, the catalog, the disks the user has opened, and a way to borrow
+ * the screen — never any UI.
+ */
+export function publishMachineBridge(): void {
+  ;(globalThis as Record<string, unknown>).__DSH_WEB_MACHINE__ = {
+    /** What this session runs on. Fixed for the life of the page. */
+    selection: (): RuntimeSelection => runtimeSelection(),
+    /** What the *next* load will run on. */
+    select: (next: RuntimeSelection): void => { setRuntimeSelection(next) },
+    /** Every machine this build can boot, as plain data. */
+    guests: (): GuestSummary[] => GUESTS.map(summarise),
+    /** Where disk images are fetched from, and the two hosts worth naming. */
+    imageHost,
+    setImageHost,
+    hosts: { default: DEFAULT_IMAGE_HOST, upstream: UPSTREAM_IMAGE_HOST },
+    /** Disk images the user has opened from their own computer. */
+    disks: storedDisks,
+    storeDisk,
+    forgetDisk,
+    /** What the machine is doing right now. */
+    status: (): MachineStatus => ({
+      emulated: isEmulated(),
+      guest: machineGuest()?.id,
+      started: machineStarted(),
+      running: currentMachine() !== undefined,
+      failure: machineFailure(),
+      unsupported: machineSupported().ok ? undefined : machineSupported().reason,
+    }),
+    /** Start it, reporting progress. Safe to call when it is already up. */
+    boot: async (onProgress?: (step: string) => void): Promise<void> => { await bootMachine(onProgress) },
+    /**
+     * Lend the machine's screen to a panel.
+     *
+     * The element belongs to the app because the agent drives the machine with
+     * nothing open; a panel borrows it and gives it back. The returned
+     * disposer is what puts it back, and calling it is not optional — an
+     * unmounted panel that kept the screen would take the machine's display
+     * out of the document and every later screenshot with it.
+     * @param host - where to put it.
+     * @returns the disposer that returns it.
+     */
+    adoptScreen: async (host: HTMLElement): Promise<() => void> => {
+      const machine = await bootMachine()
+      host.append(machine.screen)
+      unparkScreen(machine.screen)
+      return () => { parkScreen(machine.screen) }
+    },
+    /**
+     * Deliver one real key event, from a panel that is showing the screen.
+     *
+     * The emulator installs no keyboard listener of its own — see
+     * `Machine.sendKeyEvent` — so this is the only path a person's keystroke
+     * has into the guest, and it exists exactly as long as a panel is
+     * listening for one.
+     */
+    key: (code: string, down: boolean): boolean => currentMachine()?.sendKeyEvent(code, down) ?? false,
+    /** Throw the machine away so the next boot is a cold one. */
+    restart: async (): Promise<void> => { await stopMachine() },
+
+    /**
+     * The machine itself: its console, its screen, its keyboard and its mouse.
+     *
+     * A panel has real uses for all four — sending Ctrl+Alt+Delete, saving a
+     * screenshot, pasting a command — and `scripts/v86-e2e.ts` drives exactly
+     * these, which is the point: the tools in `src/host/vm-tools.ts` are thin
+     * wrappers over this, so a suite that exercises it is exercising what the
+     * model reaches rather than a parallel implementation of it. The `search`
+     * entry on the runtime bridge exists for the same reason.
+     */
+    console: {
+      run: async (command: string, options?: { timeoutMs?: number }) => (await bootMachine()).console.run(command, options),
+      read: async (offset?: number) => (await bootMachine()).console.read(offset),
+      write: async (text: string) => { (await bootMachine()).console.write(text) },
+      releaseScreen: async () => { await (await bootMachine()).console.releaseScreen() },
+      putFile: async (path: string, content: string) => (await bootMachine()).console.putFile(path, content),
+    },
+    screen: {
+      text: async () => (await bootMachine()).screenText(),
+      transcript: async () => (await bootMachine()).transcript(),
+      shot: async () => {
+        const shot = await (await bootMachine()).screenshot()
+        return { width: shot.width, height: shot.height, bytes: shot.bytes.length, graphical: shot.graphical }
+      },
+    },
+    input: {
+      type: async (text: string) => { await (await bootMachine()).type(text) },
+      press: async (key: string) => { (await bootMachine()).press(key) },
+      mouse: async (dx: number, dy: number) => { (await bootMachine()).moveMouse(dx, dy) },
+      click: async (which: 'left' | 'middle' | 'right' = 'left') => { await (await bootMachine()).click(which) },
+    },
+    /** Wait until the guest has reached its own readiness marker. */
+    ready: async (timeoutMs?: number) => (await bootMachine()).ready(timeoutMs),
+  }
+}
+
+/** One machine, as the panel lists it. */
+export interface GuestSummary {
+  id: string
+  name: string
+  console: string
+  summary: string
+  bundled: boolean
+  transfer: number
+  boots: string
+  /** The file names it needs from the image host, for the "bring your own" message. */
+  files: string[]
+}
+
+/** What the machine is doing, as the panel reads it. */
+export interface MachineStatus {
+  emulated: boolean
+  guest?: string
+  started: boolean
+  running: boolean
+  failure?: string
+  unsupported?: string
+}
+
+/** Reduce a catalog entry to what a panel needs. */
+function summarise(spec: GuestSpec): GuestSummary {
+  return {
+    id: spec.id,
+    name: spec.name,
+    console: spec.console,
+    summary: spec.summary,
+    bundled: spec.bundled,
+    transfer: spec.transfer,
+    boots: spec.boots,
+    files: spec.images.map(image => image.file),
   }
 }
 

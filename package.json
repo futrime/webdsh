@@ -9,7 +9,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "assemble": "npm run build:plugins && npm run build:shell && npm run build:python && tsx scripts/assemble.ts",
+    "assemble": "npm run build:plugins && npm run build:shell && npm run build:python && npm run build:v86 && tsx scripts/assemble.ts",
     "dev": "npm run assemble && vite",
     "build": "npm run assemble && vite build",
     "preview": "vite preview --port 4173",
@@ -24,9 +24,11 @@
     "test:shell": "node scripts/shell-diff.mjs",
     "test:python": "tsx scripts/python-e2e.ts",
     "test:files": "tsx scripts/files-e2e.ts",
+    "test:v86": "tsx scripts/v86-e2e.ts",
     "build:plugins": "node scripts/build-plugins.mjs",
     "build:shell": "node scripts/build-container-shell.mjs",
-    "build:python": "node scripts/build-container-python.mjs"
+    "build:python": "node scripts/build-container-python.mjs",
+    "build:v86": "node scripts/build-v86.mjs"
   },
   "dependencies": {
     "@bokuweb/zstd-wasm": "^0.0.27",
@@ -224,7 +226,8 @@
     "events": "^3.3.0",
     "fflate": "^0.8.2",
     "isomorphic-git": "^1.27.1",
-    "sql.js": "^1.12.0"
+    "sql.js": "^1.12.0",
+    "v86": "^0.5.432"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",

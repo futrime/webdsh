@@ -79,6 +79,22 @@ jobs:
           sleep 3
           npx tsx scripts/python-e2e.ts --url http://127.0.0.1:4176/
 
+      - name: Emulated machines
+        # The other runtime, driven the way its tools drive it: a DOS prompt
+        # moved onto a serial console, a real POSIX shell, and two graphical
+        # Windows that can only be typed at. Also the check that matters most —
+        # that a session on an emulated machine is not still offered `jsh`.
+        #
+        # Windows 3.1 and Windows 98 are booted from images this repository
+        # neither ships nor serves; the suite fetches them once, from Node, and
+        # caches them under the runner's temporary directory. Windows 3.1
+        # reports a skip — as a skip, counted separately from the passes — when
+        # no image can be had; every other scenario is a hard failure.
+        run: |
+          node scripts/serve.mjs 4179 &
+          sleep 3
+          npx tsx scripts/v86-e2e.ts --url http://127.0.0.1:4179/
+
       - name: Files, chat file links, and the plugin roster
         # The panel over the same filesystem the agent uses, a file in and a
         # file out of the tab, the host's "open this path" landing somewhere,

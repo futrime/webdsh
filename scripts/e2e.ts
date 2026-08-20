@@ -269,7 +269,7 @@ const scenarios: Scenario[] = [
       expect(
         !names.includes('bash'),
         `the model was offered a bash tool: ${names.join(', ')}`
-          + ' — check that every agent preset mounts browser:jsh, not @deepseek-ai/dsh-tool-bash',
+          + ' — check that every agent preset mounts browser:machine, not @deepseek-ai/dsh-tool-bash',
       )
 
       // And nothing in the prompt may advertise one either. The only permitted
