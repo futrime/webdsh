@@ -7,14 +7,53 @@
     <link rel="icon" type="image/svg+xml" href="./shell/favicon.svg" />
     <title>DeepSeek Harness</title>
     <script>
-      // The current dsh packages use modern cancellation/deferred helpers and
-      // explicit-resource-management symbols. Safari gained withResolvers and
-      // AbortSignal.any in 17.4, while older releases can also lack timeout and
-      // throwIfAborted. Without these small equivalents an iPhone can draw the
-      // shell (and even the direct Files panel) while every client request —
-      // including workspace and preset loading — repeatedly disconnects. This
+      // The current dsh packages use modern UUID, object, response,
+      // cancellation/deferred and explicit-resource-management helpers.
+      // Without these small equivalents an iPhone can draw the shell (and even
+      // the direct Files panel) while every client request — including
+      // workspace, provider and preset loading — repeatedly disconnects. This
       // classic script runs before the module graph, including dependencies
       // that use computed symbol keys while evaluating.
+      if (typeof crypto.randomUUID !== 'function') {
+        Object.defineProperty(Crypto.prototype, 'randomUUID', {
+          configurable: true,
+          writable: true,
+          value: function () {
+            var bytes = new Uint8Array(16)
+            this.getRandomValues(bytes)
+            bytes[6] = (bytes[6] & 15) | 64
+            bytes[8] = (bytes[8] & 63) | 128
+            var hex = ''
+            for (var i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, '0')
+            return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16)
+              + '-' + hex.slice(16, 20) + '-' + hex.slice(20)
+          },
+        })
+      }
+      if (typeof Object.hasOwn !== 'function') {
+        Object.hasOwn = function (object, property) {
+          if (object === null || object === undefined) throw new TypeError('Object.hasOwn called on null or undefined')
+          return Object.prototype.hasOwnProperty.call(object, property)
+        }
+      }
+      if (typeof Response.json !== 'function') {
+        Object.defineProperty(Response, 'json', {
+          configurable: true,
+          writable: true,
+          value: function (data, init) {
+            var body = JSON.stringify(data)
+            if (body === undefined) throw new TypeError('Response.json could not serialize the supplied value')
+            var options = init === undefined ? {} : init
+            var headers = new Headers(options.headers)
+            if (!headers.has('content-type')) headers.set('content-type', 'application/json')
+            return new Response(body, {
+              status: options.status,
+              statusText: options.statusText,
+              headers: headers,
+            })
+          },
+        })
+      }
       if (typeof Symbol.dispose !== 'symbol') {
         Object.defineProperty(Symbol, 'dispose', { value: Symbol.for('Symbol.dispose') })
       }

@@ -48,8 +48,11 @@ async function main(): Promise<void> {
       isMobile: true,
     })
     // These assignments happen before index.html. Its classic compatibility
-    // bootstrap must put both APIs back before any imported dsh package runs.
+    // bootstrap must put every API back before any imported dsh package runs.
     await context.addInitScript(() => {
+      Object.defineProperty(Crypto.prototype, 'randomUUID', { configurable: true, writable: true, value: undefined })
+      Object.defineProperty(Object, 'hasOwn', { configurable: true, writable: true, value: undefined })
+      Object.defineProperty(Response, 'json', { configurable: true, writable: true, value: undefined })
       Object.defineProperty(Promise, 'withResolvers', { configurable: true, writable: true, value: undefined })
       Object.defineProperty(AbortSignal, 'any', { configurable: true, writable: true, value: undefined })
       Object.defineProperty(AbortSignal, 'timeout', { configurable: true, writable: true, value: undefined })
@@ -58,7 +61,7 @@ async function main(): Promise<void> {
 
     const page = await context.newPage()
     const compatibilityErrors: string[] = []
-    const incompatibility = /losslessly JSON|unsupported JSON schema|withResolvers|AbortSignal\.(?:any|timeout)|throwIfAborted|Symbol\.(?:async)?Dispose|Importing a module script failed/i
+    const incompatibility = /losslessly JSON|unsupported JSON schema|randomUUID|Object\.hasOwn|Response\.json|withResolvers|AbortSignal\.(?:any|timeout)|throwIfAborted|Symbol\.(?:async)?Dispose|Importing a module script failed/i
     page.on('console', (message) => {
       if (incompatibility.test(message.text())) compatibilityErrors.push(message.text())
     })
@@ -66,7 +69,7 @@ async function main(): Promise<void> {
       if (incompatibility.test(error.message)) compatibilityErrors.push(error.message)
     })
 
-    console.log(`▶ boot an iPhone in ${browserName} with pre-17.4 APIs missing`)
+    console.log(`▶ boot an iPhone in ${browserName} with legacy browser APIs missing`)
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120_000 })
     await page.waitForFunction(() => {
       const root = document.getElementById('root')
@@ -103,7 +106,17 @@ async function main(): Promise<void> {
         threwOnAbort = true
       }
       const disposal = Symbol as SymbolConstructor & { dispose?: symbol, asyncDispose?: symbol }
+      const uuid = crypto.randomUUID()
+      const jsonResponse = Response.json({ restored: true }, { status: 201, headers: { 'x-ios-probe': 'yes' } })
       return {
+        uuid,
+        hasOwn: Object.hasOwn({ own: true }, 'own') && !Object.hasOwn(Object.create({ inherited: true }), 'inherited'),
+        jsonResponse: {
+          status: jsonResponse.status,
+          contentType: jsonResponse.headers.get('content-type'),
+          probe: jsonResponse.headers.get('x-ios-probe'),
+          value: await jsonResponse.json(),
+        },
         deferredValue,
         combinedAborted: combined.aborted,
         combinedReason: combined.reason,
@@ -115,6 +128,12 @@ async function main(): Promise<void> {
         warnings: ((globalThis as { __DSH_WARNINGS__?: string[] }).__DSH_WARNINGS__ ?? []),
       }
     })
+    expect(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(compatibility.uuid), 'crypto.randomUUID was not restored')
+    expect(compatibility.hasOwn, 'Object.hasOwn was not restored')
+    expect(compatibility.jsonResponse.status === 201, 'Response.json did not preserve the response status')
+    expect(compatibility.jsonResponse.contentType === 'application/json', 'Response.json did not set the JSON content type')
+    expect(compatibility.jsonResponse.probe === 'yes', 'Response.json did not preserve custom headers')
+    expect(compatibility.jsonResponse.value.restored === true, 'Response.json did not serialize its payload')
     expect(compatibility.deferredValue === 'settled', 'Promise.withResolvers was not restored')
     expect(compatibility.combinedAborted && compatibility.combinedReason === 'ios-compat', 'AbortSignal.any was not restored')
     expect(compatibility.timeoutAborted, 'AbortSignal.timeout was not restored')
@@ -125,14 +144,19 @@ async function main(): Promise<void> {
       expect(compatibility.objectSource.includes('\n'), 'the WebKit native-source regression was not exercised')
     }
 
-    console.log('▶ workspace and preset requests survive the older cancellation API set')
+    console.log('▶ workspace, provider and preset requests survive the legacy API set')
     const notice = page.getByRole('button', { name: 'Continue' })
     // The notice waits on an asynchronous settings read and can mount after the
     // shell itself. Sampling once races it on faster Chromium builds.
     await notice.first().waitFor({ state: 'visible', timeout: 20_000 })
     await notice.first().click()
     await notice.first().waitFor({ state: 'detached', timeout: 20_000 })
-    await page.getByRole('button', { name: 'Standard mode' }).waitFor({ state: 'visible', timeout: 15_000 })
+    const preset = page.getByRole('button', { name: 'Standard mode' })
+    await preset.waitFor({ state: 'visible', timeout: 15_000 })
+    await preset.click()
+    await page.getByText('PTC mode', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 })
+    await page.getByText('Minimal mode', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 })
+    await page.keyboard.press('Escape')
 
     console.log('▶ the real picker lists the runtime filesystem and creates a session')
     const filesBacking = await page.evaluate(async () => {
@@ -152,6 +176,13 @@ async function main(): Promise<void> {
     await dialog.getByRole('button', { name: 'Open' }).click()
     await dialog.waitFor({ state: 'hidden', timeout: 15_000 })
     expect(!(await page.locator('body').innerText()).includes('Choose a workspace to start'), 'opening the workspace did not create a session')
+
+    console.log('▶ the settings client receives the model-provider roster')
+    await page.getByRole('button', { name: 'Open sidebar' }).click()
+    await page.getByText('Settings', { exact: true }).click()
+    await page.getByText('Models', { exact: true }).click()
+    await page.getByText('OpenCode Zen (free)', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 })
+    await page.getByText('DeepSeek', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 })
 
     console.log('▶ the emitted code worker accepts a foreign-realm JSON value')
     // The worker is a separately emitted CommonJS asset. Vite's ordinary
@@ -207,7 +238,7 @@ async function main(): Promise<void> {
     expect(Object.values(restored).every(value => value === 'webkit-workspace'), `the workspace did not survive reload: ${JSON.stringify(restored)}`)
     expect(compatibilityErrors.length === 0, `compatibility errors reached the console: ${compatibilityErrors.join(' | ')}`)
 
-    console.log(`\n✓ ${browserName} creates a session and keeps its workspace, including the pre-17.4 bootstrap path`)
+    console.log(`\n✓ ${browserName} loads presets/providers, creates a session and keeps its workspace through the compatibility bootstrap`)
   } finally {
     await browser?.close()
   }
