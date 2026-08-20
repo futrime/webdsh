@@ -65,9 +65,10 @@ at a domain root, a project path, or a local directory.
 Open the page, choose a workspace, start talking.
 
 - **Files** — the sidebar action above the terminal. Browse the workspace,
-  open a file, download one out of the tab, or drop files in — the same
-  filesystem the agent and the terminal use, not a copy. A file path the
-  assistant names in the chat opens here when you click it.
+  open a file, drop files in, and take things out: one file as itself, a
+  directory or a tick-box selection as a zip. It is the same filesystem the
+  agent and the terminal use, not a copy. A file path the assistant names in
+  the chat opens here when you click it.
 - **Terminal** — `` Ctrl+` `` or the sidebar action. It is Node in this tab, and
   the same machine the agent's tools run in. Closing it hides it; the session,
   its scrollback and its working directory are still there when you reopen.

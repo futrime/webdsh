@@ -16,6 +16,7 @@
  */
 
 import { chromium, type Page } from 'playwright'
+import { unzipSync } from 'fflate'
 
 const args = process.argv.slice(2)
 const url = valueOf('--url') ?? 'http://127.0.0.1:4173/'
@@ -157,6 +158,18 @@ async function palette(page: Page): Promise<{ background: string, text: string, 
   })
 }
 
+/**
+ * Everything a download handed the browser.
+ * @param download - the event Playwright captured.
+ * @returns the bytes.
+ */
+async function downloaded(download: { createReadStream(): Promise<NodeJS.ReadableStream> }): Promise<Buffer> {
+  const stream = await download.createReadStream()
+  const chunks: Buffer[] = []
+  for await (const chunk of stream) chunks.push(chunk as Buffer)
+  return Buffer.concat(chunks)
+}
+
 /** One check. */
 interface Check {
   name: string
@@ -276,11 +289,82 @@ const checks: Check[] = [
         }),
       ])
       expect(download.suggestedFilename() === 'note.txt', `unexpected download name: ${download.suggestedFilename()}`)
-      const stream = await download.createReadStream()
-      const chunks: Buffer[] = []
-      for await (const chunk of stream) chunks.push(chunk as Buffer)
-      const text = Buffer.concat(chunks).toString('utf8')
+      const text = (await downloaded(download)).toString('utf8')
       expect(/hello-from-the-agent/.test(text), `the downloaded bytes are not the file's: ${JSON.stringify(text)}`)
+    },
+  },
+  {
+    // A browser can be handed one thing at a time, and a directory is not a
+    // thing it can be handed at all — so both of these are a zip, and the only
+    // way to check a zip is to open it.
+    name: 'a directory downloads as a zip of what is in it',
+    async run(page) {
+      await openPanel(page)
+      await shell(page, 'mkdir -p sub/deeper && echo one > sub/a.txt && echo two > sub/deeper/b.txt')
+      await refresh(page)
+      const [archive] = await Promise.all([
+        page.waitForEvent('download', { timeout: 60_000 }),
+        page.evaluate(() => {
+          const row = Array.from(document.querySelectorAll('.dsh-web-files-list li'))
+            .find(node => (node.textContent ?? '').includes('sub'))
+          const button = Array.from(row?.querySelectorAll('button') ?? []).find(node => node.textContent === '↓')
+          button?.click()
+        }),
+      ])
+      expect(archive.suggestedFilename() === 'sub.zip', `unexpected archive name: ${archive.suggestedFilename()}`)
+      const unpacked = unzipSync(new Uint8Array(await downloaded(archive)))
+      const names = Object.keys(unpacked).sort()
+      expect(names.includes('sub/a.txt'), `the archive is missing the file: ${names.join(', ')}`)
+      expect(names.includes('sub/deeper/b.txt'), `the archive did not walk into the subdirectory: ${names.join(', ')}`)
+      expect(Buffer.from(unpacked['sub/a.txt'] ?? new Uint8Array()).toString('utf8').trim() === 'one',
+        'the archived bytes are not the file\'s')
+    },
+  },
+  {
+    name: 'a selection downloads as one archive',
+    async run(page) {
+      await openPanel(page)
+      await shell(page, 'echo picked > pick-me.txt && echo ignored > leave-me.txt')
+      await refresh(page)
+      // Ticked the way a person ticks them, so the row's own checkbox is what
+      // is under test rather than a state setter.
+      for (const name of ['pick-me.txt', 'sub']) {
+        await page.getByRole('checkbox', { name: `Select ${name}`, exact: true }).first().check()
+      }
+      const [archive] = await Promise.all([
+        page.waitForEvent('download', { timeout: 60_000 }),
+        page.getByRole('button', { name: /Download 2 selected/ }).first().click(),
+      ])
+      expect(archive.suggestedFilename() === 'workspace.zip', `unexpected archive name: ${archive.suggestedFilename()}`)
+      const names = Object.keys(unzipSync(new Uint8Array(await downloaded(archive)))).sort()
+      expect(names.includes('pick-me.txt'), `the archive is missing the picked file: ${names.join(', ')}`)
+      expect(names.includes('sub/a.txt'), `the archive is missing the picked directory: ${names.join(', ')}`)
+      expect(!names.includes('leave-me.txt'), `the archive carries what was not picked: ${names.join(', ')}`)
+    },
+  },
+  {
+    name: 'select-all takes the whole listing, and clears on navigation',
+    async run(page) {
+      await openPanel(page)
+      await refresh(page)
+      const all = page.getByRole('checkbox', { name: 'Select everything here', exact: true })
+      await all.first().check()
+      const label = await page.evaluate(() =>
+        document.querySelector('.dsh-web-files-all span')?.textContent ?? '')
+      const counted = /^(\d+) of (\d+)$/.exec(label)
+      expect(counted !== null, `the selection count is not shown: ${label}`)
+      expect(counted![1] === counted![2] && Number(counted![1]) > 0,
+        `select-all did not take everything: ${label}`)
+      // Into a directory and the selection is gone: it belonged to the listing
+      // it was made in, and downloading paths the user can no longer see is the
+      // failure this guards.
+      await page.getByRole('button', { name: /sub$/ }).first().click()
+      await page.waitForFunction(
+        () => (document.querySelector('.dsh-web-files-all span')?.textContent ?? '') === 'Select',
+        undefined,
+        { timeout: 30_000 },
+      )
+      await page.getByRole('button', { name: 'Up', exact: true }).click()
     },
   },
   {

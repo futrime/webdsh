@@ -33,10 +33,11 @@ export function apply(ctx: Context): void {
     order: 61,
     text:
       'The user has a Files panel open on this same workspace: they can browse it, upload '
-      + 'files into it from their machine, and download files out of it. When you need a file '
-      + 'they have not given you, ask them to drop it into that panel rather than offering to '
-      + 'fetch it; when you produce one for them, say where it is and that they can download it '
-      + 'there.',
+      + 'files into it from their machine, and take files out of it — one at a time, or a whole '
+      + 'directory as a zip. When you need a file they have not given you, ask them to drop it '
+      + 'into that panel rather than offering to fetch it; when you produce one for them, say '
+      + 'where it is and that they can download it there. Producing a directory of files is a '
+      + 'reasonable deliverable here, because they can take the directory in one gesture.',
   })
 }
 

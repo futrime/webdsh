@@ -41,6 +41,8 @@ interface FilesBridge {
   mkdir(path: string): Promise<void>
   remove(path: string): Promise<void>
   rename(from: string, to: string): Promise<void>
+  /** Pack these paths — directories walked — into a zip, named relative to `base`. */
+  archive(paths: string[], base: string): Promise<Uint8Array>
 }
 
 /** Where the app publishes it. */
@@ -131,6 +133,7 @@ function FilesPanel({ open, target, onClose }: {
   const [notice, setNotice] = useState<{ text: string, error?: boolean } | undefined>(undefined)
   const [backing, setBacking] = useState<'runtime' | 'page' | undefined>(undefined)
   const [busy, setBusy] = useState(false)
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
   const upload = useRef<HTMLInputElement | null>(null)
 
   const refresh = useCallback(async (directory: string) => {
@@ -143,6 +146,9 @@ function FilesPanel({ open, target, onClose }: {
     try {
       setEntries(await api.list(directory))
       setCwd(directory)
+      // A selection belongs to the listing it was made in; carrying it into
+      // another directory would download paths the user can no longer see.
+      setPicked(new Set())
       setNotice(undefined)
     } catch (error) {
       setEntries([])
@@ -206,6 +212,32 @@ function FilesPanel({ open, target, onClose }: {
       await show(target)
     })()
   }, [open, target, home, refresh, show])
+
+  /**
+   * Hand one or many paths to the browser.
+   *
+   * One file goes as itself; anything else — several files, or a directory —
+   * goes as a zip, because a browser can only be handed one thing at a time
+   * and a directory is not a thing it can be handed at all.
+   */
+  const save = useCallback(async (paths: { path: string, directory: boolean }[]) => {
+    const api = files()
+    if (api === undefined || paths.length === 0) return
+    setBusy(true)
+    try {
+      const only = paths.length === 1 ? paths[0] : undefined
+      if (only !== undefined && !only.directory) {
+        download(baseName(only.path), await api.read(only.path))
+        return
+      }
+      const name = only === undefined ? `${baseName(cwd) || 'workspace'}.zip` : `${baseName(only.path)}.zip`
+      download(name, await api.archive(paths.map(entry => entry.path), cwd))
+    } catch (error) {
+      setNotice({ text: error instanceof Error ? error.message : String(error), error: true })
+    } finally {
+      setBusy(false)
+    }
+  }, [cwd])
 
   const put = useCallback(async (list: FileList | null) => {
     const api = files()
@@ -282,6 +314,17 @@ function FilesPanel({ open, target, onClose }: {
           ))}
         </nav>
         <span className="dsh-web-files-actions">
+          {picked.size > 0 && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                void save(entries.filter(entry => picked.has(entry.path)))
+              }}
+            >
+              {`Download ${String(picked.size)} selected`}
+            </button>
+          )}
           <button type="button" disabled={busy} onClick={() => { upload.current?.click() }}>Upload…</button>
           <button type="button" disabled={busy} onClick={() => { void makeDirectory() }}>New folder</button>
           <button type="button" disabled={busy} onClick={() => { void refresh(cwd) }}>Refresh</button>
@@ -297,9 +340,37 @@ function FilesPanel({ open, target, onClose }: {
 
       <div className="dsh-web-files-body">
         <ul className="dsh-web-files-list">
+          {entries.length > 0 && (
+            <li className="dsh-web-files-all">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={picked.size === entries.length && entries.length > 0}
+                  aria-label="Select everything here"
+                  onChange={(event) => {
+                    setPicked(event.target.checked ? new Set(entries.map(entry => entry.path)) : new Set())
+                  }}
+                />
+                <span>{picked.size === 0 ? 'Select' : `${String(picked.size)} of ${String(entries.length)}`}</span>
+              </label>
+            </li>
+          )}
           {entries.length === 0 && !busy && <li className="dsh-web-files-empty">This directory is empty.</li>}
           {entries.map(entry => (
             <li key={entry.path} {...(viewing?.path === entry.path ? { 'data-open': '' } : {})}>
+              <input
+                type="checkbox"
+                checked={picked.has(entry.path)}
+                aria-label={`Select ${entry.name}`}
+                onChange={(event) => {
+                  setPicked((current) => {
+                    const next = new Set(current)
+                    if (event.target.checked) next.add(entry.path)
+                    else next.delete(entry.path)
+                    return next
+                  })
+                }}
+              />
               <button
                 type="button"
                 className="dsh-web-files-name"
@@ -308,22 +379,13 @@ function FilesPanel({ open, target, onClose }: {
                 <span aria-hidden="true">{entry.directory ? '📁' : '📄'}</span>
                 <span className="dsh-web-files-label">{entry.name}</span>
               </button>
-              {!entry.directory && (
-                <button
-                  type="button"
-                  title={`Download ${entry.name}`}
-                  onClick={() => {
-                    void files()?.read(entry.path).then(
-                      bytes => { download(entry.name, bytes) },
-                      (error: unknown) => {
-                        setNotice({ text: error instanceof Error ? error.message : String(error), error: true })
-                      },
-                    )
-                  }}
-                >
-                  ↓
-                </button>
-              )}
+              <button
+                type="button"
+                title={entry.directory ? `Download ${entry.name} as a zip` : `Download ${entry.name}`}
+                onClick={() => { void save([entry]) }}
+              >
+                ↓
+              </button>
               <button type="button" title={`Delete ${entry.name}`} onClick={() => { void remove(entry) }}>✕</button>
             </li>
           ))}
@@ -421,6 +483,10 @@ const STYLE = `
 .dsh-web-files-list li:hover,.dsh-web-files-list li[data-open]{
  background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14))}
 .dsh-web-files-list li button{border:none;padding:.2rem .35rem}
+.dsh-web-files-list li input[type=checkbox]{flex:none;margin:0 .15rem;cursor:pointer}
+.dsh-web-files-all{color:var(--dsw-alias-label-secondary,inherit);font-size:12px}
+.dsh-web-files-all label{display:flex;align-items:center;gap:.45rem;cursor:pointer;padding:.1rem .15rem}
+.dsh-web-files-all input[type=checkbox]{cursor:pointer}
 .dsh-web-files-name{flex:1;display:flex;align-items:center;gap:.45rem;overflow:hidden;text-align:left}
 .dsh-web-files-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsh-web-files-empty{color:var(--dsw-alias-label-secondary,inherit);opacity:.8;padding:.5rem}

@@ -20,6 +20,7 @@ import {
 import { ripgrep } from '../runtime/ripgrep.ts'
 import type { PluginManager } from '../plugins/manager.ts'
 import { volume } from '../vfs/volume.ts'
+import { zipSync } from 'fflate'
 import { dirname } from '../node/path.ts'
 import {
   ALTERNATIVE_PROXY_TEMPLATE,
@@ -157,23 +158,9 @@ export function publishFilesBridge(): void {
     /** Which filesystem is answering, so a panel can say so. */
     backing: async (): Promise<'runtime' | 'page'> => (await runtimeReady() ? 'runtime' : 'page'),
 
-    list: async (path: string): Promise<FileEntry[]> => {
-      if (await runtimeReady()) {
-        const fs = await runtimeFs()
-        const entries = await fs.readdir(toContainerPath(path), { withFileTypes: true })
-        return entries
-          .map(entry => ({ name: entry.name, path: child(path, entry.name), directory: entry.isDirectory() }))
-          .sort(byKindThenName)
-      }
-      return volume.readdirNodes(path)
-        .map(([name, node]) => ({ name, path: child(path, name), directory: node.kind === 'dir' }))
-        .sort(byKindThenName)
-    },
+    list: async (path: string): Promise<FileEntry[]> => (await listAnywhere(path)).sort(byKindThenName),
 
-    read: async (path: string): Promise<Uint8Array> => {
-      if (await runtimeReady()) return (await runtimeFs()).readFile(toContainerPath(path))
-      return volume.readFile(path)
-    },
+    read: async (path: string): Promise<Uint8Array> => readAnywhere(path),
 
     write: async (path: string, bytes: Uint8Array): Promise<void> => {
       if (await runtimeReady()) {
@@ -205,6 +192,53 @@ export function publishFilesBridge(): void {
       volume.rm(path, { recursive: true, force: true })
     },
 
+    /**
+     * Pack paths into a zip, walking whatever directories are among them.
+     *
+     * Here rather than in the plugin for the reason everything else here is:
+     * the app already carries `fflate` — `dsh.exportFs()` uses it — and a
+     * client bundle importing its own copy would ship a second one into a page
+     * that has one. It is also the only side that can walk *whichever* of the
+     * two filesystems is live.
+     *
+     * Entry names are relative to the directory the selection was made in, so
+     * unpacking the result reproduces what the panel was showing rather than a
+     * chain of empty parents.
+     * @param paths - files and directories, absolute.
+     * @param base - the directory names are relative to.
+     * @returns the zip's bytes.
+     */
+    archive: async (paths: string[], base: string): Promise<Uint8Array> => {
+      const entries: Record<string, Uint8Array> = {}
+      const prefix = base.endsWith('/') ? base : `${base}/`
+      const relative = (path: string): string => (path.startsWith(prefix) ? path.slice(prefix.length) : baseNameOf(path))
+
+      const take = async (path: string, directory: boolean): Promise<void> => {
+        if (!directory) {
+          entries[relative(path)] = await readAnywhere(path)
+          return
+        }
+        const children = await listAnywhere(path)
+        // An empty directory still belongs in the archive, and a zip records
+        // one as a name ending in a slash.
+        if (children.length === 0) {
+          entries[`${relative(path)}/`] = new Uint8Array(0)
+          return
+        }
+        for (const entry of children) await take(entry.path, entry.directory)
+      }
+
+      for (const path of paths) {
+        const parent = await listAnywhere(dirname(path)).catch(() => [] as FileEntry[])
+        const known = parent.find(entry => entry.path === path)
+        await take(path, known?.directory ?? false)
+      }
+      // `level: 0` — the workspace is already in memory and so is the result,
+      // so this trades a bigger download for not walking every byte twice.
+      // Text compresses well enough that the default is worth its cost.
+      return zipSync(entries)
+    },
+
     rename: async (from: string, to: string): Promise<void> => {
       if (await runtimeReady()) {
         await (await runtimeFs()).rename(toContainerPath(from), toContainerPath(to))
@@ -214,6 +248,29 @@ export function publishFilesBridge(): void {
       volume.rename(from, to)
     },
   }
+}
+
+/** The last segment of a path. */
+function baseNameOf(path: string): string {
+  return path.slice(path.lastIndexOf('/') + 1)
+}
+
+/** List a directory in whichever filesystem is the live one. */
+async function listAnywhere(path: string): Promise<FileEntry[]> {
+  if (await runtimeReady()) {
+    const fs = await runtimeFs()
+    const entries = await fs.readdir(toContainerPath(path), { withFileTypes: true })
+    return entries.map(entry => ({ name: entry.name, path: child(path, entry.name), directory: entry.isDirectory() }))
+  }
+  return volume.readdirNodes(path).map(([name, node]) => ({
+    name, path: child(path, name), directory: node.kind === 'dir',
+  }))
+}
+
+/** Read a file from whichever filesystem is the live one. */
+async function readAnywhere(path: string): Promise<Uint8Array> {
+  if (await runtimeReady()) return (await runtimeFs()).readFile(toContainerPath(path))
+  return volume.readFile(path)
 }
 
 /** Directories first, then names, the way a file browser is read. */
