@@ -9,7 +9,11 @@
  *
  * Every timing and every readiness marker below was measured against a cold
  * boot in a real browser rather than reasoned about. `npm run test:v86` boots
- * each bundled guest and fails if it stops reaching its own marker.
+ * all five bundled guests and fails if one stops reaching its own marker; the
+ * eleven that need a disk from elsewhere were each driven by hand once and are
+ * regression-tested only where the suite can get an image — Windows 3.1 and
+ * Windows 98. The rest can rot without anything noticing, which is worth
+ * knowing before trusting a line in this table.
  *
  * ## Where the disks come from, and why that is a question
  *
@@ -95,11 +99,13 @@ export const BIOS_BASE = 'v86/'
  *
  * - `serial` — the guest talks on the serial port and there is a POSIX shell
  *   behind it. Output is complete and arbitrarily long, and `$?` is real.
- * - `dos` — the guest boots to a DOS prompt on the VGA text screen, and DOS's
- *   own `CTTY COM1` moves that console onto the serial port. Measured working
- *   on FreeDOS; it is a documented DOS command, not a trick. That turns an
- *   80×25 screen into a stream, which is the difference between reading a
- *   command's whole output and reading whatever of it had not scrolled away.
+ * - `dos` — the guest boots to a DOS prompt on the VGA text screen. Where
+ *   `CTTY COM1` works it is used, and the console becomes a stream as complete
+ *   as a serial guest's; where it does not, the guest is typed at and read off
+ *   its screen, which is exact for short output and can lose lines in a long
+ *   burst. Which is which is {@link GuestSpec.serialConsole}, and it is
+ *   measured per guest rather than probed, because probing it on a guest that
+ *   refuses costs that guest its console until it reboots.
  * - `gui` — the guest draws pixels. There is no text to read, so the model
  *   works the way a person does: look at the screen, type, click.
  */
@@ -162,6 +168,21 @@ export interface GuestSpec {
   timeoutMs: number
   /** Text-screen lines that mean a DOS guest has reached its prompt. */
   prompts?: string[]
+  /**
+   * Whether `CTTY COM1` moves this DOS guest's console and it answers there.
+   *
+   * Per guest and measured, never probed. FreeDOS accepts the redirect and
+   * talks on the serial port, which gives a clean character stream and output
+   * of any length. Both MS-DOS guests accept it and then answer on neither the
+   * screen nor the wire — the console is gone, the keyboard is ignored, and
+   * the machine is unreachable until it reboots. There is no way to find that
+   * out without doing it, so it is written down instead.
+   *
+   * Where this is false the guest is typed at and read off its screen, which
+   * works but cannot promise output longer than the screen: rows are recorded
+   * as they scroll past, and a burst faster than the sampler outruns it.
+   */
+  serialConsole?: boolean
   /** What a serial guest prints when its console is ready, as a regular expression. */
   banner?: string
   /** A login the serial console asks for before it gives a shell. */
@@ -238,6 +259,7 @@ export const GUESTS: GuestSpec[] = [
     options: { memory_size: 32 * MB },
     timeoutMs: 60_000,
     prompts: DOS_PROMPTS,
+    serialConsole: true,
     boots: 'about 2 seconds',
   },
   {
@@ -423,9 +445,9 @@ export const GUESTS: GuestSpec[] = [
   },
   {
     id: 'buildroot',
-    name: 'Buildroot Linux 6.8',
+    name: 'Buildroot Linux 5.6',
     console: 'serial',
-    summary: 'A newer Buildroot than the bundled one, with a 9p mount and curl.',
+    summary: 'A newer Buildroot than the bundled one — kernel 5.6.15 against the bundled 2.6.34, measured.',
     contains: 'busybox, lua, curl, ping and telnet, plus a 9p mount at /mnt. The network device is emulated '
       + 'but has no route out of the page, so `curl` and `ping` reach nothing, and the login banner\'s offer to '
       + 'put files in /mnt is the emulator\'s own — no tool here writes there, so use vm_write_file.',

@@ -817,16 +817,23 @@ const SERIAL_CHUNK_DELAY_MS = 10
  * between reading a command's whole output and reading whatever of it had not
  * scrolled off an 80×25 screen.
  *
- * The cost of moving a DOS console is that the screen freezes and the keyboard
- * stops being read, so the move is tracked and undone the moment anything
- * screen-facing is asked for. That is what {@link releaseScreen} is, and every
- * screen tool calls it before it looks.
+ * DOS is driven by typing at it and reading its screen back, and not by
+ * `CTTY COM1`. The redirect is a documented DOS command and it does work on
+ * FreeDOS — but on both MS-DOS guests here it half-works and cannot be undone:
+ * the console moves, DOS writes a bare CR LF to the serial port and then never
+ * reads or writes it again, the screen is frozen and the keyboard ignored, and
+ * the guest is unreachable until it is rebooted. Measured, after shipping it.
+ *
+ * Typing costs about eighty characters a second and DOS wraps at the eightieth
+ * column. It does not cost completeness: the transcript this module keeps
+ * captures rows as they scroll off the screen, so a command's whole output
+ * comes back either way.
  */
 class Console implements MachineConsole {
-  /** Whether the DOS console has been moved onto the serial port. */
-  private onSerial = false
   /** Whether a serial guest has been logged in and settled. */
   private prepared = false
+  /** Whether a DOS guest's console has been moved onto the serial port. */
+  private onSerial = false
   /** Serialises commands: two at once on one console is two interleaved commands. */
   private queue: Promise<unknown> = Promise.resolve()
   /** Distinguishes one command's marker from the next. */
@@ -907,12 +914,80 @@ class Console implements MachineConsole {
     }
   }
 
+  /**
+   * Run one command by typing it and reading the screen back.
+   *
+   * The same two markers and the same parsing as the serial path — the only
+   * differences are that the bytes go in through the keyboard and come back
+   * out of the mirrored text screen, including the rows that have scrolled off
+   * it. That is what makes this a real channel rather than a consolation
+   * prize: a `dir` of a full directory comes back whole.
+   *
+   * What it does cost is real and is stated in the tool description: a
+   * keyboard types at about eighty characters a second, DOS wraps a line at
+   * the eightieth column so a long line comes back split, and a full-screen
+   * program still cannot be driven this way.
+   * @param command - what to run.
+   * @param options - timeout and cancellation.
+   * @returns the command's output and, where DOS reports one, its ERRORLEVEL.
+   */
+  private async executeOnScreen(
+    command: string,
+    options: { timeoutMs?: number, signal?: AbortSignal },
+  ): Promise<CommandResult> {
+    const timeoutMs = options.timeoutMs ?? 120_000
+    const marker = `DSHV86${String(this.counter++).padStart(3, '0')}`
+    const lines = [
+      `echo ${marker}S`,
+      ...command.split('\n').map(line => line.trimEnd()),
+      `echo ${marker}E%ERRORLEVEL%`,
+    ]
+    for (const line of lines) await typeText(this.emulator, `${line}\r`)
+
+    const began = new RegExp(`^${marker}S\\s*$`, 'm')
+    // Anything, including nothing. `%ERRORLEVEL%` is a CMD.EXE variable, not a
+    // DOS one: FreeCOM implements it, and MS-DOS's COMMAND.COM looks it up in
+    // the environment, does not find it, and expands it to the empty string —
+    // so the end marker arrives as a bare `…E`. A pattern that demanded digits
+    // or the literal `%ERRORLEVEL%` matched neither, and every MS-DOS command
+    // ran to its timeout while its output sat there complete.
+    const done = new RegExp(`^${marker}E(\\S*)`, 'm')
+    // The whole transcript, not a slice of it. The obvious thing — record the
+    // transcript's length before typing and read from there afterwards — is
+    // wrong for the case that matters most: a command whose output fits on the
+    // screen never scrolls, so no row leaves the top, the transcript's length
+    // does not change, and the slice comes back empty. `ver` returned nothing
+    // and `dir` returned only the part that had scrolled. The markers are
+    // unique per command, so there is no need to guess where to start reading:
+    // they say.
+    const since = (): string => this.text.transcript().join('\n')
+    const found = await waitFor(() => done.test(since()), timeoutMs, options.signal)
+    const raw = since()
+    const match = done.exec(raw)
+    if (!found || match === null) {
+      // Ctrl+C on the keyboard, for the same reason the serial path sends one:
+      // a command still holding the console eats the next one as its input.
+      this.emulator.keyboard_send_scancodes([MODIFIERS.ctrl, 0x2E, release(0x2E), release(MODIFIERS.ctrl)])
+      await new Promise(resolve => setTimeout(resolve, 700))
+      await typeText(this.emulator, '\r')
+      return { output: cleanConsole(raw, began, marker, this.spec.prompts), exitCode: null, timedOut: true }
+    }
+    const status = match[1]
+    return {
+      output: cleanConsole(raw.slice(0, match.index), began, marker, this.spec.prompts),
+      // A number is an ERRORLEVEL; an empty tail or an unexpanded
+      // `%ERRORLEVEL%` is this DOS not having one to give.
+      exitCode: /^\d+$/.test(status) ? Number(status) : null,
+      timedOut: false,
+    }
+  }
+
   async releaseScreen(): Promise<void> {
+    // Only a guest whose console was moved has anything to bring back. The
+    // ones driven from the screen never left it.
     if (!this.onSerial) return
     this.onSerial = false
     await this.sendLine('ctty con')
-    // The prompt comes back on the screen; a moment is all it takes, and a
-    // failure here is visible in the very next screenshot rather than silent.
     await waitFor(() => this.atDosPrompt(), 5000)
   }
 
@@ -970,24 +1045,19 @@ class Console implements MachineConsole {
       return
     }
 
-    if (this.onSerial) return
     // The same budget, for the same reason: MS-DOS 7 takes forty-three seconds
     // to reach its prompt, measured, and a fixed thirty here would have made
     // the first command of every fresh session on it fail.
     if (!await waitFor(() => this.atDosPrompt(), this.spec.timeoutMs)) {
       throw new Error('the guest is not at a DOS prompt; look at the screen with vm_screen before running a command')
     }
-    const before = this.serial.length
+    this.prepared = true
+    if (this.spec.serialConsole !== true || this.onSerial) return
     await typeText(this.emulator, 'ctty com1\r')
-    const moved = await waitFor(() => this.serial.since(before).length > 0, 8000)
-    if (!moved) {
-      throw new Error(
-        'CTTY COM1 did not move this guest\'s console onto the serial port, so a command\'s output cannot be read. '
-        + 'Use vm_type and vm_screen instead.',
-      )
+    if (!await waitFor(() => this.atSerialPrompt(), 8000)) {
+      throw new Error('CTTY COM1 did not put this guest\'s console on the serial port; the machine may need restarting')
     }
     this.onSerial = true
-    this.prepared = true
   }
 
   async run(command: string, options: { timeoutMs?: number, signal?: AbortSignal } = {}): Promise<CommandResult> {
@@ -1002,6 +1072,12 @@ class Console implements MachineConsole {
   /** Run one command, with the console already attached. */
   private async execute(command: string, options: { timeoutMs?: number, signal?: AbortSignal }): Promise<CommandResult> {
     await this.attach()
+    // A DOS guest whose console cannot be moved is typed at instead. Which of
+    // the two it is comes from the catalog, because finding out by trying it
+    // costs the machine — see `GuestSpec.serialConsole`.
+    if (this.spec.console === 'dos' && this.spec.serialConsole !== true) {
+      return this.executeOnScreen(command, options)
+    }
     const timeoutMs = options.timeoutMs ?? 120_000
     const marker = `DSHV86${String(this.counter++).padStart(3, '0')}`
     const start = this.serial.length

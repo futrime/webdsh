@@ -439,6 +439,60 @@ const scenarios: Scenario[] = [
   },
 
   {
+    // The other DOS, and the reason this scenario exists: `CTTY COM1` works on
+    // FreeDOS and *wedges* this guest — the console moves and then answers on
+    // neither the screen nor the wire. So this one is typed at and read off its
+    // screen, and nothing but booting it would have caught the difference. It
+    // was shipped broken once because this scenario did not exist.
+    name: 'msdos',
+    async run(page) {
+      await page.goto(`${url}?runtime=v86:msdos`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      await waitForShell(page)
+      expect(await ready(page, 180_000), 'MS-DOS 7 did not reach a prompt')
+
+      const version = await run(page, 'ver', 60_000)
+      expect(/MS-DOS 7/i.test(version.output),
+        `\`ver\` did not name MS-DOS 7: ${JSON.stringify(version.output)}`)
+      expect(!version.timedOut, 'a one-line command on the screen-driven guest timed out')
+
+      // Short output is exact on this path, which is the promise the tool
+      // description makes for it — and the whole of what it promises.
+      const echoed = await run(page, 'echo dsh-was-here', 60_000)
+      expect(echoed.output.trim() === 'dsh-was-here',
+        `the screen-driven console did not return the line exactly: ${JSON.stringify(echoed.output)}`)
+
+      // MS-DOS expands `%ERRORLEVEL%` to nothing — it is a CMD.EXE variable —
+      // so this guest reports no status at all, and saying so is the point.
+      expect(echoed.exitCode === null,
+        `MS-DOS reported an exit status of ${String(echoed.exitCode)}; it has none to report`)
+
+      const tools = await offeredTools(page)
+      expect(tools.includes('dos'), `MS-DOS was not offered the dos tool: ${tools.join(', ')}`)
+      expect(!tools.includes('jsh') && !tools.includes('bash'), `MS-DOS was offered a container shell: ${tools.join(', ')}`)
+    },
+  },
+
+  {
+    // The last of the five that need no setup. It only has to boot and draw:
+    // there is no console to talk to and nothing else claims otherwise.
+    name: 'kolibrios',
+    async run(page) {
+      await page.goto(`${url}?runtime=v86:kolibrios`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      await waitForShell(page)
+      expect(await ready(page, 180_000), 'KolibriOS did not reach a graphical mode')
+
+      const shot = await page.evaluate(async () => (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle })
+        .__DSH_WEB_MACHINE__.screen.shot())
+      expect(shot.graphical && shot.width >= 640,
+        `KolibriOS drew ${String(shot.width)}×${String(shot.height)}, graphical=${String(shot.graphical)}`)
+
+      const tools = await offeredTools(page)
+      expect(!tools.includes('jsh') && !tools.includes('sh') && !tools.includes('dos'),
+        `a guest with no console was offered a command tool: ${tools.join(', ')}`)
+    },
+  },
+
+  {
     // Linux: a real POSIX shell, so the workloads are the ones the container
     // suite runs — a loop, a pipeline, an exit status, a file written and run.
     name: 'linux',
