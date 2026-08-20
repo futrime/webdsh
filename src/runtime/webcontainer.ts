@@ -194,12 +194,17 @@ export function runtimeSupported(): { ok: boolean, reason?: string } {
   }
   if (!globalThis.crossOriginIsolated) return { ok: false, reason: 'the page is not cross-origin isolated' }
   if (typeof WebAssembly === 'undefined') return { ok: false, reason: 'WebAssembly is unavailable' }
+  if (typeof Atomics === 'undefined'
+    || typeof (Atomics as typeof Atomics & { waitAsync?: unknown }).waitAsync !== 'function') {
+    return { ok: false, reason: 'Atomics.waitAsync is unavailable in this browser' }
+  }
   return { ok: true }
 }
 
 let container: Promise<WebContainer> | undefined
 let durability: RuntimePersistence | undefined
 let pythonDurability: PythonPersistence | undefined
+let ready = false
 
 /**
  * How long the container gets to start before it is treated as unavailable.
@@ -271,10 +276,10 @@ async function withinBudget(step: Promise<boolean>, budgetMs: number): Promise<b
  * Why the runtime is not usable, once an attempt to start it has failed.
  *
  * The checks in {@link runtimeSupported} are about the browser's capabilities,
- * and a browser can have every one of them and still not run the container —
- * Chrome on Android has `SharedArrayBuffer` and cross-origin isolation, and
- * WebContainers refuses to boot there. Until that was recorded, everything kept
- * routing to a runtime that would never exist: the shell, the agent's file
+ * and a browser can have every one of them and still not run the container:
+ * the remote runtime frame can be blocked, a worker can fail, or startup can
+ * exhaust a mobile device's memory. Until that failure was recorded, everything
+ * kept routing to a runtime that would never exist: the shell, the agent's file
  * tools, and search all failed, one confusing error at a time.
  */
 let bootFailure: string | undefined
@@ -336,11 +341,12 @@ export async function bootRuntime(onProgress?: (step: string) => void): Promise<
     await installPrograms(booted)
     durability = persistWorkspace(booted)
     pythonDurability = persistPython(booted)
+    ready = true
     return booted
   })()).catch((error: unknown) => {
-    // Recorded rather than only thrown: the callers that ask `runtimeAvailable`
-    // before routing a command need to know, and the next boot attempt would
-    // otherwise fail the same way for every one of them.
+    // Recorded rather than only thrown so every later consumer takes the same
+    // fallback instead of repeating a boot that already proved unusable.
+    ready = false
     bootFailure = error instanceof Error ? error.message : String(error)
     console.warn('[runtime] the container could not start; falling back to the in-page shell:', error)
     throw error
@@ -385,6 +391,7 @@ export interface RunOptions {
  * @returns whether commands can run in the container.
  */
 export async function runtimeReady(): Promise<boolean> {
+  if (ready) return true
   if (bootFailure !== undefined) return false
   if (!runtimeSupported().ok) return false
   try {
@@ -397,7 +404,7 @@ export async function runtimeReady(): Promise<boolean> {
 
 /** Whether the runtime is usable right now. */
 export function runtimeAvailable(): boolean {
-  return bootFailure === undefined && runtimeSupported().ok
+  return ready
 }
 
 /**

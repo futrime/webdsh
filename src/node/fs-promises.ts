@@ -156,7 +156,7 @@ function missing(path: string, syscall: string): Error {
 
 export const stat = async (path: unknown, options?: { bigint?: boolean }): Promise<Stats | BigIntStats> => {
   const target = toPath(path)
-  if (routedToRuntime(target)) {
+  if (await routedToRuntime(target)) {
     const entry = await runtimeStat(target)
     if (entry === undefined) throw missing(target, 'stat')
     return statsFromRuntime(entry, options?.bigint === true)
@@ -165,7 +165,7 @@ export const stat = async (path: unknown, options?: { bigint?: boolean }): Promi
 }
 export const lstat = async (path: unknown, options?: { bigint?: boolean }): Promise<Stats | BigIntStats> => {
   const target = toPath(path)
-  if (routedToRuntime(target)) {
+  if (await routedToRuntime(target)) {
     const entry = await runtimeStat(target)
     if (entry === undefined) throw missing(target, 'lstat')
     return statsFromRuntime(entry, options?.bigint === true)
@@ -174,7 +174,7 @@ export const lstat = async (path: unknown, options?: { bigint?: boolean }): Prom
 }
 export const access = async (path: unknown, mode?: number): Promise<void> => {
   const target = toPath(path)
-  if (routedToRuntime(target)) {
+  if (await routedToRuntime(target)) {
     if (await runtimeStat(target) === undefined) throw missing(target, 'access')
     return
   }
@@ -183,7 +183,7 @@ export const access = async (path: unknown, mode?: number): Promise<void> => {
 export const readFile = async (path: unknown, options?: unknown): Promise<Buffer | string> => {
   if (path instanceof FileHandle) return path.readFile(options)
   const target = toPath(path)
-  if (routedToRuntime(target)) {
+  if (await routedToRuntime(target)) {
     const bytes = await runtimeReadFile(target)
     const encoding = readOptions(options).encoding
     return encoding === undefined || encoding === null ? asBuffer(bytes) : toText(bytes, encoding)
@@ -194,7 +194,7 @@ export const writeFile = async (path: unknown, data: BinaryLike, options?: unkno
   if (path instanceof FileHandle) return path.writeFile(data, options)
   const target = toPath(path)
   const opts = readOptions(options)
-  if (routedToRuntime(target)) {
+  if (await routedToRuntime(target)) {
     await runtimeWriteFile(target, toBytes(data, opts.encoding ?? 'utf8'))
     return
   }
@@ -207,7 +207,7 @@ export const appendFile = async (path: unknown, data: BinaryLike, options?: unkn
 export const mkdir = async (path: unknown, options?: unknown): Promise<string | undefined> => {
   const opts = typeof options === 'number' ? { mode: options } : readOptions(options)
   const target = toPath(path)
-  if (routedToRuntime(target)) {
+  if (await routedToRuntime(target)) {
     await runtimeMkdir(target, opts.recursive === true)
     return opts.recursive === true ? target : undefined
   }
@@ -216,7 +216,7 @@ export const mkdir = async (path: unknown, options?: unknown): Promise<string | 
 export const readdir = async (path: unknown, options?: unknown): Promise<string[] | Dirent[]> => {
   const target = toPath(path)
   const opts = readOptions(options)
-  if (routedToRuntime(target)) {
+  if (await routedToRuntime(target)) {
     const entries = await runtimeReaddirTyped(target)
     if (opts.withFileTypes !== true) return entries.map(entry => entry.name)
     return entries.map(entry => new Dirent(entry.name, target, entry.kind))
@@ -226,19 +226,19 @@ export const readdir = async (path: unknown, options?: unknown): Promise<string[
 export const rm = async (path: unknown, options?: unknown): Promise<void> => {
   const target = toPath(path)
   const opts = readOptions(options)
-  if (routedToRuntime(target)) return runtimeRm(target, opts)
+  if (await routedToRuntime(target)) return runtimeRm(target, opts)
   core.rm(target, opts)
 }
 export const rmdir = async (path: unknown, options?: unknown): Promise<void> => { core.rmdir(toPath(path), readOptions(options)) }
 export const unlink = async (path: unknown): Promise<void> => {
   const target = toPath(path)
-  if (routedToRuntime(target)) return runtimeRm(target, { force: false })
+  if (await routedToRuntime(target)) return runtimeRm(target, { force: false })
   core.unlink(target)
 }
 export const rename = async (from: unknown, to: unknown): Promise<void> => {
   const source = toPath(from)
   const destination = toPath(to)
-  if (routedToRuntime(source) || routedToRuntime(destination)) return runtimeRename(source, destination)
+  if (await routedToRuntime(source) || await routedToRuntime(destination)) return runtimeRename(source, destination)
   core.rename(source, destination)
 }
 export const copyFile = async (from: unknown, to: unknown, mode?: number): Promise<void> => { core.copyFile(toPath(from), toPath(to), mode) }
@@ -249,7 +249,7 @@ export const link = async (from: unknown, to: unknown): Promise<void> => {
   const destination = toPath(to)
   // The runtime has no hard links; a copy is the closest honest equivalent, and
   // dsh uses `link` only to publish a finished file under a second name.
-  if (routedToRuntime(source) || routedToRuntime(destination)) {
+  if (await routedToRuntime(source) || await routedToRuntime(destination)) {
     await runtimeWriteFile(destination, await runtimeReadFile(source))
     return
   }
@@ -260,7 +260,7 @@ export const realpath = async (path: unknown): Promise<string> => {
   const target = toPath(path)
   // Nothing in the runtime's filesystem is a symlink, so a path resolves to
   // itself once it exists.
-  if (routedToRuntime(target)) {
+  if (await routedToRuntime(target)) {
     if (await runtimeStat(target) === undefined) throw missing(target, 'realpath')
     return target
   }
@@ -270,7 +270,7 @@ export const chmod = async (path: unknown, mode: number): Promise<void> => {
   const target = toPath(path)
   // Modes are not modelled by the runtime; accepting the call is what a
   // single-user filesystem would do.
-  if (routedToRuntime(target)) return
+  if (await routedToRuntime(target)) return
   core.chmod(target, mode)
 }
 export const chown = async (): Promise<void> => {}
@@ -368,7 +368,7 @@ class RuntimeFileHandle {
 
 export const open = async (path: unknown, flags?: string | number, mode?: number): Promise<FileHandle> => {
   const target = toPath(path)
-  if (routedToRuntime(target)) {
+  if (await routedToRuntime(target)) {
     const text = typeof flags === 'string' ? flags : 'r'
     const creating = text.startsWith('w') || text.startsWith('a') || text.includes('x')
     let contents: Uint8Array<ArrayBufferLike> = new Uint8Array(0)

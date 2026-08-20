@@ -16,7 +16,7 @@
  * read rather than a process.
  */
 
-import { HARNESS_DIR, runtimeAvailable, runtimeFs, runtimePersistence, toContainerPath, WORKDIR } from './webcontainer.ts'
+import { HARNESS_DIR, runtimeFs, runtimePersistence, runtimeReady, toContainerPath, WORKDIR } from './webcontainer.ts'
 
 /**
  * Paths at or below this belong to the runtime; everything else to the host.
@@ -54,11 +54,17 @@ function within(path: string, root: string): boolean {
 /**
  * Whether a path belongs to the runtime.
  * @param path - an absolute path.
- * @returns true when the runtime owns it.
+ *
+ * A capability check is not an availability result. WebContainers can pass the
+ * SharedArrayBuffer/cross-origin-isolation checks and still fail (or time out)
+ * during boot. Waiting here makes the first filesystem call use the same
+ * backend as every later one: a failed boot falls back during this call instead
+ * of failing once and only making the *next* call use the page volume.
+ * @returns true when the successfully booted runtime owns it.
  */
-export function routedToRuntime(path: string): boolean {
-  if (!runtimeAvailable()) return false
-  return within(path, ROUTED_ROOT) && !within(path, HOST_ONLY)
+export async function routedToRuntime(path: string): Promise<boolean> {
+  if (!within(path, ROUTED_ROOT) || within(path, HOST_ONLY)) return false
+  return runtimeReady()
 }
 
 /** What a stat needs to report, in the shape the shim's `Stats` is built from. */

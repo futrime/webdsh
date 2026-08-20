@@ -14,7 +14,7 @@
  */
 
 import { runShell } from '../shell/index.ts'
-import { execute as executeInRuntime, runtimeAvailable, runtimeReady } from '../runtime/webcontainer.ts'
+import { execute as executeInRuntime, runtimeReady } from '../runtime/webcontainer.ts'
 import { isRipgrep, ripgrep } from '../runtime/ripgrep.ts'
 import { ReadableStreamShim, StreamEmitter, WritableStreamShim } from './streams.ts'
 import { Buffer, toText } from './binary.ts'
@@ -117,7 +117,7 @@ export class ChildProcessShim extends StreamEmitter {
     // is Node rather than a distribution, so there is no such binary; the
     // implementation over the runtime's own filesystem stands in for it, and
     // has to be reached before the argv is turned into a shell command line.
-    if (runtimeAvailable() && isRipgrep(this.command)) {
+    if (isRipgrep(this.command) && await runtimeReady()) {
       try {
         const result = await ripgrep(this.args, this.options.cwd)
         if (result.stdout !== '') this.stdout?.push(result.stdout)

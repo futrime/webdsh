@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
+import { hasUnpatchedNativeSourceCheck, patchWebKitNativeSourceChecks } from './scripts/webkit-native-source.ts'
 
 /** Resolve a path inside this package. */
 const here = (relative: string): string => fileURLToPath(new URL(relative, import.meta.url))
@@ -72,6 +74,64 @@ const builtinAliases = Object.entries(NODE_SHIMS).flatMap(([name, replacement]) 
   return entries
 })
 
+/** Make dsh's cross-realm plain-JSON guard portable to WebKit. */
+function webkitNativeSourceChecks(): Plugin {
+  let building = false
+  const verify = (source: string, id: string): void => {
+    if (hasUnpatchedNativeSourceCheck(source)) {
+      throw new Error(`an unpatched WebKit native-constructor check remains in ${id}`)
+    }
+  }
+  const patchAndVerify = (source: string, id: string): string => {
+    const code = patchWebKitNativeSourceChecks(source)
+    verify(code, id)
+    return code
+  }
+
+  return {
+    name: 'webkit-native-constructor-source',
+    enforce: 'pre',
+    configResolved(config) {
+      building = config.command === 'build'
+    },
+    load(id) {
+      // `?url` files are normally copied without `transform`, so emit the
+      // patched worker ourselves. Doing this before Rollup names the asset also
+      // keeps its content hash honest for caches and rolling deployments.
+      const [path, query = ''] = id.split('?', 2)
+      if (!building
+        || !query.split('&').includes('url')
+        || !path.endsWith('/node_modules/@deepseek-ai/dsh-code-runtime-worker-thread/lib/worker.cjs')) {
+        return null
+      }
+      const source = patchAndVerify(readFileSync(path, 'utf8'), path)
+      const reference = this.emitFile({ type: 'asset', name: 'worker.cjs', source })
+      return `export default import.meta.ROLLUP_FILE_URL_${reference};`
+    },
+    transform(source, id) {
+      if (!id.includes('/node_modules/@deepseek-ai/')) return null
+      const code = patchAndVerify(source, id)
+      return code === source ? null : { code, map: null }
+    },
+    // Vite copies the code-runtime's sibling CommonJS worker as an asset rather
+    // than passing it through `transform`. Cover emitted JS assets as well as
+    // ordinary chunks, then make an overlooked published copy a build failure.
+    generateBundle(_options, bundle) {
+      for (const output of Object.values(bundle)) {
+        if (output.type === 'chunk') {
+          verify(output.code, output.fileName)
+          continue
+        }
+        if (!/\.(?:c|m)?js$/.test(output.fileName)) continue
+        const source = typeof output.source === 'string'
+          ? output.source
+          : new TextDecoder().decode(output.source)
+        verify(source, output.fileName)
+      }
+    },
+  }
+}
+
 export default defineConfig({
   // Relative asset URLs so the same build works at a GitHub Pages project path,
   // a user/organization site root, or a plain file:// checkout.
@@ -105,8 +165,17 @@ export default defineConfig({
     'process.env.CORDIS_SHARED': 'undefined',
     'process.env.NODE_ENV': '"production"',
   },
+  plugins: [webkitNativeSourceChecks()],
   optimizeDeps: {
     // The shims must win over esbuild's prebundling of the same specifiers.
+    // These four packages also carry the WebKit source-format check above and
+    // must reach the transform rather than disappear inside a prebundle.
+    exclude: [
+      '@deepseek-ai/dsh-session',
+      '@deepseek-ai/dsh-cordis-host-runner',
+      '@deepseek-ai/dsh-tools',
+      '@deepseek-ai/dsh-code-runtime-worker-thread',
+    ],
     esbuildOptions: { target: 'es2022' },
   },
   build: {

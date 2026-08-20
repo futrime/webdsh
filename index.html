@@ -7,6 +7,55 @@
     <link rel="icon" type="image/svg+xml" href="./shell/favicon.svg" />
     <title>DeepSeek Harness</title>
     <script>
+      // The current dsh packages use ES2024 cancellation/deferred helpers and
+      // explicit-resource-management symbols. Safari gained the first two in
+      // 17.4 and the symbols much later; without these small equivalents an
+      // older iPhone can draw the shell but fails as soon as the directory
+      // picker or agent loop does real work. This classic script runs before
+      // the module graph, including dependencies that use computed symbol keys
+      // while evaluating.
+      if (typeof Symbol.dispose !== 'symbol') {
+        Object.defineProperty(Symbol, 'dispose', { value: Symbol.for('Symbol.dispose') })
+      }
+      if (typeof Symbol.asyncDispose !== 'symbol') {
+        Object.defineProperty(Symbol, 'asyncDispose', { value: Symbol.for('Symbol.asyncDispose') })
+      }
+      if (typeof Promise.withResolvers !== 'function') {
+        Promise.withResolvers = function () {
+          var resolve
+          var reject
+          var promise = new this(function (resolvePromise, rejectPromise) {
+            resolve = resolvePromise
+            reject = rejectPromise
+          })
+          return { promise: promise, resolve: resolve, reject: reject }
+        }
+      }
+      if (typeof AbortSignal.any !== 'function') {
+        AbortSignal.any = function (iterable) {
+          var signals = Array.from(iterable)
+          var controller = new AbortController()
+          var listeners = []
+          var abortFrom = function (signal) {
+            for (var i = 0; i < listeners.length; i++) {
+              listeners[i][0].removeEventListener('abort', listeners[i][1])
+            }
+            listeners = []
+            controller.abort(signal.reason)
+          }
+          for (var i = 0; i < signals.length; i++) {
+            if (signals[i].aborted) {
+              abortFrom(signals[i])
+              break
+            }
+            var listener = abortFrom.bind(undefined, signals[i])
+            listeners.push([signals[i], listener])
+            signals[i].addEventListener('abort', listener, { once: true })
+          }
+          return controller.signal
+        }
+      }
+
       // Bootstrap placeholder. Bundled dependencies read `process.platform`
       // while their module bodies evaluate, which happens before any of this
       // app's own modules run — so the object has to exist here, in a classic

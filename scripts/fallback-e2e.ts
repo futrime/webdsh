@@ -77,16 +77,23 @@ async function main(): Promise<void> {
     }))
     expect(composed.credentials, 'the credential store did not mount without a runtime')
 
-    console.log('▶ the first command does not appear frozen')
-    // A command issued before the failing boot gives up has to wait for it, or
-    // the shell and the runtime would disagree about what is on disk. That wait
-    // is bounded, and the bound is what separates "slow" from "broken" — it was
-    // ninety seconds once, which reads as a hang.
+    console.log('▶ the first file read falls back in the same call')
+    // This deliberately lands while WebContainer.boot() is still pending. The
+    // old synchronous capability check routed it into that doomed attempt,
+    // threw at the deadline, and only made the *second* read use the page VFS.
+    // Waiting for the settled backend must make this first operation succeed.
     const started = Date.now()
-    await shell(page, 'true')
+    const seeded = await page.evaluate(async () => {
+      const fs = globalThis.dsh.ctx.get('fs') as {
+        resolve(path: string): Promise<object>
+        readText(target: object): Promise<string>
+      }
+      return fs.readText(await fs.resolve('/home/dsh/workspace/README.md'))
+    })
     const waited = Math.round((Date.now() - started) / 1000)
     console.log(`  waited ${String(waited)}s for the runtime to give up`)
-    expect(waited < 45, `the first command waited ${String(waited)}s, which reads as a freeze`)
+    expect(seeded.startsWith('# Workspace'), 'the first read did not fall back to the seeded VFS')
+    expect(waited < 45, `the first file read waited ${String(waited)}s, which reads as a freeze`)
 
     console.log('▶ the shell falls back to the page')
     // Deliberately not a trivial command: the fallback is a different shell, and

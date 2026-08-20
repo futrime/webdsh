@@ -103,11 +103,12 @@ function TerminalPanel({ open, onClose }: { open: boolean, onClose: () => void }
     }
     const reason = runtime.unavailable()
     if (reason !== undefined) {
-      setMessage(
-        `${reason}. The runtime needs SharedArrayBuffer, which a browser grants only a `
-        + 'cross-origin isolated page; reloading usually fixes it, because the worker that '
-        + 'adds the required headers only controls the page after its first load.',
-      )
+      const isolationProblem = reason.includes('SharedArrayBuffer') || reason.includes('cross-origin isolated')
+      setMessage(isolationProblem
+        ? `${reason}. The runtime needs SharedArrayBuffer, which a browser grants only a `
+          + 'cross-origin isolated page; reloading usually fixes it, because the worker that '
+          + 'adds the required headers only controls the page after its first load.'
+        : reason)
       return
     }
     started.current = true

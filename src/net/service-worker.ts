@@ -103,25 +103,34 @@ function supportsStreamTransfer(): boolean {
  * registered it was fetched without them. One reload through the worker fixes
  * that; the flag makes sure it stays one.
  */
-function reloadForIsolationOnce(): void {
-  if (globalThis.crossOriginIsolated) return
+function reloadForIsolationOnce(): boolean {
+  if (globalThis.crossOriginIsolated) return false
   try {
-    if (sessionStorage.getItem('dsh:isolation-reload') === '1') return
+    if (sessionStorage.getItem('dsh:isolation-reload') === '1') return false
     sessionStorage.setItem('dsh:isolation-reload', '1')
   } catch {
     // Storage is unavailable, so a reload could loop; leaving the page
     // un-isolated costs the VM and nothing else.
-    return
+    return false
   }
   location.reload()
+  return true
+}
+
+/** Whether the request router is ready, or navigation has taken over startup. */
+export interface RequestRouterStatus {
+  controlled: boolean
+  reloading: boolean
 }
 
 /**
  * Register the worker and start answering its requests.
- * @returns whether a worker is registered and controlling this page.
+ * @returns whether a worker controls the page and whether startup triggered the isolation reload.
  */
-export async function installRequestRouter(): Promise<boolean> {
-  if (typeof navigator === 'undefined' || navigator.serviceWorker === undefined) return false
+export async function installRequestRouter(): Promise<RequestRouterStatus> {
+  if (typeof navigator === 'undefined' || navigator.serviceWorker === undefined) {
+    return { controlled: false, reloading: false }
+  }
 
   navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {
     const message = event.data as HostRequestMessage | undefined
@@ -137,8 +146,7 @@ export async function installRequestRouter(): Promise<boolean> {
     const scope = new URL('./', document.baseURI).href
     await navigator.serviceWorker.register(new URL('sw.js', document.baseURI).href, { scope })
     if (navigator.serviceWorker.controller !== null) {
-      reloadForIsolationOnce()
-      return true
+      return { controlled: true, reloading: reloadForIsolationOnce() }
     }
     // A first visit is uncontrolled until the worker activates and claims it.
     await Promise.race([
@@ -148,11 +156,10 @@ export async function installRequestRouter(): Promise<boolean> {
       new Promise<void>((resolve) => { setTimeout(resolve, 3000) }),
     ])
     const controlled = navigator.serviceWorker.controller !== null
-    if (controlled) reloadForIsolationOnce()
-    return controlled
+    return { controlled, reloading: controlled && reloadForIsolationOnce() }
   } catch (error) {
     // A denied or unavailable registration is not a boot failure.
     console.warn('[service-worker] not registered; plugin-served assets will not load:', error)
-    return false
+    return { controlled: false, reloading: false }
   }
 }
