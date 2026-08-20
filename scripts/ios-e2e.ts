@@ -3,9 +3,9 @@
  *
  * WebKit formats native Object/Array constructors over several lines. That is
  * the engine behavior which used to make dsh's strict JSON snapshot reject
- * every ordinary session header. The two APIs removed before navigation also
- * reproduce Safari before 17.4 and prove the classic compatibility bootstrap
- * runs before the imported module graph.
+ * every ordinary session header. The cancellation/deferred APIs removed before
+ * navigation also reproduce older Safari and prove the classic compatibility
+ * bootstrap runs before the imported module graph.
  *
  * Usage: `npx tsx scripts/ios-e2e.ts [--url <url>] [--browser webkit|chromium] [--headed]`
  */
@@ -52,11 +52,13 @@ async function main(): Promise<void> {
     await context.addInitScript(() => {
       Object.defineProperty(Promise, 'withResolvers', { configurable: true, writable: true, value: undefined })
       Object.defineProperty(AbortSignal, 'any', { configurable: true, writable: true, value: undefined })
+      Object.defineProperty(AbortSignal, 'timeout', { configurable: true, writable: true, value: undefined })
+      Object.defineProperty(AbortSignal.prototype, 'throwIfAborted', { configurable: true, writable: true, value: undefined })
     })
 
     const page = await context.newPage()
     const compatibilityErrors: string[] = []
-    const incompatibility = /losslessly JSON|unsupported JSON schema|withResolvers|AbortSignal\.any|Symbol\.(?:async)?Dispose|Importing a module script failed/i
+    const incompatibility = /losslessly JSON|unsupported JSON schema|withResolvers|AbortSignal\.(?:any|timeout)|throwIfAborted|Symbol\.(?:async)?Dispose|Importing a module script failed/i
     page.on('console', (message) => {
       if (incompatibility.test(message.text())) compatibilityErrors.push(message.text())
     })
@@ -86,11 +88,27 @@ async function main(): Promise<void> {
       const second = new AbortController()
       const combined = AbortSignal.any([first.signal, second.signal])
       second.abort('ios-compat')
+      const timed = AbortSignal.timeout(0)
+      await new Promise<void>((resolve, reject) => {
+        if (timed.aborted) return resolve()
+        timed.addEventListener('abort', () => { resolve() }, { once: true })
+        window.setTimeout(() => { reject(new Error('AbortSignal.timeout did not abort')) }, 1_000)
+      })
+      const throwProbe = new AbortController()
+      throwProbe.abort('throw-if-aborted')
+      let threwOnAbort = false
+      try {
+        throwProbe.signal.throwIfAborted()
+      } catch {
+        threwOnAbort = true
+      }
       const disposal = Symbol as SymbolConstructor & { dispose?: symbol, asyncDispose?: symbol }
       return {
         deferredValue,
         combinedAborted: combined.aborted,
         combinedReason: combined.reason,
+        timeoutAborted: timed.aborted,
+        threwOnAbort,
         dispose: typeof disposal.dispose,
         asyncDispose: typeof disposal.asyncDispose,
         objectSource: Function.prototype.toString.call(Object),
@@ -99,23 +117,37 @@ async function main(): Promise<void> {
     })
     expect(compatibility.deferredValue === 'settled', 'Promise.withResolvers was not restored')
     expect(compatibility.combinedAborted && compatibility.combinedReason === 'ios-compat', 'AbortSignal.any was not restored')
+    expect(compatibility.timeoutAborted, 'AbortSignal.timeout was not restored')
+    expect(compatibility.threwOnAbort, 'AbortSignal.prototype.throwIfAborted was not restored')
     expect(compatibility.dispose === 'symbol' && compatibility.asyncDispose === 'symbol', 'disposal symbols are unavailable')
     expect(!compatibility.warnings.some(warning => incompatibility.test(warning)), 'a compatibility API disabled a host row')
     if (browserName === 'webkit') {
       expect(compatibility.objectSource.includes('\n'), 'the WebKit native-source regression was not exercised')
     }
 
-    console.log('▶ the real picker lists the VFS and creates a session')
+    console.log('▶ workspace and preset requests survive the older cancellation API set')
     const notice = page.getByRole('button', { name: 'Continue' })
     // The notice waits on an asynchronous settings read and can mount after the
     // shell itself. Sampling once races it on faster Chromium builds.
     await notice.first().waitFor({ state: 'visible', timeout: 20_000 })
     await notice.first().click()
     await notice.first().waitFor({ state: 'detached', timeout: 20_000 })
+    await page.getByRole('button', { name: 'Standard mode' }).waitFor({ state: 'visible', timeout: 15_000 })
+
+    console.log('▶ the real picker lists the runtime filesystem and creates a session')
+    const filesBacking = await page.evaluate(async () => {
+      const files = (globalThis as unknown as {
+        __DSH_WEB_FILES__: { backing(): Promise<'runtime' | 'page'> }
+      }).__DSH_WEB_FILES__
+      await globalThis.dsh.shell('mkdir -p /home/dsh/ios-picker-probe')
+      return files.backing()
+    })
+    expect(filesBacking === 'runtime', 'the runtime-only picker regression was not exercised')
     await page.getByRole('button', { name: 'Choose workspace' }).click()
     const dialog = page.getByRole('dialog', { name: 'Select Workspace Directory' })
     await dialog.waitFor({ state: 'visible', timeout: 15_000 })
-    expect((await dialog.textContent())?.includes('workspace') === true, 'the directory picker did not list the workspace')
+    await dialog.getByRole('button', { name: 'workspace', exact: true }).waitFor({ state: 'visible', timeout: 15_000 })
+    await dialog.getByRole('button', { name: 'ios-picker-probe', exact: true }).waitFor({ state: 'visible', timeout: 15_000 })
     await dialog.getByRole('button', { name: 'workspace' }).click()
     await dialog.getByRole('button', { name: 'Open' }).click()
     await dialog.waitFor({ state: 'hidden', timeout: 15_000 })

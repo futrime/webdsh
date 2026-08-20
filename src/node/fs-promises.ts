@@ -388,6 +388,10 @@ export const open = async (path: unknown, flags?: string | number, mode?: number
 }
 export const opendir = async (path: unknown): Promise<Dir> => {
   const absolute = toPath(path)
+  if (await routedToRuntime(absolute)) {
+    const entries = await runtimeReaddirTyped(absolute)
+    return new Dir(absolute, entries.map(entry => new Dirent(entry.name, absolute, entry.kind)))
+  }
   return new Dir(absolute, core.readdir(absolute, { withFileTypes: true }) as Dirent[])
 }
 

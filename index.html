@@ -7,13 +7,14 @@
     <link rel="icon" type="image/svg+xml" href="./shell/favicon.svg" />
     <title>DeepSeek Harness</title>
     <script>
-      // The current dsh packages use ES2024 cancellation/deferred helpers and
-      // explicit-resource-management symbols. Safari gained the first two in
-      // 17.4 and the symbols much later; without these small equivalents an
-      // older iPhone can draw the shell but fails as soon as the directory
-      // picker or agent loop does real work. This classic script runs before
-      // the module graph, including dependencies that use computed symbol keys
-      // while evaluating.
+      // The current dsh packages use modern cancellation/deferred helpers and
+      // explicit-resource-management symbols. Safari gained withResolvers and
+      // AbortSignal.any in 17.4, while older releases can also lack timeout and
+      // throwIfAborted. Without these small equivalents an iPhone can draw the
+      // shell (and even the direct Files panel) while every client request —
+      // including workspace and preset loading — repeatedly disconnects. This
+      // classic script runs before the module graph, including dependencies
+      // that use computed symbol keys while evaluating.
       if (typeof Symbol.dispose !== 'symbol') {
         Object.defineProperty(Symbol, 'dispose', { value: Symbol.for('Symbol.dispose') })
       }
@@ -53,6 +54,33 @@
             signals[i].addEventListener('abort', listener, { once: true })
           }
           return controller.signal
+        }
+      }
+      if (typeof AbortSignal.timeout !== 'function') {
+        AbortSignal.timeout = function (delay) {
+          var milliseconds = Number(delay)
+          if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+            throw new TypeError('AbortSignal.timeout requires a non-negative finite delay')
+          }
+          var controller = new AbortController()
+          setTimeout(function () {
+            var reason
+            try {
+              reason = new DOMException('The operation timed out.', 'TimeoutError')
+            } catch (_error) {
+              reason = new Error('The operation timed out.')
+              reason.name = 'TimeoutError'
+            }
+            controller.abort(reason)
+          }, milliseconds)
+          return controller.signal
+        }
+      }
+      if (typeof AbortSignal.prototype.throwIfAborted !== 'function') {
+        AbortSignal.prototype.throwIfAborted = function () {
+          if (!this.aborted) return
+          if (this.reason !== undefined) throw this.reason
+          throw new DOMException('The operation was aborted.', 'AbortError')
         }
       }
 
