@@ -598,6 +598,19 @@ const scenarios: Scenario[] = [
     async run(page) {
       const images = await startImageHost()
       try {
+        // Asked for before the panel is touched, so a host having a bad day is
+        // a reported skip rather than a browser waiting out five minutes on a
+        // disk that is never coming. Windows 3.1 takes the same shape at the
+        // top of its own scenario, for the same reason.
+        const reachable = await fetch(`${images.origin}windows98_state-v2.bin.zst`)
+          .then(async (answer) => {
+            // Drained, not just checked: the fixture caches what it fetched, so
+            // this doubles as the prefetch the boot would have done anyway.
+            await answer.arrayBuffer().catch(() => undefined)
+            return answer.ok
+          }, () => false)
+        if (!reachable) throw new Skipped('the image host would not serve Windows 98\'s saved machine')
+
         await page.goto(`${url}?runtime=node`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
         await waitForShell(page)
         await openRuntimePanel(page)

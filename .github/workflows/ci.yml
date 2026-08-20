@@ -87,9 +87,10 @@ jobs:
         #
         # Windows 3.1 and Windows 98 are booted from images this repository
         # neither ships nor serves; the suite fetches them once, from Node, and
-        # caches them under the runner's temporary directory. Windows 3.1
-        # reports a skip — as a skip, counted separately from the passes — when
-        # no image can be had; every other scenario is a hard failure.
+        # caches them under the runner's temporary directory. Both report a
+        # skip — as a skip, counted separately from the passes — when no image
+        # can be had, so a third party having a bad day does not turn this red.
+        # Every other scenario is a hard failure.
         run: |
           node scripts/serve.mjs 4179 &
           sleep 3
