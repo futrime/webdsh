@@ -88,6 +88,27 @@ async function rows(page: Page): Promise<string[]> {
     .map(row => (row.textContent ?? '').replace(/[↓✕]/g, '').trim()))
 }
 
+/**
+ * Put the panel back in the workspace root, and wait until it is there.
+ *
+ * Checks that write through the panel and then read through the agent depend on
+ * the two agreeing about *where* — and a check that navigates has to hand the
+ * panel back where it found it. Waiting rather than clicking and hoping is the
+ * whole point: on a slower machine the click had not landed before the next
+ * check uploaded into a directory the agent was not looking at, and the symptom
+ * was a file that appeared in the listing and did not exist.
+ * @param page - the loaded app.
+ */
+async function goRoot(page: Page): Promise<void> {
+  const crumb = page.getByRole('button', { name: 'workspace', exact: true })
+  if (await crumb.count() > 0) await crumb.first().evaluate((node: HTMLElement) => { node.click() })
+  await page.waitForFunction(
+    () => (document.querySelector('.dsh-web-files-crumbs')?.textContent ?? '').trim().endsWith('workspace'),
+    undefined,
+    { timeout: 30_000 },
+  )
+}
+
 /** Re-read the current directory through the panel's own button. */
 async function refresh(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Refresh', exact: true }).first()
@@ -267,7 +288,7 @@ const checks: Check[] = [
       )
       const crumbs = await page.evaluate(() => document.querySelector('.dsh-web-files-crumbs')?.textContent ?? '')
       expect(/sub/.test(crumbs), `the breadcrumb did not follow the directory: ${crumbs}`)
-      await page.getByRole('button', { name: 'Up', exact: true }).click()
+      await goRoot(page)
       await page.waitForFunction(
         () => Array.from(document.querySelectorAll('.dsh-web-files-list li')).some(row => (row.textContent ?? '').includes('note.txt')),
         undefined,
@@ -364,7 +385,7 @@ const checks: Check[] = [
         undefined,
         { timeout: 30_000 },
       )
-      await page.getByRole('button', { name: 'Up', exact: true }).click()
+      await goRoot(page)
     },
   },
   {
@@ -373,6 +394,7 @@ const checks: Check[] = [
     name: 'a file uploads into the workspace the agent reads',
     async run(page) {
       await openPanel(page)
+      await goRoot(page)
       await page.setInputFiles('.dsh-web-files input[type=file]', {
         name: 'uploaded.txt',
         mimeType: 'text/plain',
@@ -391,6 +413,7 @@ const checks: Check[] = [
     name: 'a folder is created and a file is deleted',
     async run(page) {
       await openPanel(page)
+      await goRoot(page)
       page.once('dialog', (dialog) => { void dialog.accept('made-here') })
       await page.getByRole('button', { name: 'New folder' }).click()
       await page.waitForFunction(
