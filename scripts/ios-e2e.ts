@@ -3,9 +3,9 @@
  *
  * WebKit formats native Object/Array constructors over several lines. That is
  * the engine behavior which used to make dsh's strict JSON snapshot reject
- * every ordinary session header. The cancellation/deferred APIs removed before
- * navigation also reproduce older Safari and prove the classic compatibility
- * bootstrap runs before the imported module graph.
+ * every ordinary session header. The stream, cancellation and deferred APIs
+ * removed before navigation also reproduce older Safari and prove the classic
+ * compatibility bootstrap runs before the imported module graph.
  *
  * Usage: `npx tsx scripts/ios-e2e.ts [--url <url>] [--browser webkit|chromium] [--headed]`
  */
@@ -57,11 +57,13 @@ async function main(): Promise<void> {
       Object.defineProperty(AbortSignal, 'any', { configurable: true, writable: true, value: undefined })
       Object.defineProperty(AbortSignal, 'timeout', { configurable: true, writable: true, value: undefined })
       Object.defineProperty(AbortSignal.prototype, 'throwIfAborted', { configurable: true, writable: true, value: undefined })
+      Object.defineProperty(ReadableStream.prototype, 'values', { configurable: true, writable: true, value: undefined })
+      Object.defineProperty(ReadableStream.prototype, Symbol.asyncIterator, { configurable: true, writable: true, value: undefined })
     })
 
     const page = await context.newPage()
     const compatibilityErrors: string[] = []
-    const incompatibility = /losslessly JSON|unsupported JSON schema|randomUUID|Object\.hasOwn|Response\.json|withResolvers|AbortSignal\.(?:any|timeout)|throwIfAborted|Symbol\.(?:async)?Dispose|Importing a module script failed/i
+    const incompatibility = /losslessly JSON|unsupported JSON schema|randomUUID|Object\.hasOwn|Response\.json|withResolvers|AbortSignal\.(?:any|timeout)|throwIfAborted|ReadableStream.*(?:values|iterator)|not (?:async )?iterable|Symbol\.(?:asyncIterator|(?:async)?Dispose)|Importing a module script failed/i
     page.on('console', (message) => {
       if (incompatibility.test(message.text())) compatibilityErrors.push(message.text())
     })
@@ -108,6 +110,43 @@ async function main(): Promise<void> {
       const disposal = Symbol as SymbolConstructor & { dispose?: symbol, asyncDispose?: symbol }
       const uuid = crypto.randomUUID()
       const jsonResponse = Response.json({ restored: true }, { status: 201, headers: { 'x-ios-probe': 'yes' } })
+      type IterableStream<T> = ReadableStream<T> & {
+        values(options?: { preventCancel?: boolean }): AsyncIterableIterator<T>
+        [Symbol.asyncIterator](): AsyncIterableIterator<T>
+      }
+      const naturallyEnded = new ReadableStream<string>({
+        start(controller) {
+          controller.enqueue('first')
+          controller.enqueue('second')
+          controller.close()
+        },
+      }) as IterableStream<string>
+      const naturalIterator = naturallyEnded[Symbol.asyncIterator]()
+      const naturalFirst = await naturalIterator.next()
+      const naturalSecond = await naturalIterator.next()
+      const naturalEnd = await naturalIterator.next()
+
+      let cancelled = 0
+      const cancelledByReturn = new ReadableStream<string>({
+        start(controller) { controller.enqueue('cancel-me') },
+        cancel() { cancelled += 1 },
+      }) as IterableStream<string>
+      const cancellingIterator = cancelledByReturn[Symbol.asyncIterator]()
+      await cancellingIterator.next()
+      const cancelledReturn = await cancellingIterator.return?.()
+
+      let preventedCancellation = 0
+      const keptByReturn = new ReadableStream<string>({
+        start(controller) { controller.enqueue('keep-me') },
+        cancel() { preventedCancellation += 1 },
+      }) as IterableStream<string>
+      const keepingIterator = keptByReturn.values({ preventCancel: true })
+      await keepingIterator.next()
+      const keptReturn = await keepingIterator.return?.()
+      const readablePrototype = ReadableStream.prototype as unknown as {
+        values?: unknown
+        [Symbol.asyncIterator]?: unknown
+      }
       return {
         uuid,
         hasOwn: Object.hasOwn({ own: true }, 'own') && !Object.hasOwn(Object.create({ inherited: true }), 'inherited'),
@@ -124,6 +163,19 @@ async function main(): Promise<void> {
         threwOnAbort,
         dispose: typeof disposal.dispose,
         asyncDispose: typeof disposal.asyncDispose,
+        stream: {
+          values: typeof readablePrototype.values,
+          iterator: typeof readablePrototype[Symbol.asyncIterator],
+          naturalChunks: [naturalFirst.value, naturalSecond.value],
+          naturalDone: naturalEnd.done === true,
+          naturalReleased: !naturallyEnded.locked,
+          cancelled,
+          cancelledDone: cancelledReturn?.done === true,
+          cancelledReleased: !cancelledByReturn.locked,
+          preventedCancellation,
+          keptDone: keptReturn?.done === true,
+          keptReleased: !keptByReturn.locked,
+        },
         objectSource: Function.prototype.toString.call(Object),
         warnings: ((globalThis as { __DSH_WARNINGS__?: string[] }).__DSH_WARNINGS__ ?? []),
       }
@@ -139,12 +191,106 @@ async function main(): Promise<void> {
     expect(compatibility.timeoutAborted, 'AbortSignal.timeout was not restored')
     expect(compatibility.threwOnAbort, 'AbortSignal.prototype.throwIfAborted was not restored')
     expect(compatibility.dispose === 'symbol' && compatibility.asyncDispose === 'symbol', 'disposal symbols are unavailable')
+    expect(compatibility.stream.values === 'function', 'ReadableStream.prototype.values was not restored')
+    expect(compatibility.stream.iterator === 'function', 'ReadableStream async iteration was not restored')
+    expect(JSON.stringify(compatibility.stream.naturalChunks) === '["first","second"]', 'ReadableStream async iteration changed chunk order')
+    expect(compatibility.stream.naturalDone, 'ReadableStream async iteration did not end naturally')
+    expect(compatibility.stream.naturalReleased, 'a naturally ended ReadableStream kept its reader lock')
+    expect(compatibility.stream.cancelled === 1, 'iterator.return() did not cancel its ReadableStream by default')
+    expect(compatibility.stream.cancelledDone, 'iterator.return() did not finish its iterator')
+    expect(compatibility.stream.cancelledReleased, 'iterator.return() did not release its reader lock')
+    expect(compatibility.stream.preventedCancellation === 0, 'values({ preventCancel: true }) cancelled its ReadableStream')
+    expect(compatibility.stream.keptDone, 'the preventCancel iterator did not finish on return()')
+    expect(compatibility.stream.keptReleased, 'the preventCancel iterator did not release its reader lock')
     expect(!compatibility.warnings.some(warning => incompatibility.test(warning)), 'a compatibility API disabled a host row')
     if (browserName === 'webkit') {
       expect(compatibility.objectSource.includes('\n'), 'the WebKit native-source regression was not exercised')
     }
 
-    console.log('▶ workspace, provider and preset requests survive the legacy API set')
+    console.log('▶ Files and bounded host requests survive the missing stream iterator')
+    const transport = await page.evaluate(async () => {
+      type Outcome<T> =
+        | { kind: 'fulfilled', value: T }
+        | { kind: 'rejected', error: string }
+        | { kind: 'timeout' }
+      type RpcBody = {
+        type?: string
+        rpcId?: string
+        result?: { ok?: boolean, value?: Record<string, unknown> }
+      }
+
+      const files = (globalThis as unknown as {
+        __DSH_WEB_FILES__: {
+          root(): string
+          list(path: string): Promise<{ name: string }[]>
+        }
+      }).__DSH_WEB_FILES__
+      let filesTimer = 0
+      const filesOutcome = await Promise.race<Outcome<string[]>>([
+        files.list(files.root()).then<Outcome<string[]>, Outcome<string[]>>(
+          entries => ({ kind: 'fulfilled', value: entries.map(entry => entry.name) }),
+          error => ({ kind: 'rejected', error: error instanceof Error ? error.message : String(error) }),
+        ),
+        new Promise<Outcome<string[]>>((resolve) => {
+          filesTimer = window.setTimeout(() => { resolve({ kind: 'timeout' }) }, 45_000)
+        }),
+      ])
+      window.clearTimeout(filesTimer)
+
+      const methods = ['workspace.list', 'agentPreset.list', 'llm.providers'] as const
+      const requests = await Promise.all(methods.map(async (method) => {
+        const rpcId = crypto.randomUUID()
+        let requestTimer = 0
+        const request = fetch(`/api/${method}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ type: 'client-request', rpcId, method, payload: {} }),
+        }).then(async (response) => {
+          const body = await response.json() as RpcBody
+          const value = body.result?.value
+          const shape = method === 'workspace.list'
+            ? Array.isArray(value?.items)
+            : method === 'agentPreset.list'
+              ? Array.isArray(value?.presets)
+              : Array.isArray(value?.providers)
+          return {
+            status: response.status,
+            responseType: body.type,
+            responseRpcId: body.rpcId,
+            ok: body.result?.ok === true,
+            shape,
+          }
+        }).then<Outcome<{
+          status: number
+          responseType: string | undefined
+          responseRpcId: string | undefined
+          ok: boolean
+          shape: boolean
+        }>, Outcome<never>>(
+          value => ({ kind: 'fulfilled', value }),
+          error => ({ kind: 'rejected', error: error instanceof Error ? error.message : String(error) }),
+        )
+        const outcome = await Promise.race([request, new Promise<Outcome<never>>((resolve) => {
+          requestTimer = window.setTimeout(() => { resolve({ kind: 'timeout' }) }, 5_000)
+        })])
+        window.clearTimeout(requestTimer)
+        return { method, rpcId, outcome }
+      }))
+      return { files: filesOutcome, requests }
+    })
+    expect(transport.files.kind === 'fulfilled', `the Files bridge did not settle: ${JSON.stringify(transport.files)}`)
+    for (const request of transport.requests) {
+      expect(request.outcome.kind !== 'timeout', `${request.method} remained pending past its deadline`)
+      expect(request.outcome.kind !== 'rejected', `${request.method} rejected: ${JSON.stringify(request.outcome)}`)
+      if (request.outcome.kind !== 'fulfilled') continue
+      expect(request.outcome.value.status === 200, `${request.method} returned HTTP ${String(request.outcome.value.status)}`)
+      expect(request.outcome.value.responseType === 'server-response', `${request.method} returned the wrong envelope type`)
+      expect(request.outcome.value.responseRpcId === request.rpcId, `${request.method} returned the wrong rpcId`)
+      expect(request.outcome.value.ok, `${request.method} returned an unsuccessful RPC result`)
+      expect(request.outcome.value.shape, `${request.method} returned the wrong value shape`)
+    }
+
+    console.log('▶ workspace, provider and preset UI loads through the same host requests')
     const notice = page.getByRole('button', { name: 'Continue' })
     // The notice waits on an asynchronous settings read and can mount after the
     // shell itself. Sampling once races it on faster Chromium builds.

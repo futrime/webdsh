@@ -7,7 +7,7 @@
     <link rel="icon" type="image/svg+xml" href="./shell/favicon.svg" />
     <title>DeepSeek Harness</title>
     <script>
-      // The current dsh packages use modern UUID, object, response,
+      // The current dsh packages use modern UUID, object, response, stream,
       // cancellation/deferred and explicit-resource-management helpers.
       // Without these small equivalents an iPhone can draw the shell (and even
       // the direct Files panel) while every client request — including
@@ -53,6 +53,103 @@
             })
           },
         })
+      }
+      if (typeof ReadableStream === 'function' && typeof Symbol.asyncIterator === 'symbol') {
+        var readableStreamPrototype = ReadableStream.prototype
+        if (typeof readableStreamPrototype.values !== 'function') {
+          Object.defineProperty(readableStreamPrototype, 'values', {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: function (options) {
+              var preventCancel = options !== undefined && options !== null
+                && Boolean(Object(options).preventCancel)
+              var reader = this.getReader()
+              var finished = false
+              var ongoing = Promise.resolve()
+
+              var release = function () {
+                reader.releaseLock()
+              }
+              var releaseAfterError = function () {
+                // Releasing is cleanup. If reading or cancellation already
+                // failed, that original failure is the useful one to preserve.
+                try { release() } catch (_releaseError) {}
+              }
+              var nextStep = function () {
+                if (finished) return Promise.resolve({ value: undefined, done: true })
+                var reading
+                try {
+                  reading = reader.read()
+                } catch (error) {
+                  finished = true
+                  releaseAfterError()
+                  return Promise.reject(error)
+                }
+                return Promise.resolve(reading).then(function (result) {
+                  if (result.done) {
+                    finished = true
+                    release()
+                  }
+                  return result
+                }, function (error) {
+                  finished = true
+                  releaseAfterError()
+                  throw error
+                })
+              }
+              var returnStep = function (value) {
+                if (finished) return Promise.resolve({ value: value, done: true })
+                finished = true
+
+                var cancellation
+                try {
+                  cancellation = preventCancel ? Promise.resolve() : reader.cancel(value)
+                } catch (error) {
+                  releaseAfterError()
+                  return Promise.reject(error)
+                }
+
+                var releaseError
+                try { release() } catch (error) { releaseError = error }
+                return Promise.resolve(cancellation).then(function () {
+                  if (releaseError !== undefined) throw releaseError
+                  return { value: value, done: true }
+                }, function (error) {
+                  // A cancellation failure is primary; a release failure must
+                  // not replace it.
+                  throw error
+                })
+              }
+
+              var iterator = {
+                next: function () {
+                  ongoing = ongoing.then(nextStep, nextStep)
+                  return ongoing
+                },
+                return: function (value) {
+                  ongoing = ongoing.then(function () { return returnStep(value) }, function () { return returnStep(value) })
+                  return ongoing
+                },
+              }
+              Object.defineProperty(iterator, Symbol.asyncIterator, {
+                configurable: true,
+                enumerable: false,
+                writable: true,
+                value: function () { return this },
+              })
+              return iterator
+            },
+          })
+        }
+        if (typeof readableStreamPrototype[Symbol.asyncIterator] !== 'function') {
+          Object.defineProperty(readableStreamPrototype, Symbol.asyncIterator, {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: function (options) { return this.values(options) },
+          })
+        }
       }
       if (typeof Symbol.dispose !== 'symbol') {
         Object.defineProperty(Symbol, 'dispose', { value: Symbol.for('Symbol.dispose') })

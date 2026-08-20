@@ -20,6 +20,7 @@
     "test:task": "tsx scripts/task-e2e.ts",
     "test:fallback": "tsx scripts/fallback-e2e.ts",
     "test:ios": "tsx scripts/ios-e2e.ts",
+    "test:http": "tsx scripts/http-shim-test.ts",
     "test:shell": "node scripts/shell-diff.mjs",
     "test:python": "tsx scripts/python-e2e.ts",
     "test:files": "tsx scripts/files-e2e.ts",

@@ -99,23 +99,43 @@ export class ServerResponseShim extends StreamEmitter {
   statusMessage = 'OK'
   headersSent = false
   finished = false
+  destroyed = false
   private readonly headers = new Map<string, string>()
   private readonly done: (response: { status: number, headers: Record<string, string>, body: ReadableStream<Uint8Array> }) => void
+  private readonly failed: (error: Error) => void
   readonly socket: SocketShim
 
   /** Whether the reply has been handed to the caller yet. */
   private started = false
+  /** Whether the Node-style `close` event has already been emitted. */
+  private closed = false
+  /** The first abnormal termination, reused by any producer that writes late. */
+  private failure: Error | undefined
   /** Feeds {@link body}; set synchronously by the stream's `start`. */
   private controller: ReadableStreamDefaultController<Uint8Array> | undefined
   /** The response body, produced as the handler writes it. */
   private readonly body: ReadableStream<Uint8Array>
 
-  constructor(socket: SocketShim, done: (response: { status: number, headers: Record<string, string>, body: ReadableStream<Uint8Array> }) => void) {
+  constructor(
+    socket: SocketShim,
+    done: (response: { status: number, headers: Record<string, string>, body: ReadableStream<Uint8Array> }) => void,
+    failed: (error: Error) => void = () => {},
+  ) {
     super()
     this.socket = socket
     this.done = done
+    this.failed = failed
     this.body = new ReadableStream<Uint8Array>({
       start: (controller) => { this.controller = controller },
+      // A consumer that stops reading is the virtual equivalent of a client
+      // closing its socket. Propagate that close to the Node handler so its
+      // own AbortController can stop any producer still doing work.
+      cancel: (reason) => {
+        const error = reason instanceof Error
+          ? reason
+          : Object.assign(new Error(reason === undefined ? 'response body cancelled' : String(reason)), { name: 'AbortError' })
+        this.destroyResponse(error, true, false)
+      },
     })
   }
 
@@ -130,13 +150,71 @@ export class ServerResponseShim extends StreamEmitter {
    * that is the moment it commits them to the wire.
    */
   private begin(): void {
-    if (this.started) return
+    if (this.started || this.destroyed) return
     this.started = true
     this.headersSent = true
     this.done({ status: this.statusCode, headers: Object.fromEntries(this.headers), body: this.body })
   }
 
+  /** Emit the response close exactly once. */
+  private close(): void {
+    if (this.closed) return
+    this.closed = true
+    this.emit('close')
+  }
+
+  /**
+   * Tear down an incomplete reply.
+   *
+   * Before `begin()` the fetch promise itself must reject. After `begin()` the
+   * caller already owns a Response, so error its body instead. `bodyCancelled`
+   * prevents a second controller transition when this was invoked by the
+   * stream's own underlying-source `cancel()` callback.
+   */
+  private destroyResponse(error: Error, bodyCancelled: boolean, emitError: boolean): void {
+    if (this.destroyed || this.finished) return
+    this.destroyed = true
+    this.failure = error
+    if (this.started) {
+      if (!bodyCancelled) {
+        try {
+          this.controller?.error(error)
+        } catch {}
+      }
+    } else {
+      this.failed(error)
+    }
+    this.socket.destroy()
+    if (emitError) this.emit('error', error)
+    this.close()
+  }
+
+  /** Node rejects header mutation after the wire-visible commit point. */
+  private assertHeadersMutable(): void {
+    if (!this.headersSent) return
+    throw Object.assign(new Error('Cannot set headers after they are sent to the client'), { code: 'ERR_HTTP_HEADERS_SENT' })
+  }
+
+  /** A late write must fail now; returning false would promise a future drain that can never fire. */
+  private assertWritable(): void {
+    if (this.destroyed) {
+      throw Object.assign(new Error('Cannot call write after a stream was destroyed'), {
+        code: 'ERR_STREAM_DESTROYED',
+        cause: this.failure,
+      })
+    }
+    if (this.finished) {
+      throw Object.assign(new Error('write after end'), { code: 'ERR_STREAM_WRITE_AFTER_END' })
+    }
+  }
+
+  /** Statuses whose Fetch representation is required to have no body. */
+  private get bodyless(): boolean {
+    return this.statusCode === 204 || this.statusCode === 304
+  }
+
   setHeader(name: string, value: string | string[] | number): this {
+    this.assertHeadersMutable()
     this.headers.set(name.toLowerCase(), Array.isArray(value) ? value.join(', ') : String(value))
     return this
   }
@@ -150,35 +228,48 @@ export class ServerResponseShim extends StreamEmitter {
   }
 
   removeHeader(name: string): void {
+    this.assertHeadersMutable()
     this.headers.delete(name.toLowerCase())
   }
 
   writeHead(status: number, reasonOrHeaders?: string | Record<string, string | number>, maybeHeaders?: Record<string, string | number>): this {
+    if (this.destroyed || this.finished) return this
+    this.assertHeadersMutable()
     this.statusCode = status
     const headers = typeof reasonOrHeaders === 'string' ? maybeHeaders : reasonOrHeaders
     if (typeof reasonOrHeaders === 'string') this.statusMessage = reasonOrHeaders
     for (const [name, value] of Object.entries(headers ?? {})) this.setHeader(name, value)
-    this.headersSent = true
+    // This is the virtual wire's header-commit point. Beginning here mirrors a
+    // real response and, crucially, gives a later stream failure a body it can
+    // error instead of leaving dispatch waiting for a first chunk forever.
+    this.begin()
     return this
   }
 
   write(chunk: Uint8Array | string, encoding?: string | (() => void), callback?: () => void): boolean {
+    this.assertWritable()
     this.begin()
-    if (!this.finished) this.controller?.enqueue(toBytes(chunk, typeof encoding === 'string' ? encoding : 'utf8'))
+    // `begin()` can synchronously fail while constructing the Fetch Response.
+    this.assertWritable()
+    if (!this.bodyless) this.controller?.enqueue(toBytes(chunk, typeof encoding === 'string' ? encoding : 'utf8'))
     const finish = typeof encoding === 'function' ? encoding : callback
     if (finish !== undefined) queueMicrotask(finish)
     return true
   }
 
   end(chunk?: Uint8Array | string | (() => void), callback?: () => void): this {
-    if (this.finished) return this
+    if (this.destroyed || this.finished) return this
     this.begin()
-    if (chunk !== undefined && typeof chunk !== 'function') this.controller?.enqueue(toBytes(chunk))
+    // A synchronous failure in the `done` callback has already rejected the
+    // dispatch and destroyed this response; do not create a second stream
+    // state error while unwinding the handler.
+    if (this.destroyed) return this
+    if (!this.bodyless && chunk !== undefined && typeof chunk !== 'function') this.controller?.enqueue(toBytes(chunk))
     this.finished = true
     this.controller?.close()
     queueMicrotask(() => {
       this.emit('finish')
-      this.emit('close')
+      this.close()
       if (typeof chunk === 'function') chunk()
       callback?.()
     })
@@ -191,7 +282,10 @@ export class ServerResponseShim extends StreamEmitter {
   }
 
   setTimeout(): this { return this }
-  destroy(): this { return this }
+  destroy(error?: Error): this {
+    this.destroyResponse(error ?? new TypeError('virtual response destroyed before completion'), false, error !== undefined)
+    return this
+  }
   get writableEnded(): boolean { return this.finished }
 }
 
@@ -265,6 +359,15 @@ export interface VirtualResponse {
   body: Uint8Array
 }
 
+/** Preserve an AbortSignal's Error reason, or give non-Error reasons a useful transport error. */
+function requestAbortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason
+  return Object.assign(
+    new Error(signal.reason === undefined ? 'the virtual request was aborted' : String(signal.reason)),
+    { name: 'AbortError' },
+  )
+}
+
 /**
  * Route a WHATWG `Request` through the virtual servers.
  * @param request - the request the page's patched `fetch` intercepted.
@@ -273,6 +376,7 @@ export interface VirtualResponse {
 export async function dispatchVirtualRequest(request: Request): Promise<Response | undefined> {
   const server = [...servers][0]
   if (server === undefined) return undefined
+  if (request.signal.aborted) throw requestAbortError(request.signal)
   const url = new URL(request.url)
   const headers: Record<string, string> = {}
   request.headers.forEach((value, name) => {
@@ -293,19 +397,48 @@ export async function dispatchVirtualRequest(request: Request): Promise<Response
   // The one authority this virtual server has: itself.
   headers.host = `127.0.0.1:${String(server.address()?.port ?? 3080)}`
   const body = new Uint8Array(await request.arrayBuffer())
+  if (request.signal.aborted) throw requestAbortError(request.signal)
   const socket = new SocketShim()
 
-  return new Promise<Response>((resolve) => {
-    const res = new ServerResponseShim(socket, (result) => {
-      // 204 and 304 must carry no body at all; anything else streams, including
-      // an empty one, which reads as zero bytes.
-      const bodyless = result.status === 204 || result.status === 304
-      resolve(new Response(bodyless ? null : result.body, {
-        status: result.status,
-        headers: result.headers,
-      }))
-    })
+  return new Promise<Response>((resolve, reject) => {
+    let res: ServerResponseShim
     const req = new IncomingMessageShim(request.method, `${url.pathname}${url.search}`, headers, body, socket)
+    const removeAbortListener = (): void => {
+      request.signal.removeEventListener('abort', onAbort)
+    }
+    const onAbort = (): void => {
+      const error = requestAbortError(request.signal)
+      req.aborted = true
+      req.destroy()
+      res.destroy(error)
+    }
+    res = new ServerResponseShim(
+      socket,
+      (result) => {
+        try {
+          // 204 and 304 must carry no body at all; anything else streams,
+          // including an empty one, which reads as zero bytes.
+          const bodyless = result.status === 204 || result.status === 304
+          resolve(new Response(bodyless ? null : result.body, {
+            status: result.status,
+            headers: result.headers,
+          }))
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error))
+          reject(failure)
+          res.destroy(failure)
+        }
+      },
+      reject,
+    )
+    res.once('close', removeAbortListener)
+    request.signal.addEventListener('abort', onAbort, { once: true })
+    // Close the small race between the check before reading the request body
+    // and installing the listener above.
+    if (request.signal.aborted) {
+      onAbort()
+      return
+    }
     if (!server.emit('request', req, res)) {
       res.writeHead(404)
       res.end()
