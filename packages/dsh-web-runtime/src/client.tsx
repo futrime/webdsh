@@ -270,6 +270,21 @@ function RuntimePanel({ open, onClose }: { open: boolean, onClose: () => void })
       </div>
 
       <div className="dsh-web-runtime-body">
+        {!same && (
+          <div className="dsh-web-runtime-apply">
+            <button type="button" onClick={apply}>Use this machine</button>
+            {saved && (
+              <span>
+                Saved. It applies on the next load —{' '}
+                <button type="button" className="dsh-web-runtime-link" onClick={() => { location.reload() }}>
+                  reload now
+                </button>
+                .
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Only while the panel is showing. The screen is the app's element,
             not this component's, and a closed panel is `display: none` — an
             element with no box, which is the one state the emulator's screen
@@ -368,20 +383,20 @@ function RuntimePanel({ open, onClose }: { open: boolean, onClose: () => void })
 
         {problem !== undefined && <p className="dsh-web-runtime-problem">{problem}</p>}
 
-        <div className="dsh-web-runtime-apply">
-          <button type="button" disabled={same && !hostChanged} onClick={apply}>
-            {same ? 'Save image host' : 'Use this machine'}
-          </button>
-          {saved && (
-            <span>
-              Saved. It applies on the next load —{' '}
-              <button type="button" className="dsh-web-runtime-link" onClick={() => { location.reload() }}>
-                reload now
-              </button>
-              .
-            </span>
-          )}
-        </div>
+        {same && (
+          <div className="dsh-web-runtime-apply" data-end>
+            <button type="button" disabled={!hostChanged} onClick={apply}>Save image host</button>
+            {saved && (
+              <span>
+                Saved. It applies on the next load —{' '}
+                <button type="button" className="dsh-web-runtime-link" onClick={() => { location.reload() }}>
+                  reload now
+                </button>
+                .
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -459,7 +474,8 @@ const STYLE = `
 .dsh-web-runtime-host{display:flex;gap:.5rem;align-items:center}
 .dsh-web-runtime-host input{flex:1;font:inherit;padding:.3rem .5rem;border-radius:.35rem;background:transparent;color:inherit;
  border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4))}
-.dsh-web-runtime-apply{display:flex;align-items:center;gap:.7rem;margin-top:1.4rem}
+.dsh-web-runtime-apply{display:flex;align-items:center;gap:.7rem;margin:0 0 1.4rem}
+.dsh-web-runtime-apply[data-end]{margin:1.4rem 0 0}
 .dsh-web-runtime-apply button,.dsh-web-runtime-disk button,.dsh-web-runtime-host button{font:inherit;cursor:pointer;
  border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4));background:transparent;color:inherit;
  border-radius:.35rem;padding:.3rem .7rem}
