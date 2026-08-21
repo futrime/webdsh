@@ -423,13 +423,13 @@ function RuntimeAction({ open, onToggle, wide }: { open: boolean, onToggle: () =
 
 const STYLE = `
 .dsh-web-runtime[hidden]{display:none}
-.dsh-web-runtime{position:fixed;inset:0;z-index:70;display:flex;flex-direction:column;background:var(--dsw-alias-bg-primary,#0d1017);
- color:var(--dsw-alias-label-primary,#dfe3ea)}
+.dsh-web-runtime{position:fixed;inset:0;z-index:70;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1,Canvas);
+ color:var(--dsw-alias-label-primary,CanvasText)}
 .dsh-web-runtime-bar{display:flex;align-items:center;gap:.75rem;padding:.55rem .9rem;flex:none;
- border-bottom:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.25));font:13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+ border-bottom:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.25));font:13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
 .dsh-web-runtime-title{font-weight:600}
 .dsh-web-runtime-now{opacity:.6;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dsh-web-runtime-bar button{font:inherit;background:transparent;border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.4));
+.dsh-web-runtime-bar button{font:inherit;background:transparent;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4));
  color:inherit;border-radius:.35rem;padding:.2rem .55rem;cursor:pointer}
 .dsh-web-runtime-body{flex:1;min-height:0;overflow:auto;padding:1rem 1.1rem 2rem;
  font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;max-width:64rem;width:100%;margin:0 auto;box-sizing:border-box}
@@ -442,7 +442,7 @@ const STYLE = `
 .dsh-web-runtime-screen:focus{outline:none}
 .dsh-web-runtime-step,.dsh-web-runtime-hint{margin:0;font-size:12px;opacity:.6}
 .dsh-web-runtime-notice{padding:1rem;opacity:.7;font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace}
-.dsh-web-runtime-row{border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.22));border-radius:.5rem;margin-bottom:.4rem;overflow:hidden}
+.dsh-web-runtime-row{border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.22));border-radius:.5rem;margin-bottom:.4rem;overflow:hidden}
 .dsh-web-runtime-row[data-chosen]{border-color:var(--dsw-alias-border-focus,#2f81f7)}
 .dsh-web-runtime-pick{display:grid;grid-template-columns:minmax(9rem,auto) 1fr;gap:.15rem .75rem;width:100%;text-align:left;
  background:0 0;border:0;color:inherit;font:inherit;padding:.6rem .75rem;cursor:pointer}
@@ -450,18 +450,18 @@ const STYLE = `
 .dsh-web-runtime-name{font-weight:600}
 .dsh-web-runtime-tags{display:flex;gap:.35rem;flex-wrap:wrap;justify-self:start}
 .dsh-web-runtime-tags span{font-size:11px;padding:.05rem .4rem;border-radius:.6rem;opacity:.75;
- border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.35))}
+ border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.35))}
 .dsh-web-runtime-detail{grid-column:1/-1;opacity:.7}
 .dsh-web-runtime-disk{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;padding:.5rem .75rem;font-size:12px;opacity:.85;
- border-top:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.18))}
+ border-top:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.18))}
 .dsh-web-runtime-disk span{flex:1;min-width:16rem}
 .dsh-web-runtime-problem{margin:.8rem 0 0;color:var(--dsw-alias-label-danger,#f5a3a3)}
 .dsh-web-runtime-host{display:flex;gap:.5rem;align-items:center}
 .dsh-web-runtime-host input{flex:1;font:inherit;padding:.3rem .5rem;border-radius:.35rem;background:transparent;color:inherit;
- border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.4))}
+ border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4))}
 .dsh-web-runtime-apply{display:flex;align-items:center;gap:.7rem;margin-top:1.4rem}
 .dsh-web-runtime-apply button,.dsh-web-runtime-disk button,.dsh-web-runtime-host button{font:inherit;cursor:pointer;
- border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.4));background:transparent;color:inherit;
+ border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4));background:transparent;color:inherit;
  border-radius:.35rem;padding:.3rem .7rem}
 .dsh-web-runtime-apply button:disabled{opacity:.4;cursor:default}
 .dsh-web-runtime-link{border:0!important;padding:0!important;text-decoration:underline}
