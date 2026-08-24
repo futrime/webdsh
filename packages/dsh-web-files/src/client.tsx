@@ -194,6 +194,11 @@ function FilesPanel({ open, target, onClose }: {
     if (!open || target === undefined) return
     const api = files()
     if (api === undefined) return
+    // Whatever was last on screen is not what was asked for. Reading the new
+    // file takes a moment, and leaving the old one up for that moment means a
+    // click on one path shows another path's contents — briefly, and long
+    // enough to be read and believed.
+    setViewing(undefined)
     void (async () => {
       const directory = parentOf(target, home)
       const listed = await api.list(directory).catch(() => undefined)
