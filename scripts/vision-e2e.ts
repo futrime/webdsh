@@ -46,6 +46,63 @@ async function waitForHost(page: Page): Promise<void> {
   await page.evaluate(FIXTURES_SOURCE)
 }
 
+/** The fixture builders `scripts/vision-fixtures.ts` installs in the page. */
+interface Fixtures {
+  png(width: number, height: number, bitDepth: number, colourType: number, extra?: Uint8Array[]): Promise<Uint8Array>
+  pngChunk(name: string, body: Uint8Array): Uint8Array
+  withExif(jpeg: Uint8Array, orientation: number): Uint8Array
+  draw(width: number, height: number, alpha: boolean): OffscreenCanvas
+  noise(width: number, height: number): OffscreenCanvas
+  encode(canvas: OffscreenCanvas, type: string, quality?: number): Promise<Uint8Array>
+  animatedGif(): Uint8Array
+  ascii(text: string): Uint8Array
+  concat(parts: Uint8Array[]): Uint8Array
+}
+
+/** One durable image, as the store hands it back. */
+interface ImageRef {
+  attachmentId: string
+  mediaType: string
+  bytes: number
+  width: number
+  height: number
+}
+
+/** As much of `ctx.attachments` as this suite calls. */
+interface Attachments {
+  imageLimits: { maxImagesPerMessage: number, mediaTypes: string[] }
+  saveImage(input: { data: Uint8Array, mediaType: string, displayName?: string }): Promise<ImageRef>
+  saveImages(inputs: { data: Uint8Array, mediaType: string }[]): Promise<ImageRef[]>
+  readImage(ref: ImageRef): Promise<{ data: Uint8Array }>
+  readImageRequest(ref: ImageRef, policy: { maxPixels: number, maxBytes: number }): Promise<{
+    data: Uint8Array
+    width: number
+    height: number
+    variantId: string
+  }>
+}
+
+/** One RPC's answer, in the shape the gateway returns it. */
+interface Answer<T> { result: { ok: boolean, value?: T, error?: unknown } }
+
+/** As much of the gateway as this suite drives. */
+interface Gateway {
+  sessions: {
+    create(request: { rpcId: string, payload: Record<string, never> }): Promise<Answer<{ sessionId: string }>>
+    selectModel(request: { rpcId: string, payload: Record<string, string> }): Promise<Answer<unknown>>
+    prompt(request: { rpcId: string, payload: Record<string, unknown> }): Promise<Answer<unknown>>
+    history(request: { rpcId: string, payload: Record<string, string> }): Promise<Answer<unknown>>
+  }
+  events: {
+    mux(request: { rpcId: string, payload: Record<string, never> }, signal: AbortSignal): AsyncIterable<{
+      payload: { event?: { type?: string, data?: { name?: string, chunk?: { type?: string, text?: string } } } }
+    }>
+  }
+}
+
+/** The page's own handle on the emulated machine. */
+interface MachineHandle { ready(timeoutMs?: number): Promise<boolean> }
+
 /** One scenario. */
 interface Scenario {
   name: string
@@ -65,8 +122,8 @@ const scenarios: Scenario[] = [
       // exercised through the service that calls it — with inputs whose facts
       // only the container states.
       const report = await page.evaluate(async () => {
-        const f = (globalThis as any).fixtures
-        const store = (globalThis as any).dsh.ctx.get('attachments')
+        const f = (globalThis as unknown as { fixtures: Fixtures }).fixtures
+        const store = globalThis.dsh.ctx.get('attachments') as Attachments
         const out: Record<string, unknown> = {}
 
         // A 16-bit PNG: sharp reports depth `ushort`, which forbids
@@ -164,8 +221,8 @@ const scenarios: Scenario[] = [
     async run(page) {
       await waitForHost(page)
       const report = await page.evaluate(async () => {
-        const f = (globalThis as any).fixtures
-        const store = (globalThis as any).dsh.ctx.get('attachments')
+        const f = (globalThis as unknown as { fixtures: Fixtures }).fixtures
+        const store = globalThis.dsh.ctx.get('attachments') as Attachments
         const source = await f.encode(f.noise(1600, 1200), 'image/jpeg', 0.92)
         const ref = await store.saveImage({ data: source, mediaType: 'image/jpeg', displayName: 'photo.jpg' })
         const budgets = [
@@ -214,8 +271,8 @@ const scenarios: Scenario[] = [
     async run(page) {
       await waitForHost(page)
       const report = await page.evaluate(async () => {
-        const f = (globalThis as any).fixtures
-        const store = (globalThis as any).dsh.ctx.get('attachments')
+        const f = (globalThis as unknown as { fixtures: Fixtures }).fixtures
+        const store = globalThis.dsh.ctx.get('attachments') as Attachments
         // Three visibly different images, so identical bytes cannot make two
         // references collide and look like an ordering that held.
         const inputs = await Promise.all([200, 240, 280].map(async (edge: number) => ({
@@ -280,18 +337,21 @@ const scenarios: Scenario[] = [
       await page.goto(`${url}?runtime=v86:windows1`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       await waitForHost(page)
       const up = await page.evaluate(async () => {
-        const machine = (globalThis as any).__DSH_WEB_MACHINE__
+        const machine = (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle }).__DSH_WEB_MACHINE__
         return machine.ready(180_000) as Promise<boolean>
       })
       expect(up, 'Windows 1.01 never came up, so there was nothing to photograph')
 
       const result = await page.evaluate(async ([key, provider, model]: string[]) => {
-        const ctx = (globalThis as any).dsh.ctx
-        await ctx.get('credentials').set('DEEPSEEK_API_KEY', key)
-        const proxy = ctx.get('apiProxy')
+        const { ctx } = globalThis.dsh
+        const credentials = ctx.get('credentials') as { set(reference: string, value: string): Promise<void> }
+        await credentials.set('DEEPSEEK_API_KEY', key)
+        const proxy = ctx.get('apiProxy') as Gateway
         const created = await proxy.sessions.create({ rpcId: crypto.randomUUID(), payload: {} })
-        if (!created.result.ok) return { error: `session.create: ${JSON.stringify(created.result.error)}` }
-        const sessionId = created.result.value.sessionId
+        if (!created.result.ok || created.result.value === undefined) {
+          return { error: `session.create: ${JSON.stringify(created.result.error)}` }
+        }
+        const { sessionId } = created.result.value
         const selected = await proxy.sessions.selectModel({ rpcId: crypto.randomUUID(), payload: { sessionId, provider, model } })
         if (!selected.result.ok) return { error: `session.selectModel: ${JSON.stringify(selected.result.error)}` }
 
@@ -350,13 +410,16 @@ const scenarios: Scenario[] = [
       }
       await waitForHost(page)
       const result = await page.evaluate(async ([key, provider, model]: string[]) => {
-        const ctx = (globalThis as any).dsh.ctx
-        await ctx.get('credentials').set('DEEPSEEK_API_KEY', key)
-        const proxy = ctx.get('apiProxy')
+        const { ctx } = globalThis.dsh
+        const credentials = ctx.get('credentials') as { set(reference: string, value: string): Promise<void> }
+        await credentials.set('DEEPSEEK_API_KEY', key)
+        const proxy = ctx.get('apiProxy') as Gateway
 
         const created = await proxy.sessions.create({ rpcId: crypto.randomUUID(), payload: {} })
-        if (!created.result.ok) return { error: `session.create: ${JSON.stringify(created.result.error)}` }
-        const sessionId = created.result.value.sessionId
+        if (!created.result.ok || created.result.value === undefined) {
+          return { error: `session.create: ${JSON.stringify(created.result.error)}` }
+        }
+        const { sessionId } = created.result.value
 
         const selected = await proxy.sessions.selectModel({ rpcId: crypto.randomUUID(), payload: { sessionId, provider, model } })
         if (!selected.result.ok) return { error: `session.selectModel: ${JSON.stringify(selected.result.error)}` }

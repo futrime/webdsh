@@ -124,13 +124,31 @@ async function ask(page: Page, machine: Machine, command: string): Promise<strin
  */
 async function work(page: Page, prompt: string, timeoutMs: number): Promise<{ reply: string, finished: boolean }> {
   return page.evaluate(async ([key, provider, model, text, budget]: [string, string, string, string, number]) => {
-    const ctx = (globalThis as any).dsh.ctx
-    await ctx.get('credentials').set('DEEPSEEK_API_KEY', key)
-    const proxy = ctx.get('apiProxy')
+    /** One RPC's answer, in the shape the gateway returns it. */
+    interface Answer<T> { result: { ok: boolean, value?: T, error?: unknown } }
+    /** As much of the gateway as one turn needs. */
+    interface Gateway {
+      sessions: {
+        create(request: { rpcId: string, payload: Record<string, never> }): Promise<Answer<{ sessionId: string }>>
+        selectModel(request: { rpcId: string, payload: Record<string, string> }): Promise<Answer<unknown>>
+        prompt(request: { rpcId: string, payload: Record<string, unknown> }): Promise<Answer<unknown>>
+      }
+      events: {
+        mux(request: { rpcId: string, payload: Record<string, never> }, signal: AbortSignal): AsyncIterable<{
+          payload: { event?: { type?: string, data?: { chunk?: { type?: string, text?: string } } } }
+        }>
+      }
+    }
+    const { ctx } = globalThis.dsh
+    const credentials = ctx.get('credentials') as { set(reference: string, value: string): Promise<void> }
+    await credentials.set('DEEPSEEK_API_KEY', key)
+    const proxy = ctx.get('apiProxy') as Gateway
 
     const created = await proxy.sessions.create({ rpcId: crypto.randomUUID(), payload: {} })
-    if (!created.result.ok) throw new Error(`session.create: ${JSON.stringify(created.result.error)}`)
-    const sessionId = created.result.value.sessionId
+    if (!created.result.ok || created.result.value === undefined) {
+      throw new Error(`session.create: ${JSON.stringify(created.result.error)}`)
+    }
+    const { sessionId } = created.result.value
 
     const selected = await proxy.sessions.selectModel({
       rpcId: crypto.randomUUID(),
