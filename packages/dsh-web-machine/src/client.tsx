@@ -190,8 +190,7 @@ function Screen({ guestName }: { guestName: string }): JSX.Element {
     if (natural.width < 1 || natural.height < 1) return
     const next = Math.min(box.clientWidth / natural.width, box.clientHeight / natural.height)
     const clamped = Number.isFinite(next) && next > 0 ? next : 1
-    const wanted = `scale(${String(clamped)})`
-    if (inner.style.transform !== wanted) inner.style.transform = wanted
+    inner.style.transform = `scale(${String(clamped)})`
     setScale(clamped)
   }, [])
 
