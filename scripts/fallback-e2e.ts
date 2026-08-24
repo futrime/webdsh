@@ -128,6 +128,12 @@ async function main(): Promise<void> {
       async (key: string) => globalThis.dsh.promptOnce(
         key,
         'Read probe.txt in the workspace and report its exact contents, then write note.txt containing the word saved.',
+        undefined,
+        // The key's own route, not the deployment default. What this checks is
+        // that the file tools reach the page's filesystem when there is no
+        // container — a turn that takes two tool calls, and the default route
+        // is metered at two requests a minute.
+        { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
       ),
       apiKey,
     )

@@ -141,7 +141,12 @@ export const WORKLOADS: Workload[] = [
     id: 'tally',
     machine: 'v86:freedos',
     scale: 'two steps, one derived from the other',
-    timeoutMs: 480_000,
+    // The slowest console here by a wide margin, and this is the rung that
+    // needs the most of it: a hundred lines have to be typed at a DOS prompt
+    // that reads a few characters at a time. Measured at 335s and then cut off
+    // at 480s on a run that took a longer route, so the budget is what the job
+    // costs rather than what it usually costs.
+    timeoutMs: 900_000,
     prompt: 'Write the numbers 1 to 100, one per line, into NUMS.TXT, and write only their sum — the number and '
       + 'nothing else — into SUM.TXT. This is FreeDOS: a batch file with a FOR loop is the usual way. Check both '
       + 'files with TYPE before you finish.',

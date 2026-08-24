@@ -888,6 +888,12 @@ const scenarios: Scenario[] = [
           key,
           'Use your code execution tool to run exactly this and report the number it prints:\n'
           + 'let a = 0; for (let i = 1; i <= 10000; i++) a = (a + i * i) % 99991; console.log(a)',
+          undefined,
+          // The key's own route: this is about the worker-thread shim, and the
+          // deployment default is metered at two requests a minute, which a
+          // turn that calls a tool and then reports on it cannot stay inside.
+          // `model-turn` above is where the default route is the claim.
+          { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
         ),
         apiKey,
       )
@@ -924,6 +930,11 @@ const scenarios: Scenario[] = [
           key,
           'Use your Grep tool (not bash) to find SENTINEL_TOKEN in this workspace, '
           + 'then your Glob tool to list *.ts files there. Report exactly what each tool returned.',
+          undefined,
+          // Two tool calls and a report, which is three requests: more than the
+          // keyless default route serves in a minute. What is under test is
+          // ripgrep behind the search tools, not the route.
+          { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
         ),
         apiKey,
       )

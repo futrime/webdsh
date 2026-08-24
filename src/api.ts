@@ -42,7 +42,12 @@ export interface DshWindowApi {
    * the deployment's default — which is how a check can ask what a preset
    * other than the default one puts in front of the model.
    */
-  promptOnce(apiKey: string, text: string, agentPreset?: string): Promise<string>
+  promptOnce(
+    apiKey: string,
+    text: string,
+    agentPreset?: string,
+    model?: { provider: string, model: string },
+  ): Promise<string>
 }
 
 /** Files that belong to the build rather than the user; excluded from exports. */
@@ -118,8 +123,8 @@ export function installWindowApi(ctx: Context, persistence: PersistenceHandle): 
       location.reload()
     },
 
-    async promptOnce(apiKey, text, agentPreset) {
-      return promptOnce(ctx, apiKey, text, agentPreset)
+    async promptOnce(apiKey, text, agentPreset, model) {
+      return promptOnce(ctx, apiKey, text, agentPreset, model)
     },
   }
 
@@ -139,9 +144,16 @@ export function installWindowApi(ctx: Context, persistence: PersistenceHandle): 
  * @param apiKey - a DeepSeek API key, stored in the managed credential document.
  * @param text - the prompt to send.
  * @param agentPreset - the preset to compose the session from; the deployment's default when absent.
+ * @param model - the route to answer on; the deployment's default when absent.
  * @returns the concatenated assistant text.
  */
-async function promptOnce(ctx: Context, apiKey: string, text: string, agentPreset?: string): Promise<string> {
+async function promptOnce(
+  ctx: Context,
+  apiKey: string,
+  text: string,
+  agentPreset?: string,
+  model?: { provider: string, model: string },
+): Promise<string> {
   const credentials = ctx.get('credentials')
   if (credentials === undefined) throw new Error('credentials service unavailable')
   await (credentials as { set(reference: string, value: string): Promise<void> }).set('DEEPSEEK_API_KEY', apiKey)
@@ -150,6 +162,7 @@ async function promptOnce(ctx: Context, apiKey: string, text: string, agentPrese
     sessions: {
       create(request: { rpcId: string, payload: Record<string, unknown> }): Promise<{ result: { ok: boolean, value?: { sessionId: string }, error?: unknown } }>
       prompt(request: { rpcId: string, payload: Record<string, unknown> }): Promise<{ result: { ok: boolean, error?: unknown } }>
+      selectModel(request: { rpcId: string, payload: Record<string, unknown> }): Promise<{ result: { ok: boolean, error?: unknown } }>
     }
     events: {
       mux(request: { rpcId: string, payload: Record<string, never> }, signal?: AbortSignal): AsyncIterable<{ payload: Record<string, unknown> }>
@@ -165,6 +178,22 @@ async function promptOnce(ctx: Context, apiKey: string, text: string, agentPrese
     throw new Error(`session.create failed: ${JSON.stringify(created.result.error)}`)
   }
   const { sessionId } = created.result.value
+
+  // The route, when the caller named one.
+  //
+  // The deployment's default is a keyless one metered at two requests a
+  // minute, which is the right default for a visitor and the wrong one for a
+  // turn that makes several requests: the model announces the tool it is about
+  // to use, the next request is refused, and the turn ends having done
+  // nothing. A caller checking a tool loop rather than the default route says
+  // which route to answer on, and measures the thing it came to measure.
+  if (model !== undefined) {
+    const selected = await proxy.sessions.selectModel({
+      rpcId: crypto.randomUUID(),
+      payload: { sessionId, provider: model.provider, model: model.model },
+    })
+    if (!selected.result.ok) throw new Error(`session.selectModel failed: ${JSON.stringify(selected.result.error)}`)
+  }
 
   const abort = new AbortController()
   const frames = proxy.events.mux({ rpcId: crypto.randomUUID(), payload: {} }, abort.signal)
