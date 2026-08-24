@@ -46,15 +46,20 @@ function announcement(): string {
 
   const guest = machine?.guests().find(entry => entry.id === status.guest)
   const name = guest?.name ?? 'an emulated PC'
-  // Only a guest with a shell on its serial port has a terminal at all; for
-  // the rest the console is the screen, and the panel shows that screen.
+  // What the panel shows is the machine's *screen*, on every guest. For one
+  // whose shell lives on its serial port that is not the console the shell
+  // tool types at, and the difference is worth a sentence: the model would
+  // otherwise assume its commands are being watched and narrate less than it
+  // should.
   const console_ = guest?.console === 'serial'
-    ? `It shows ${name}'s serial console — the same console your shell tool types at, so they see your `
-      + 'commands and you see theirs. It is not the browser workspace your file tools read and write; '
-      + 'those are two different filesystems.'
+    ? `It is ${name}'s screen — live, with a working keyboard. Your shell tool types at this machine's `
+      + 'serial console instead, which is a different console: the user does not see your commands there, '
+      + 'so say what you are doing rather than assuming they can watch.'
     : `It is ${name}'s screen — live, with a working keyboard — so they can watch what you do and take `
       + 'over at any point.'
-  return `The user can open a Machine panel from the sidebar. ${console_} ${chooser}`
+  return `The user can open a Machine panel from the sidebar. ${console_} ${chooser} `
+    + 'The machine\'s disk is not the browser workspace your file tools read and write; those are two '
+    + 'different filesystems.'
 }
 
 /** Services this row waits for before it applies. */
