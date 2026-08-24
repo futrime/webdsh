@@ -67,7 +67,7 @@ at a domain root, a project path, or a local directory.
 
 Open the page, choose a workspace, start talking.
 
-- **Files** — the sidebar action above the terminal. Browse the workspace,
+- **Files** — the sidebar action above the Machine action. Browse the workspace,
   open a file, drop files in, and take things out: one file as itself, a
   directory or a tick-box selection as a zip. It is the same filesystem the
   agent and the terminal use, not a copy. A file path the assistant names in
@@ -83,18 +83,18 @@ Open the page, choose a workspace, start talking.
   fetches a 14 MB interpreter; after that it is stored, and packages installed
   with `pip` survive a reload. Write `python3`: `jsh` aliases `python` to it and
   loses the quoting on the way, so `python -c "…"` is a syntax error.
-- **Machines** — Settings → Machine. A session runs on one machine and this is
+- **Which machine** — Settings → Machine. A session runs on one machine and this is
   where you pick it; the choice applies on the next load, because which machine
   a session runs on decides which tools the assistant is given. Five need no
   setup at all: **Linux** (busybox on a serial console, the shortest way here to
   a real POSIX shell), **FreeDOS**, **MS-DOS 7**, **Windows 1.01** and
-  **KolibriOS**. Twelve more boot exactly the same way but are not this
+  **KolibriOS**. Eleven more boot exactly the same way but are not this
   deployment's to serve a disk for — **Windows 2.03**, **3.0**, **3.1**, **95**,
   **98**, **ME**, **NT 4.0** and **2000**, **MS-DOS 6.22**, **Buildroot Linux**,
   and **Arch Linux**, which is a 2022 kernel with bash, python3 and gcc and
   resumes from a saved machine in about two seconds. For those, open each file
   it needs from your computer — a machine that boots from a disk *and* a saved
-  state takes both — or point the panel at a host that has them. A machine whose
+  state takes both — or point the setting at a host that has them. A machine whose
   files this deployment cannot get says so before it starts rather than failing
   mid-boot. Nothing is downloaded until you choose a machine.
 - **Plugins** — Settings → Plugins, or `/plugin add <package>` in the composer.
