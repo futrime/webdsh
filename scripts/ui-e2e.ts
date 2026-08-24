@@ -60,15 +60,27 @@ async function acknowledgeNotice(page: Page): Promise<void> {
   await button.first().waitFor({ state: 'detached', timeout: 20_000 })
 }
 
-/** Step 2: complete provider onboarding with a real key. */
-async function configureProvider(page: Page): Promise<void> {
+/**
+ * Step 2: complete provider onboarding, when the surface asks for it.
+ *
+ * It asks only when it has no route it can answer on, and this deployment
+ * always has one: the default is keyless, chosen precisely so a visitor gets an
+ * answer before being asked for anything. So an absent prompt is the feature
+ * working, not a step that went missing — and a key is still entered when the
+ * prompt does appear, because on a build whose default needs one, it is the
+ * whole of the first run.
+ * @param page - the loaded app.
+ * @returns whether a key was entered.
+ */
+async function configureProvider(page: Page): Promise<boolean> {
   const field = page.getByRole('textbox', { name: /API key|API 密钥/ })
-  if (!await waitFor(page, field)) throw new Error('the provider onboarding prompt never appeared')
+  if (!await waitFor(page, field, 8000)) return false
   await field.fill(apiKey)
   const save = page.getByRole('button', { name: /Save and continue|保存并继续/ })
   await save.click()
   await save.waitFor({ state: 'detached', timeout: 30_000 })
   await page.waitForTimeout(1500)
+  return true
 }
 
 /** Step 3: open the directory picker and select the starter workspace. */
@@ -85,6 +97,49 @@ async function selectWorkspace(page: Page): Promise<void> {
   }
   await page.getByRole('button', { name: /^(Open|打开)$/ }).click()
   await page.waitForTimeout(3000)
+}
+
+/**
+ * Put the session the surface created onto the key's own route.
+ *
+ * Every step after this one is driven through the rendered interface, and this
+ * one is not, which is worth saying plainly. The surface's default route is
+ * keyless — that is the point of it, and `model-turn` in `scripts/e2e.ts` is
+ * where that claim is checked — but the model on it emits its tool calls as
+ * text inside the reply rather than as tool calls, so a turn that has to *use*
+ * a tool cannot be measured there. What follows is about the composer, the
+ * transcript and the tool cards; the route it runs on is not the subject.
+ *
+ * It goes through `session.selectModel`, which is the same RPC the model picker
+ * in the composer calls.
+ * @param page - the loaded app.
+ * @param key - the API key to store.
+ * @returns whether a session was found and moved.
+ */
+async function useKeyRoute(page: Page, key: string): Promise<boolean> {
+  return page.evaluate(async ([apiKeyValue, provider, model]: string[]) => {
+    interface Answer<T> { result: { ok: boolean, value?: T, error?: unknown } }
+    interface Gateway {
+      sessions: {
+        list(request: { rpcId: string, payload: Record<string, never> }): Promise<Answer<{ items: { sessionId: string, updatedAt: number }[] }>>
+        selectModel(request: { rpcId: string, payload: Record<string, string> }): Promise<Answer<unknown>>
+      }
+    }
+    const { ctx } = globalThis.dsh
+    const credentials = ctx.get('credentials') as { set(reference: string, value: string): Promise<void> }
+    await credentials.set('DEEPSEEK_API_KEY', apiKeyValue)
+    const proxy = ctx.get('apiProxy') as Gateway
+    const listed = await proxy.sessions.list({ rpcId: crypto.randomUUID(), payload: {} })
+    const items = listed.result.value?.items ?? []
+    if (items.length === 0) return false
+    // The one the surface is showing, which is the one it touched last.
+    const newest = [...items].sort((left, right) => right.updatedAt - left.updatedAt)[0]
+    const selected = await proxy.sessions.selectModel({
+      rpcId: crypto.randomUUID(),
+      payload: { sessionId: newest.sessionId, provider, model },
+    })
+    return selected.result.ok
+  }, [key, 'deepseek-official', 'deepseek-v4-flash'])
 }
 
 /** Send a prompt through the composer and wait for the assistant to finish. */
@@ -134,7 +189,10 @@ async function main(): Promise<void> {
 
     console.log('▶ onboarding')
     await acknowledgeNotice(page)
-    await configureProvider(page)
+    const asked = await configureProvider(page)
+    console.log(asked
+      ? '  the surface asked for a key, and got one'
+      : '  the surface answered without asking for a key')
     await page.screenshot({ path: `${shots}-2-onboarded.png` })
 
     console.log('▶ workspace')
@@ -149,28 +207,32 @@ async function main(): Promise<void> {
     expect(/pong/i.test(reply), `no assistant reply rendered:\n${reply.slice(-1500)}`)
 
     console.log('▶ tool use')
+    expect(await useKeyRoute(page, apiKey), 'no session to put on the key\'s route')
     // The marker is written outside the conversation and never appears in the
     // prompt, so the assertion can only pass if the tool really ran and its
     // stdout really reached the model.
     const marker = `dsh-web-${Math.floor(Date.now() % 1e9).toString(36)}${Math.floor(performance.now()).toString(36)}`
     await page.evaluate(async (value: string) => {
       // Written where the agent will look: the runtime's workspace, which is
-      // the same filesystem its bash tool and the terminal share. The page's
+      // the same filesystem its shell tool and the terminal share. The page's
       // own virtual filesystem holds the harness's state, not the user's files.
       await globalThis.dsh.shell(`echo ${value} > marker.txt`)
     }, marker)
     const toolReply = await sendPrompt(
       page,
-      'Use the bash tool to run exactly: cat marker.txt — then tell me the exact contents.',
+      'Use your jsh shell tool to run exactly: cat marker.txt — then tell me the exact contents.',
     )
     await page.screenshot({ path: `${shots}-5-tool.png` })
     expect(toolReply.includes(marker), `the tool call did not return the file contents (${marker}):\n${toolReply.slice(-2500)}`)
     // The contents alone do not prove the shell ran: a model that cannot use
-    // Bash will read the file with another tool and answer correctly, which is
-    // exactly what hid a completely broken Bash tool behind a green test. The
-    // transcript names the tool it used.
-    expect(/\bBash\b/.test(toolReply), `the reply never shows a Bash tool call:\n${toolReply.slice(-1500)}`)
-    // A Bash card appears whether the call succeeded or died, so its presence
+    // the shell will read the file with another tool and answer correctly,
+    // which is exactly what hid a completely broken shell tool behind a green
+    // test. The transcript names the tool it used — and the name is `jsh`,
+    // because that is the one shell this composition offers: `src/host/jsh-tool.ts`
+    // replaces the shipped `bash` row, so asking for "the bash tool" gets an
+    // honest refusal and a different tool doing the job.
+    expect(/\bjsh\b/i.test(toolReply), `the reply never shows a jsh tool call:\n${toolReply.slice(-1500)}`)
+    // A shell card appears whether the call succeeded or died, so its presence
     // proves nothing on its own: a shell that answers every command with
     // `command not found` still renders one, and the model still reaches the
     // answer another way. The transcript must show no such failure.
