@@ -87,6 +87,30 @@ function surface(width: number, height: number): OffscreenCanvas {
   return canvas as unknown as OffscreenCanvas
 }
 
+/**
+ * Encode a canvas, whichever kind of canvas it turned out to be.
+ *
+ * `convertToBlob` belongs to `OffscreenCanvas`, which Safari did not have until
+ * 16.4 — and this build boots on older ones, which is what `scripts/ios-e2e.ts`
+ * exists to keep true. The element canvas the fallback above returns answers
+ * the same question through `toBlob`, with a callback instead of a promise.
+ * @param canvas - the drawn surface.
+ * @param type - the media type to produce.
+ * @param quality - encoder quality, 0 to 1.
+ * @returns the encoded image.
+ */
+async function encodeCanvas(canvas: OffscreenCanvas, type: string, quality: number): Promise<Blob> {
+  if (typeof canvas.convertToBlob === 'function') return canvas.convertToBlob({ type, quality })
+  const element = canvas as unknown as HTMLCanvasElement
+  return new Promise<Blob>((resolve, reject) => {
+    element.toBlob(
+      blob => (blob === null ? reject(new Error(`sharp: this browser could not encode ${type}`)) : resolve(blob)),
+      type,
+      quality,
+    )
+  })
+}
+
 /** The 2D context of a canvas, or a readable failure. */
 function context2d(canvas: OffscreenCanvas): OffscreenCanvasRenderingContext2D {
   const found = canvas.getContext('2d')
@@ -447,7 +471,7 @@ class SharpImage {
 
     const type = this.ops.output ?? 'image/png'
     const quality = this.ops.quality === undefined ? CANVAS_QUALITY_DEFAULT : this.ops.quality / 100
-    const blob = await canvas.convertToBlob({ type, quality })
+    const blob = await encodeCanvas(canvas, type, quality)
     if (blob.type !== type) {
       throw new Error(`sharp: this browser cannot encode ${type} (it produced ${blob.type})`)
     }
