@@ -204,6 +204,62 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    // Several images in one message, which is the shape a real conversation
+    // takes: a person pastes three screenshots and asks what changed. The
+    // batch is validated before anything is committed, so one bad member has
+    // to take the whole batch down rather than leaving a partial message —
+    // and the ones that pass have to come back in the order they were sent,
+    // because "the second one" is how the question will refer to them.
+    name: 'image-batch',
+    async run(page) {
+      await waitForHost(page)
+      const report = await page.evaluate(async () => {
+        const f = (globalThis as any).fixtures
+        const store = (globalThis as any).dsh.ctx.get('attachments')
+        // Three visibly different images, so identical bytes cannot make two
+        // references collide and look like an ordering that held.
+        const inputs = await Promise.all([200, 240, 280].map(async (edge: number) => ({
+          data: await f.encode(f.noise(edge, edge), 'image/jpeg', 0.9),
+          mediaType: 'image/jpeg',
+        })))
+        const refs = await store.saveImages(inputs)
+        const out: Record<string, unknown> = {
+          count: refs.length,
+          sizes: refs.map((ref: { width: number }) => ref.width),
+          distinct: new Set(refs.map((ref: { attachmentId: string }) => String(ref.attachmentId))).size,
+        }
+
+        // One member the deployment does not accept takes the batch with it.
+        try {
+          await store.saveImages([inputs[0], { data: new Uint8Array([1, 2, 3, 4]), mediaType: 'image/png' }])
+          out.mixedBatch = 'accepted'
+        } catch (error) {
+          out.mixedBatch = String((error as { code?: string }).code ?? (error as Error).message)
+        }
+
+        // And a batch larger than the deployment admits is refused as a batch.
+        const limit = store.imageLimits.maxImagesPerMessage as number
+        try {
+          await store.saveImages(new Array(limit + 1).fill(inputs[0]))
+          out.overLimit = 'accepted'
+        } catch (error) {
+          out.overLimit = String((error as { code?: string }).code ?? (error as Error).message)
+        }
+        return out
+      })
+
+      expect(report.count === 3, `three images went in and ${String(report.count)} came back`)
+      expect(
+        JSON.stringify(report.sizes) === JSON.stringify([200, 240, 280]),
+        `the batch came back out of order: ${JSON.stringify(report.sizes)}`,
+      )
+      expect(report.distinct === 3, 'two different images were stored under one reference')
+      expect(report.mixedBatch !== 'accepted', 'a batch with one unreadable image was committed anyway')
+      expect(report.overLimit !== 'accepted', 'a batch larger than the configured limit was accepted')
+    },
+  },
+
+  {
     // Vision where this deployment actually needs it: an emulated machine.
     //
     // A guest that only draws pixels has no text to read, so the tool set it

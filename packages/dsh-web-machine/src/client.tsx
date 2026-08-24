@@ -299,7 +299,7 @@ function Screen({ guestName }: { guestName: string }): JSX.Element {
   if (failed !== undefined) return <p className="dsh-web-machine-notice">{failed}</p>
 
   return (
-    <div className="dsh-web-machine-stage" ref={stage} {...(full ? { 'data-full': '' } : {})}>
+    <div className="dsh-web-machine-stage" ref={stage}>
       <div
         className="dsh-web-machine-screen"
         {...(focused ? { 'data-focused': '' } : {})}
