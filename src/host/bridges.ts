@@ -6,9 +6,9 @@
  * loaders. What it can do is read a capability the page published, which is
  * the same shape of seam the surface itself uses for `window.__DSH_BOOT__`.
  *
- * Only capabilities go through here, never UI: the terminal plugin owns how a
- * terminal looks and where it lives, and this owns only the fact that there is
- * a runtime to attach one to. The runtime in particular has to be shared
+ * Only capabilities go through here, never UI: the machine plugin owns how a
+ * terminal or a screen looks and where it lives, and this owns only the fact
+ * that there is a machine to attach one to. The runtime in particular has to be shared
  * rather than booted per consumer, because two containers in a tab would be
  * two different machines and the whole point is that there is one.
  */
@@ -24,7 +24,7 @@ import {
 import {
   DEFAULT_IMAGE_HOST, GUESTS, UPSTREAM_IMAGE_HOST, imageHost, setImageHost, type GuestSpec,
 } from '../runtime/guests.ts'
-import { forgetDisk, storeDisk, storedDisks } from '../runtime/disks.ts'
+import { forgetDisk, forgetLegacyDisk, storeDisk, storedDisks } from '../runtime/disks.ts'
 import { isEmulated, runtimeSelection, setRuntimeSelection, type RuntimeSelection } from '../runtime/selection.ts'
 import { ripgrep } from '../runtime/ripgrep.ts'
 import type { PluginManager } from '../plugins/manager.ts'
@@ -96,7 +96,7 @@ function terminalUnavailable(): string | undefined {
     if (guest === undefined) return 'This session names a machine this build does not have.'
     if (guest.console === 'serial') return undefined
     return `This session runs ${guest.name}, whose console is its own screen rather than a serial port. `
-      + 'Open the Runtime panel to see it and type at it.'
+      + 'The Machine panel shows that screen, and the keyboard works there.'
   }
   const support = runtimeSupported()
   if (support.ok) return undefined
@@ -155,7 +155,8 @@ async function machineShell(): Promise<{
 }
 
 /**
- * Publish the emulated machine, for the panel that chooses and shows one.
+ * Publish the emulated machine, for the setting that chooses one and the panel
+ * that shows it.
  *
  * The same seam the runtime has, for the same reason: the panel is a client
  * plugin in a separate bundle and cannot import any of this. What it gets is
@@ -177,7 +178,20 @@ export function publishMachineBridge(): void {
     /** Disk images the user has opened from their own computer. */
     disks: storedDisks,
     storeDisk,
-    forgetDisk,
+    /**
+     * Forget one of a guest's images.
+     *
+     * Wrapped rather than passed straight through, because forgetting the boot
+     * image has to forget the one an earlier version of this store kept under
+     * the bare guest id as well — otherwise the setting says the disk is gone
+     * and the next boot finds it again.
+     * @param guest - the guest id.
+     * @param slot - the v86 option the file fills.
+     */
+    forgetDisk: async (guest: string, slot: string): Promise<void> => {
+      await forgetDisk(guest, slot)
+      if (GUESTS.find(entry => entry.id === guest)?.images[0]?.slot === slot) await forgetLegacyDisk(guest)
+    },
     /** What the machine is doing right now. */
     status: (): MachineStatus => ({
       emulated: isEmulated(),
@@ -263,8 +277,23 @@ export interface GuestSummary {
   bundled: boolean
   transfer: number
   boots: string
-  /** The file names it needs from the image host, for the "bring your own" message. */
-  files: string[]
+  /**
+   * The files it boots from, each with the v86 slot it fills.
+   *
+   * Every one of them, not only the first: a guest can need a disk *and* a
+   * saved machine, and a setting that offered one file input per guest could
+   * only ever be given half of what such a guest needs.
+   */
+  files: { slot: string, file: string }[]
+  /**
+   * A 9p filesystem tree it needs, when its root is one.
+   *
+   * Named separately because it is the one requirement no file input can
+   * satisfy — it is a directory the guest reads one file at a time over the
+   * network — so a setting that listed it beside the disks would be offering a
+   * button that cannot work.
+   */
+  filesystem?: string
 }
 
 /** What the machine is doing, as the panel reads it. */
@@ -287,7 +316,8 @@ function summarise(spec: GuestSpec): GuestSummary {
     bundled: spec.bundled,
     transfer: spec.transfer,
     boots: spec.boots,
-    files: spec.images.map(image => image.file),
+    files: spec.images.map(image => ({ slot: image.slot, file: image.file })),
+    ...(spec.filesystem === undefined ? {} : { filesystem: spec.filesystem }),
   }
 }
 

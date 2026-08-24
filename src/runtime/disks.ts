@@ -17,20 +17,47 @@
  * here neither reads it into memory nor copies it a second time — and v86
  * reads it in slices from exactly the same reference, so the disk is never
  * loaded whole at any point.
+ *
+ * One file per *slot*, not per guest. Several of these machines boot from more
+ * than one file — a disk and a saved machine — and a store that could only
+ * hold one of them made the others unreachable from a computer that has them
+ * both.
  */
 
 /** The database, and the store inside it. */
 const DATABASE = 'dsh-web-v86'
 const STORE = 'disks'
 
-/** One stored disk, as the panel lists it. */
+/** One stored image, as the setting lists it. */
 export interface StoredDisk {
   /** The guest it belongs to. */
   guest: string
+  /** Which of that guest's files it is. */
+  slot: string
   /** The file's own name, as the user's computer had it. */
   name: string
   /** Its byte length. */
   size: number
+}
+
+/**
+ * The key one guest's file is kept under.
+ *
+ * Keyed by slot as well as by guest because a guest can need more than one
+ * file: Windows 98 boots from a disk *and* a saved machine, and a store that
+ * held one file per guest could only ever be given the disk — which is the
+ * difference between resuming in two seconds and cold-booting for ten minutes,
+ * and for Arch the difference between running and not running at all.
+ *
+ * The bare guest id stays readable as the disk slot's key, because that is
+ * what earlier versions wrote and a browser that already has a 300 MB Windows
+ * image should not be asked for it again.
+ * @param guest - the guest id.
+ * @param slot - the v86 option the file fills.
+ * @returns the store key.
+ */
+function keyFor(guest: string, slot: string): string {
+  return `${guest}:${slot}`
 }
 
 /** Open the database, creating the store on first use. */
@@ -60,38 +87,79 @@ async function transact<T>(mode: IDBTransactionMode, body: (store: IDBObjectStor
 }
 
 /**
- * Keep a disk image for a guest, replacing whatever was there.
+ * Keep one of a guest's images, replacing whatever was in that slot.
  * @param guest - the guest id it boots.
+ * @param slot - the v86 option it fills.
  * @param file - the image, as the file input handed it over.
  */
-export async function storeDisk(guest: string, file: File): Promise<void> {
-  await transact('readwrite', store => store.put(file, guest))
+export async function storeDisk(guest: string, slot: string, file: File): Promise<void> {
+  await transact('readwrite', store => store.put(file, keyFor(guest, slot)))
 }
 
 /**
- * The disk image kept for a guest.
- * @param guest - the guest id.
- * @returns the file, or undefined when none was stored.
+ * Read one key, treating a storage refusal as "nothing stored".
+ *
+ * A browser that denies storage, or a private window that has none, is not a
+ * failure here: it means no stored image, which every caller already handles.
+ * @param key - the store key.
+ * @returns the file, or undefined.
  */
-export async function storedDisk(guest: string): Promise<File | undefined> {
-  // A browser that denies storage, or a private window that has none, is not a
-  // failure here: it means no stored disk, which the caller already handles.
-  const found = await transact<File | undefined>('readonly', store => store.get(guest) as IDBRequest<File | undefined>)
+async function read(key: string): Promise<File | undefined> {
+  const found = await transact<File | undefined>('readonly', store => store.get(key) as IDBRequest<File | undefined>)
     .catch(() => undefined)
   return found instanceof File ? found : undefined
 }
 
 /**
- * Forget a guest's disk image.
+ * One image kept for a guest.
  * @param guest - the guest id.
+ * @param slot - the v86 option it fills.
+ * @returns the file, or undefined when none was stored.
  */
-export async function forgetDisk(guest: string): Promise<void> {
-  await transact('readwrite', store => store.delete(guest))
+export async function storedDisk(guest: string, slot: string): Promise<File | undefined> {
+  return read(keyFor(guest, slot))
 }
 
 /**
- * Every disk image this browser is keeping.
- * @returns one row per guest, so the panel can show what it costs and offer to drop it.
+ * The single disk an earlier version of this store kept for a guest.
+ *
+ * Under the bare guest id, because that is what it wrote, and it was always
+ * the guest's boot image — so only the caller that knows which slot *is* the
+ * boot image may claim it. Offering it for every slot would hand a Windows 98
+ * disk to the saved-machine slot as well, and boot the pair against itself.
+ * @param guest - the guest id.
+ * @returns the file, or undefined when this browser has none.
+ */
+export async function legacyDisk(guest: string): Promise<File | undefined> {
+  return read(guest)
+}
+
+/**
+ * Forget one of a guest's images.
+ * @param guest - the guest id.
+ * @param slot - the v86 option it fills.
+ */
+export async function forgetDisk(guest: string, slot: string): Promise<void> {
+  await transact('readwrite', store => store.delete(keyFor(guest, slot)))
+}
+
+/**
+ * Forget the single disk an earlier version kept for a guest.
+ *
+ * Separate from {@link forgetDisk} for the same reason {@link legacyDisk} is
+ * separate from {@link storedDisk}: only the boot slot owns that entry, and
+ * dropping it when some other slot is forgotten would silently take the
+ * guest's disk with the saved machine.
+ * @param guest - the guest id.
+ */
+export async function forgetLegacyDisk(guest: string): Promise<void> {
+  await transact('readwrite', store => store.delete(guest)).catch(() => undefined)
+}
+
+/**
+ * Every image this browser is keeping.
+ * @returns one row per stored file, so the setting can show what it costs and
+ * offer to drop it.
  */
 export async function storedDisks(): Promise<StoredDisk[]> {
   const database = await open().catch(() => undefined)
@@ -108,7 +176,15 @@ export async function storedDisks(): Promise<StoredDisk[]> {
           return
         }
         const file = position.value as unknown
-        if (file instanceof File) rows.push({ guest: String(position.key), name: file.name, size: file.size })
+        if (file instanceof File) {
+          const key = String(position.key)
+          const split = key.indexOf(':')
+          rows.push(split === -1
+            // A key with no slot is one an earlier version wrote, and it was
+            // always the guest's own boot image.
+            ? { guest: key, slot: '', name: file.name, size: file.size }
+            : { guest: key.slice(0, split), slot: key.slice(split + 1), name: file.name, size: file.size })
+        }
         position.continue()
       }
       cursor.onerror = () => { resolve(rows) }

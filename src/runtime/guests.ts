@@ -2,7 +2,7 @@
  * The machines v86 can be, and what each one is like to work in.
  *
  * This is data, not behaviour, and it is deliberately its own module: the
- * picker in `packages/dsh-web-runtime` needs it to draw a list, the tool row
+ * setting in `packages/dsh-web-machine` needs it to draw a list, the tool row
  * needs it to decide which tools the model is offered, and the boot needs it
  * before anything heavy has been fetched. All three read this table, and none
  * of them pulls in the emulator to do it.
@@ -150,8 +150,6 @@ export interface GuestSpec {
   transfer: number
   /** The files it boots from. */
   images: GuestImage[]
-  /** The slot a locally-opened file fills. */
-  localSlot: ImageSlot
   /**
    * A 9p filesystem tree on the image host, when the guest's root is one.
    *
@@ -220,7 +218,21 @@ const DOS_PROMPTS = ['A:\\>', 'C:\\>', 'D:\\>']
  * Every machine this deployment offers.
  *
  * The five that need no setup come first, then the rest oldest to newest. The
- * picker draws them in this order and does not sort.
+ * setting draws them in this order and does not sort.
+ *
+ * ## The two images on the default host that are not here
+ *
+ * `copy/images` serves eight files and this table uses five of them. The other
+ * two are deliberate omissions rather than an oversight, and both would be
+ * additions that could not do any work:
+ *
+ * - `os8.dsk` is a PDP-8 disk. v86 emulates x86 and nothing else, so there is
+ *   no configuration of this table that boots it.
+ * - `openbsd.img` is an install floppy. It reaches an installer question, not
+ *   a shell, and it puts nothing on the serial port — so it would appear in
+ *   the list as a machine whose console the agent cannot read and whose disk
+ *   it cannot write. A machine that cannot be worked on is the thing this
+ *   table exists to stop offering.
  */
 export const GUESTS: GuestSpec[] = [
   {
@@ -233,7 +245,6 @@ export const GUESTS: GuestSpec[] = [
     bundled: true,
     transfer: 5_666_816,
     images: [{ slot: 'cdrom', file: 'linux.iso', size: 5_666_816 }],
-    localSlot: 'cdrom',
     // An empty 9p device, as v86's own profile for this image configures one.
     // The guest cannot use it — this kernel is 2.6.34 and `/proc/filesystems`
     // has no `9p` entry, measured — so the page's `create_file` writes into a
@@ -255,7 +266,6 @@ export const GUESTS: GuestSpec[] = [
     bundled: true,
     transfer: 737_280,
     images: [{ slot: 'fda', file: 'freedos722.img', size: 737_280 }],
-    localSlot: 'fda',
     options: { memory_size: 32 * MB },
     timeoutMs: 60_000,
     prompts: DOS_PROMPTS,
@@ -271,7 +281,6 @@ export const GUESTS: GuestSpec[] = [
     bundled: true,
     transfer: 1_474_560,
     images: [{ slot: 'fda', file: 'msdos.img', size: 1_474_560 }],
-    localSlot: 'fda',
     options: { memory_size: 32 * MB },
     timeoutMs: 120_000,
     prompts: DOS_PROMPTS,
@@ -286,7 +295,6 @@ export const GUESTS: GuestSpec[] = [
     bundled: true,
     transfer: 1_474_560,
     images: [{ slot: 'fda', file: 'windows101.img', size: 1_474_560 }],
-    localSlot: 'fda',
     options: { memory_size: 32 * MB },
     timeoutMs: 90_000,
     boots: 'about 4 seconds',
@@ -300,7 +308,6 @@ export const GUESTS: GuestSpec[] = [
     bundled: true,
     transfer: 1_474_560,
     images: [{ slot: 'fda', file: 'kolibri.img', size: 1_474_560 }],
-    localSlot: 'fda',
     options: { memory_size: 128 * MB },
     timeoutMs: 90_000,
     boots: 'about 9 seconds',
@@ -314,7 +321,6 @@ export const GUESTS: GuestSpec[] = [
     bundled: false,
     transfer: 4 * MB,
     images: [{ slot: 'hda', file: 'msdos622/.img', size: 64 * MB, streamed: true }],
-    localSlot: 'hda',
     options: { memory_size: 32 * MB },
     timeoutMs: 120_000,
     prompts: DOS_PROMPTS,
@@ -329,7 +335,6 @@ export const GUESTS: GuestSpec[] = [
     bundled: false,
     transfer: 4_177_920,
     images: [{ slot: 'hda', file: 'windows2.img', size: 4_177_920 }],
-    localSlot: 'hda',
     options: { memory_size: 32 * MB },
     timeoutMs: 90_000,
     boots: 'about 4 seconds',
@@ -343,7 +348,6 @@ export const GUESTS: GuestSpec[] = [
     bundled: false,
     transfer: 25_165_824,
     images: [{ slot: 'hda', file: 'windows30.img', size: 25_165_824 }],
-    localSlot: 'hda',
     options: { memory_size: 128 * MB },
     timeoutMs: 180_000,
     boots: 'about 4 seconds',
@@ -357,7 +361,6 @@ export const GUESTS: GuestSpec[] = [
     bundled: false,
     transfer: 34_463_744,
     images: [{ slot: 'hda', file: 'win31.img', size: 34_463_744 }],
-    localSlot: 'hda',
     options: { memory_size: 64 * MB },
     timeoutMs: 180_000,
     boots: 'about 9 seconds',
@@ -371,7 +374,6 @@ export const GUESTS: GuestSpec[] = [
     bundled: false,
     transfer: 12 * MB,
     images: [{ slot: 'hda', file: 'windows95-v3/.img', size: 471_859_200, streamed: true }],
-    localSlot: 'hda',
     options: { memory_size: 64 * MB },
     timeoutMs: 300_000,
     boots: 'about 6 seconds to its splash screen, a minute or more to the desktop',
@@ -388,7 +390,6 @@ export const GUESTS: GuestSpec[] = [
       { slot: 'hda', file: 'windows98/.img', size: 300 * MB, streamed: true },
       { slot: 'initial_state', file: 'windows98_state-v2.bin.zst' },
     ],
-    localSlot: 'hda',
     options: { memory_size: 128 * MB, mac_address_translation: true },
     timeoutMs: 300_000,
     boots: 'about 4 seconds from its saved machine, minutes from cold',
@@ -405,7 +406,6 @@ export const GUESTS: GuestSpec[] = [
       { slot: 'hda', file: 'windowsme-v3/.img', size: 1024 * MB, streamed: true },
       { slot: 'initial_state', file: 'windows-me_state-v3.bin.zst' },
     ],
-    localSlot: 'hda',
     options: { memory_size: 256 * MB },
     timeoutMs: 300_000,
     boots: 'about 4 seconds from its saved machine, minutes from cold',
@@ -419,7 +419,6 @@ export const GUESTS: GuestSpec[] = [
     bundled: false,
     transfer: 16 * MB,
     images: [{ slot: 'hda', file: 'winnt4_noacpi/.img', size: 523_837_440, streamed: true }],
-    localSlot: 'hda',
     // NT reads CPUID and will not boot on what it finds otherwise; this is the
     // level v86 documents for the NT line.
     options: { memory_size: 512 * MB, cpuid_level: 2 },
@@ -438,7 +437,6 @@ export const GUESTS: GuestSpec[] = [
       { slot: 'hda', file: 'windows2k-v2/.img', size: 2048 * MB, streamed: true },
       { slot: 'initial_state', file: 'windows2k_state-v4.bin.zst' },
     ],
-    localSlot: 'hda',
     options: { memory_size: 512 * MB, mac_address_translation: true },
     timeoutMs: 300_000,
     boots: 'about 4 seconds from its saved machine',
@@ -454,7 +452,6 @@ export const GUESTS: GuestSpec[] = [
     bundled: false,
     transfer: 5_166_352,
     images: [{ slot: 'bzimage', file: 'buildroot-bzimage.bin', size: 5_166_352 }],
-    localSlot: 'bzimage',
     options: {
       memory_size: 128 * MB,
       // Exactly what v86's own profile boots it with, and deliberately without
@@ -485,7 +482,6 @@ export const GUESTS: GuestSpec[] = [
     bundled: false,
     transfer: 15_493_096,
     images: [{ slot: 'initial_state', file: 'arch_state-v3.bin.zst' }],
-    localSlot: 'initial_state',
     filesystem: 'arch/',
     options: {
       memory_size: 512 * MB,
@@ -508,29 +504,60 @@ export function guest(id: string): GuestSpec | undefined {
 }
 
 /**
+ * Files this deployment has no way to fetch for a guest.
+ *
+ * Knowable rather than guessed, and only in the direction that is knowable: a
+ * {@link GuestSpec.bundled} guest is one the default image host serves, so on
+ * the default host anything a non-bundled guest needs and nobody has supplied
+ * has no source at all. Pointed at another host the answer is a network round
+ * trip away, and this says nothing rather than guessing.
+ *
+ * It exists so a boot can refuse before it starts. Without it, choosing a
+ * machine whose disk is not here produced a page that sat on "Fetching
+ * Windows 3.1" and then a 404 from deep inside the emulator — a failure that
+ * names a URL and not the thing the person has to do about it.
+ * @param spec - the guest.
+ * @param local - the files the user has opened, by slot.
+ * @returns the missing file names, empty when every file has a source.
+ */
+export function unavailableImages(spec: GuestSpec, local: Partial<Record<ImageSlot, File>>): string[] {
+  if (spec.bundled || imageHost() !== DEFAULT_IMAGE_HOST) return []
+  const missing = spec.images.filter(image => local[image.slot] === undefined).map(image => image.file)
+  // A 9p root is a directory of files the guest asks for one at a time. No
+  // local file can be one, so a guest that needs a tree the host does not
+  // serve cannot boot however many disks are opened for it.
+  if (spec.filesystem !== undefined) missing.push(spec.filesystem)
+  return missing
+}
+
+/**
  * Build the v86 image options for one guest.
  *
- * A locally-opened disk replaces the slot it fills *and* suppresses any saved
+ * A locally-opened file fills its own slot. What it also does — when it is a
+ * disk and no saved machine was opened beside it — is suppress the saved
  * machine the host would otherwise supply: a state image records the machine
  * that produced it, right down to the disk's contents, and restoring one over
- * somebody else's disk is not a faster boot, it is a corrupt one.
+ * somebody else's disk is not a faster boot, it is a corrupt one. Open the
+ * matching state as well and it is used, because then the pair belongs
+ * together.
  * @param spec - the guest.
- * @param local - a disk image the user opened, when there is one.
+ * @param local - the files the user opened, by slot.
  * @returns the image slots, ready to spread into the constructor.
  */
-export function imageOptions(spec: GuestSpec, local?: File): Record<string, unknown> {
+export function imageOptions(spec: GuestSpec, local: Partial<Record<ImageSlot, File>> = {}): Record<string, unknown> {
   const host = imageHost()
   const options: Record<string, unknown> = {}
   if (spec.filesystem !== undefined) options.filesystem = { baseurl: `${host}${spec.filesystem}` }
-  if (local !== undefined) {
-    options[spec.localSlot] = { buffer: local }
-    for (const image of spec.images) {
-      if (image.slot === spec.localSlot || image.slot === 'initial_state') continue
-      options[image.slot] = remoteImage(host, image)
+  const suppliedDisk = spec.images.some(image => image.slot !== 'initial_state' && local[image.slot] !== undefined)
+  for (const image of spec.images) {
+    const opened = local[image.slot]
+    if (opened !== undefined) {
+      options[image.slot] = { buffer: opened }
+      continue
     }
-    return options
+    if (image.slot === 'initial_state' && suppliedDisk) continue
+    options[image.slot] = remoteImage(host, image)
   }
-  for (const image of spec.images) options[image.slot] = remoteImage(host, image)
   return options
 }
 

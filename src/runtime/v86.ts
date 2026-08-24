@@ -32,8 +32,8 @@
  *   layout and v86 measures the box it draws into.
  */
 
-import { BIOS_BASE, guest, imageOptions, type GuestSpec } from './guests.ts'
-import { storedDisk } from './disks.ts'
+import { BIOS_BASE, guest, imageOptions, unavailableImages, type GuestSpec, type ImageSlot } from './guests.ts'
+import { legacyDisk, storedDisk } from './disks.ts'
 import { runtimeSelection } from './selection.ts'
 
 /** As much of v86's surface as this module uses. */
@@ -560,6 +560,27 @@ export async function bootMachine(onProgress?: (step: string) => void): Promise<
   return running
 }
 
+/**
+ * The files the user has opened for this guest, by slot.
+ * @param spec - the guest.
+ * @returns one entry per slot a stored file was found for.
+ */
+async function openedImages(spec: GuestSpec): Promise<Partial<Record<ImageSlot, File>>> {
+  const found: Partial<Record<ImageSlot, File>> = {}
+  await Promise.all(spec.images.map(async (image) => {
+    const file = await storedDisk(spec.id, image.slot)
+    if (file !== undefined) found[image.slot] = file
+  }))
+  // A browser that already had a disk from before this store kept images by
+  // slot still has it, under the bare guest id, and it was the boot image.
+  const boot = spec.images[0]?.slot
+  if (boot !== undefined && found[boot] === undefined) {
+    const legacy = await legacyDisk(spec.id)
+    if (legacy !== undefined) found[boot] = legacy
+  }
+  return found
+}
+
 /** Do the boot. */
 async function start(): Promise<Machine> {
   const mine = generation
@@ -571,14 +592,29 @@ async function start(): Promise<Machine> {
   report('Loading the emulator')
   const { V86 } = await import('v86') as unknown as { V86: new (options: Record<string, unknown>) => Emulator }
 
-  const local = await storedDisk(spec.id)
+  const local = await openedImages(spec)
+  // Before anything is fetched or allocated. A guest whose disk this
+  // deployment cannot get is not a slow boot, it is a boot that ends in a 404
+  // several seconds in, from inside the emulator, naming a URL — and the
+  // person reading it has to work out for themselves that the answer is to
+  // open a file or point the image host somewhere else. So it is said here,
+  // where it is still one sentence.
+  const missing = unavailableImages(spec, local)
+  if (missing.length > 0) {
+    throw new Error(
+      `${spec.name} needs ${missing.join(', ')}, which the default image host does not serve. `
+      + 'Open the image from your computer in Settings → Machine, or point the image host there at one that has it.',
+    )
+  }
+
   const screen = createScreen()
   const text = new TextScreen()
   const base = document.baseURI
 
-  report(local === undefined
+  const opened = Object.values(local).filter(file => file !== undefined)
+  report(opened.length === 0
     ? `Fetching ${spec.name} (${readableSize(spec.transfer)})`
-    : `Opening ${spec.name} from ${local.name}`)
+    : `Opening ${spec.name} from ${opened.map(file => file.name).join(' and ')}`)
 
   const emulator = new V86({
     ...spec.options,
@@ -646,8 +682,8 @@ async function start(): Promise<Machine> {
       clearTimeout(timer)
       reject(new Error(
         `${spec.name} could not be fetched: the image host did not serve ${event.file_name}.`
-        + ' Open the Runtime panel from the sidebar and either point the image host at one that has it,'
-        + ' or open a disk image from your computer.',
+        + ' Open Settings \u2192 Machine and either point the image host at one that has it,'
+        + ' or open the file from your computer.',
       ))
     }) as (argument: never) => void)
   }).catch((error: unknown) => {
@@ -940,6 +976,12 @@ class Console implements MachineConsole {
     const lines = [
       `echo ${marker}S`,
       ...command.split('\n').map(line => line.trimEnd()),
+      // A blank line before the marker, because the marker is recognised at
+      // the start of a line and the command before it may not have ended one.
+      // `type` on a file with no final newline leaves the cursor mid-line, the
+      // marker lands on the end of the output, and nothing ever matches it —
+      // so the command runs to its timeout with its answer already on screen.
+      'echo.',
       `echo ${marker}E%ERRORLEVEL%`,
     ]
     for (const line of lines) await typeText(this.emulator, `${line}\r`)
@@ -1083,7 +1125,10 @@ class Console implements MachineConsole {
     const start = this.serial.length
     const lines = this.spec.console === 'serial'
       ? serialInvocation(command, marker)
-      : [`echo ${marker}S`, ...command.split('\n').map(line => line.trimEnd()), `echo ${marker}E%ERRORLEVEL%`]
+      // `echo.` for the same reason as the screen path: the marker is matched
+      // at the start of a line, and a command whose output has no final
+      // newline would otherwise leave it in the middle of one.
+      : [`echo ${marker}S`, ...command.split('\n').map(line => line.trimEnd()), 'echo.', `echo ${marker}E%ERRORLEVEL%`]
     for (const line of lines) await this.sendLine(line)
 
     // Two markers, and the output is what lies between them.
@@ -1101,7 +1146,17 @@ class Console implements MachineConsole {
     // with `echo`, and on a serial guest the marker is split across two quoted
     // strings so the echo does not contain it at all.
     const began = new RegExp(`^${marker}S\\s*$`, 'm')
-    const done = new RegExp(`^${marker}E(\\d+|%ERRORLEVEL%)`, 'm')
+    // A POSIX shell needs no line anchor and must not have one. `serialInvocation`
+    // splits the marker across two quoted strings, so the echo of the command
+    // contains `DSH""V86…E` and never the marker itself — which is what makes
+    // the marker unambiguous wherever it appears. Anchoring it as well meant a
+    // command whose output had no trailing newline printed the marker onto the
+    // end of that output, matched nothing, and ran to its timeout with the
+    // answer already on the wire: `cat` of a file without a final newline is
+    // the ordinary case of that, not an exotic one.
+    const done = this.spec.console === 'serial'
+      ? new RegExp(`${marker}E(\\d+)`)
+      : new RegExp(`^${marker}E(\\d+|%ERRORLEVEL%)`, 'm')
     const found = await waitFor(() => done.test(this.serial.since(start)), timeoutMs, options.signal)
     const raw = this.serial.since(start)
     // A megabyte is a lot of console output and a guest can still exceed it.

@@ -252,7 +252,7 @@ function machinePrompt(spec: GuestSpec): string {
     'The machine starts when the page loads and stays running for the whole session, so it is '
     + `usually already up by the time you reach for it; a cold start takes ${spec.boots}, and a first `
     + 'call made during one waits for the rest of it. It is the same machine the user sees in the '
-    + 'Runtime panel, so what you type, they watch.',
+    + 'Machine panel, so what you type, they watch.',
   ].join('\n\n')
 }
 
@@ -356,13 +356,21 @@ function registerWriteFile(ctx: Context, spec: GuestSpec): void {
       'The emulated machine has no filesystem in common with your other file tools, so this is how a',
       'file gets there. It goes through the console a chunk at a time, which is slow — a few kilobytes',
       'per second — so it is for source files and scripts, not for data.',
+      'It writes through that same console, so a relative path lands where your shell tool would put it:',
+      'the two tools share one working directory, and a file written with either is found by the other.',
       'Delivered as an escaped `printf`, so every character survives: quotes, backslashes, newlines,',
       'and anything else that would break a hand-written heredoc. The size is read back afterwards and',
       'a short file is reported rather than passed off as written.',
       'Text only: there is no way to send bytes the console would read as control characters.',
     ].join('\n'),
     parameters: {
-      path: { type: 'string', required: true, description: 'Absolute path on the guest, for example /root/build.sh.' },
+      path: {
+        type: 'string',
+        required: true,
+        description: 'Where to write it on the guest. A relative path resolves against the same working '
+          + 'directory your shell tool runs in, so `build.sh` here and `sh build.sh` there are the same '
+          + 'file; an absolute path such as /root/build.sh is exact.',
+      },
       content: { type: 'string', required: true, description: 'The file\'s text.' },
     },
     output: {

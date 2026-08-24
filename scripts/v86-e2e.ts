@@ -35,6 +35,17 @@ import { chromium, type Page } from 'playwright'
 const args = process.argv.slice(2)
 const url = valueOf('--url') ?? 'http://127.0.0.1:4173/'
 const only = valueOf('--case')
+/**
+ * Boot every guest, not only the ones a fast suite can afford.
+ *
+ * Twelve of the machines here need a disk this deployment is not allowed to
+ * serve, and the default suite covers two of them. That is enough to prove the
+ * mechanism and not enough to prove the catalog, so `--all` walks the rest
+ * through the same mirror fixture: every guest, from its own images, to its
+ * own readiness marker. It is slow and it downloads a great deal, which is why
+ * it is a flag.
+ */
+const all = process.argv.includes('--all')
 const headed = args.includes('--headed')
 
 /** Read a `--flag value` pair from argv. */
@@ -51,6 +62,8 @@ function expect(condition: boolean, message: string): void {
 /** One scenario. */
 interface Scenario {
   name: string
+  /** Excluded from a default run; `--all` or `--case` includes it. */
+  slow?: boolean
   run(page: Page): Promise<void>
 }
 
@@ -82,13 +95,33 @@ async function dismissNotice(page: Page): Promise<void> {
   }
 }
 
-/** Open the Runtime panel through the plugin's own sidebar action. */
-async function openRuntimePanel(page: Page): Promise<void> {
+/**
+ * Open Settings and go to the Machine page.
+ *
+ * Where the choice lives, and the reason it is reached this way in the test:
+ * a picker in a panel of its own could be opened by clicking one thing, and
+ * one that has moved into Settings can only be reached the way a person
+ * reaches it. If that path breaks, the setting is unreachable — which no
+ * assertion about the page's contents would catch.
+ */
+async function openMachineSettings(page: Page): Promise<void> {
   await dismissNotice(page)
-  const action = page.getByRole('button', { name: 'Runtime', exact: true })
+  const settings = page.getByRole('button', { name: /^Settings$/ })
+  await settings.first().waitFor({ state: 'visible', timeout: 30_000 })
+  await settings.first().evaluate((node: HTMLElement) => { node.click() })
+  const nav = page.getByRole('button', { name: /^Machine$/ })
+  await nav.first().waitFor({ state: 'visible', timeout: 20_000 })
+  await nav.first().evaluate((node: HTMLElement) => { node.click() })
+  await page.waitForSelector('.dsh-web-machine-settings', { timeout: 20_000 })
+}
+
+/** Open the Machine panel through the plugin's own sidebar action. */
+async function openMachinePanel(page: Page): Promise<void> {
+  await dismissNotice(page)
+  const action = page.getByRole('button', { name: 'Machine panel', exact: true })
   await action.first().waitFor({ state: 'visible', timeout: 30_000 })
   await action.first().evaluate((node: HTMLElement) => { node.click() })
-  await page.waitForSelector('.dsh-web-runtime[data-open]', { timeout: 20_000 })
+  await page.waitForSelector('.dsh-web-machine[data-open]', { timeout: 20_000 })
 }
 
 /** The machine bridge, as this suite calls it. */
@@ -312,36 +345,38 @@ async function startImageHost(): Promise<{ origin: string, close(): Promise<void
 
 const scenarios: Scenario[] = [
   {
-    // The panel a person uses: it lists the machines, it says which one is
-    // running, and choosing one writes the choice the next load reads.
+    // The setting a person uses: it lists the machines, it says which one is
+    // running, and choosing one writes the choice the next load reads. It is
+    // in Settings, which is where a choice that only takes effect on the next
+    // load belongs — beside every other thing this deployment can be told.
     name: 'picker',
     async run(page) {
       await page.goto(`${url}?runtime=node`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       await waitForShell(page)
-      await openRuntimePanel(page)
+      await openMachineSettings(page)
 
-      const listed = await page.locator('.dsh-web-runtime-name').allInnerTexts()
+      const listed = await page.locator('.dsh-web-machine-name').allInnerTexts()
       for (const wanted of ['Node container', 'FreeDOS', 'Windows 1.01', 'Windows 3.1', 'Windows 98', 'Linux']) {
-        expect(listed.includes(wanted), `the picker does not offer ${wanted}; it offers ${listed.join(', ')}`)
+        expect(listed.includes(wanted), `the setting does not offer ${wanted}; it offers ${listed.join(', ')}`)
       }
-      const now = await page.locator('.dsh-web-runtime-now').innerText()
-      expect(now.includes('Node container'), `the panel reports "${now}" while running the container`)
+      const lede = await page.locator('.dsh-web-machine-lede').first().innerText()
+      expect(lede.includes('Node container'), `the setting reports "${lede}" while running the container`)
 
-      // The five that need nothing say so; Windows 3.1 says what it needs.
-      const rows = await page.locator('.dsh-web-runtime-row').allInnerTexts()
+      // The ones that need nothing say so; Windows 3.1 says what it needs.
+      const rows = await page.locator('.dsh-web-machine-row').allInnerTexts()
       const windows31 = rows.find(row => row.startsWith('Windows 3.1'))
-      expect(windows31 !== undefined && windows31.includes('not on the default host'),
+      expect(windows31 !== undefined && windows31.includes('needs a disk'),
         'Windows 3.1 does not tell the user its image is not on the default host')
       const freedos = rows.find(row => row.startsWith('FreeDOS'))
-      expect(freedos !== undefined && !freedos.includes('not on the default host'),
+      expect(freedos !== undefined && !freedos.includes('needs a disk'),
         'FreeDOS claims its image is missing, but the default host serves it')
 
       await page.getByRole('button', { name: /^FreeDOS/ }).first().click()
       await page.getByRole('button', { name: 'Use this machine' }).click()
       const stored = await page.evaluate(() => localStorage.getItem('dsh-web:runtime'))
       expect(stored === 'v86:freedos', `the choice was stored as ${String(stored)}`)
-      const saved = await page.locator('.dsh-web-runtime-apply').innerText()
-      expect(saved.includes('next load'), 'the panel does not say the choice applies on the next load')
+      const saved = await page.locator('.dsh-web-machine-apply').first().innerText()
+      expect(saved.includes('next load'), 'the setting does not say the choice applies on the next load')
     },
   },
 
@@ -520,6 +555,20 @@ const scenarios: Scenario[] = [
       const failing = await run(page, 'ls /definitely-not-here')
       expect(failing.exitCode !== null && failing.exitCode !== 0, 'a failing command reported success')
 
+      // Output with no trailing newline. The completion marker is printed
+      // straight after it, on the same line, and a reader that insisted the
+      // marker start a line matched nothing — so `cat` of a file without a
+      // final newline sat there until its timeout with the answer already on
+      // the wire, and then reported the marker as part of the output. It is
+      // the ordinary shape of `cat` on a file a program wrote, not an exotic
+      // one, so it is checked on all three counts: the value, the absence of
+      // the marker, and that it did not time out.
+      const unterminated = await run(page, 'printf 5050 > /tmp/sum.txt; cat /tmp/sum.txt')
+      expect(unterminated.output === '5050',
+        `output with no trailing newline came back as ${JSON.stringify(unterminated.output)}`)
+      expect(!unterminated.timedOut, 'a command whose output has no trailing newline ran to its timeout')
+      expect(unterminated.exitCode === 0, `it reported exit ${String(unterminated.exitCode)}`)
+
       // A serial console is a terminal and a modern shell decorates one: Arch
       // colours its prompt and brackets every paste, so without stripping,
       // every result a model reads is wrapped in escape sequences and the
@@ -609,7 +658,7 @@ const scenarios: Scenario[] = [
 
       await page.goto(`${url}?runtime=node`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       await waitForShell(page)
-      await openRuntimePanel(page)
+      await openMachineSettings(page)
       await page.setInputFiles('input[aria-label="Disk image for Windows 3.1"]', image)
       await page.waitForFunction(
         () => document.body.innerText.includes('from this computer'),
@@ -667,7 +716,7 @@ const scenarios: Scenario[] = [
 
         await page.goto(`${url}?runtime=node`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
         await waitForShell(page)
-        await openRuntimePanel(page)
+        await openMachineSettings(page)
         const field = page.getByLabel('Image host')
         await field.fill(images.origin)
         await page.getByRole('button', { name: /^Windows 98/ }).first().click()
@@ -696,6 +745,209 @@ const scenarios: Scenario[] = [
       } finally {
         await images.close()
       }
+    },
+  },
+
+  {
+    // One panel, one size, whatever is running in it.
+    //
+    // Every guest here draws at its own resolution — a DOS text mode is
+    // 720×400, KolibriOS comes up at 800×600 — and a panel that showed each at
+    // its native size was a different panel per machine: one filling the box,
+    // the next a stamp in the corner of it. So the screen is fitted to the
+    // panel, and this is the check that it is: same box for both guests,
+    // aspect ratio intact, and neither of them left small.
+    name: 'screen-fit',
+    async run(page) {
+      /** Measure the panel, the stage, and the screen inside it. */
+      const measure = async (): Promise<{
+        stage: { width: number, height: number }
+        visual: { width: number, height: number }
+        natural: { width: number, height: number }
+      }> => page.evaluate(() => {
+        const stage = document.querySelector('.dsh-web-machine-stage')
+        const scaler = document.querySelector('.dsh-web-machine-screen')
+        const screen = scaler?.firstElementChild
+        if (!(stage instanceof HTMLElement) || !(scaler instanceof HTMLElement) || !(screen instanceof HTMLElement)) {
+          throw new Error('the machine panel is not showing a screen')
+        }
+        // The visual size is the scaled rectangle; the natural size is what the
+        // guest actually draws, read with the transform lifted for one frame.
+        const visual = screen.getBoundingClientRect()
+        const applied = scaler.style.transform
+        scaler.style.transform = 'none'
+        const natural = screen.getBoundingClientRect()
+        scaler.style.transform = applied
+        return {
+          stage: { width: stage.clientWidth, height: stage.clientHeight },
+          visual: { width: visual.width, height: visual.height },
+          natural: { width: natural.width, height: natural.height },
+        }
+      })
+
+      const seen: Record<string, { stage: { width: number, height: number }, visual: { width: number, height: number }, natural: { width: number, height: number } }> = {}
+      // Two guests whose native screens are different shapes: a DOS text mode
+      // and a graphical desktop. If the fit were native-size passthrough, these
+      // two would disagree about everything below.
+      for (const guest of ['freedos', 'kolibrios']) {
+        process.stdout.write(`  ${guest}: loading\n`)
+        await page.goto(`${url}?runtime=v86:${guest}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+        await waitForShell(page)
+        process.stdout.write(`  ${guest}: shell up\n`)
+        expect(await ready(page, 120_000), `${guest} did not come up`)
+        process.stdout.write(`  ${guest}: machine ready\n`)
+        await openMachinePanel(page)
+        process.stdout.write(`  ${guest}: panel open\n`)
+        // The fit runs on a resize observation, which is a frame away.
+        await page.waitForTimeout(1200)
+        const shape = await measure()
+        seen[guest] = shape
+
+        expect(shape.natural.width > 1 && shape.natural.height > 1,
+          `${guest} reports a ${String(shape.natural.width)}×${String(shape.natural.height)} screen`)
+        // Inside the box, on both axes. One pixel of slack for the rounding a
+        // fractional scale leaves behind.
+        expect(shape.visual.width <= shape.stage.width + 1 && shape.visual.height <= shape.stage.height + 1,
+          `${guest}'s screen is ${String(Math.round(shape.visual.width))}×${String(Math.round(shape.visual.height))} `
+          + `in a ${String(shape.stage.width)}×${String(shape.stage.height)} panel`)
+        // And filling it on at least one axis, which is what "fitted" means as
+        // opposed to "happens to be smaller".
+        const fills = shape.visual.width >= shape.stage.width - 2 || shape.visual.height >= shape.stage.height - 2
+        expect(fills, `${guest}'s screen fills neither axis of the panel `
+          + `(${String(Math.round(shape.visual.width))}×${String(Math.round(shape.visual.height))} `
+          + `in ${String(shape.stage.width)}×${String(shape.stage.height)})`)
+        // Aspect ratio intact: a fit that stretched would fill both axes and
+        // pass the check above while showing a distorted machine.
+        const before = shape.natural.width / shape.natural.height
+        const after = shape.visual.width / shape.visual.height
+        expect(Math.abs(before - after) < 0.02,
+          `${guest}'s screen was stretched from ${before.toFixed(3)} to ${after.toFixed(3)}`)
+      }
+
+      // The same panel for both, which is the whole claim.
+      expect(seen.freedos.stage.width === seen.kolibrios.stage.width
+        && seen.freedos.stage.height === seen.kolibrios.stage.height,
+      `the panel is ${String(seen.freedos.stage.width)}×${String(seen.freedos.stage.height)} for FreeDOS `
+      + `and ${String(seen.kolibrios.stage.width)}×${String(seen.kolibrios.stage.height)} for KolibriOS`)
+      expect(
+        seen.freedos.natural.width !== seen.kolibrios.natural.width
+        || seen.freedos.natural.height !== seen.kolibrios.natural.height,
+        'both guests draw the same native resolution, so this scenario proves nothing — pick two that differ',
+      )
+
+      // Full screen: the same fit against the whole display. Chromium grants
+      // this from a real click, which is what the button below receives.
+      await page.locator('.dsh-web-machine-overlay button').click()
+      await page.waitForTimeout(1500)
+      const full = await page.evaluate(() => document.fullscreenElement !== null)
+      expect(full, 'the full-screen button did not put the stage full screen')
+      const enlarged = await measure()
+      expect(enlarged.stage.height > seen.kolibrios.stage.height,
+        `full screen left the stage at ${String(enlarged.stage.height)}px`)
+      expect(enlarged.visual.width <= enlarged.stage.width + 1 && enlarged.visual.height <= enlarged.stage.height + 1,
+        'the screen did not re-fit to the full-screen stage')
+      expect(enlarged.visual.width > seen.kolibrios.visual.width,
+        'the screen did not grow when the stage did')
+      // Out again through the app's own affordance rather than through Escape:
+      // leaving full screen on Escape is the browser's chrome doing it, and a
+      // headless shell has none — so that would test the harness, not this.
+      await page.locator('.dsh-web-machine-overlay button').click()
+      await page.waitForTimeout(1200)
+      expect(await page.evaluate(() => document.fullscreenElement === null),
+        'the button did not bring the stage back out of full screen')
+      const restored = await measure()
+      expect(restored.stage.height === seen.kolibrios.stage.height,
+        `the panel came back at ${String(restored.stage.height)}px instead of ${String(seen.kolibrios.stage.height)}px`)
+    },
+  },
+
+  // Every remaining guest, booted from the mirror fixture.
+  //
+  // The catalog claims seventeen machines and the fast suite proves seven of
+  // them. The other ten are the ones this deployment cannot serve a disk for,
+  // which is a licensing fact and not a support one — given the disk they boot
+  // exactly like the rest — and the difference between "supported" and "listed"
+  // is whether anything has ever checked. This checks. Each one gets its own
+  // scenario so a failure names the machine, and the readiness marker is the
+  // guest's own, from the catalog.
+  ...(['msdos622', 'windows2', 'windows30', 'windows95', 'windowsme', 'windowsnt4', 'windows2000', 'buildroot', 'archlinux'] as const)
+    .map((guest): Scenario => ({
+      name: guest,
+      slow: true,
+      async run(page) {
+        const images = await startImageHost()
+        try {
+          await page.goto(`${url}?runtime=node`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+          await waitForShell(page)
+          await openMachineSettings(page)
+          await page.getByLabel('Image host').fill(images.origin)
+          // The setting is what writes the image host; the URL is what pins
+          // the machine for one load, which keeps each scenario independent of
+          // whatever the last one chose.
+          await page.getByRole('button', { name: 'Save image host' }).click()
+          const host = await page.evaluate(() => localStorage.getItem('dsh-web:v86-image-host'))
+          expect(host === images.origin, `the image host was stored as ${String(host)}`)
+
+          await page.goto(`${url}?runtime=v86:${guest}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+          await waitForShell(page)
+          const status = await page.evaluate(() => (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle })
+            .__DSH_WEB_MACHINE__.status())
+          expect(status.emulated && status.guest === guest, `the load came up as ${JSON.stringify(status)}`)
+          expect(await ready(page, 420_000), `${guest} never reached its own readiness marker`)
+
+          // Ready is a marker; a screen with something on it is the machine.
+          const shot = await page.evaluate(async () => (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle })
+            .__DSH_WEB_MACHINE__.screen.shot())
+          expect(shot.width > 0 && shot.height > 0, `${guest} has no screen: ${JSON.stringify(shot)}`)
+          process.stdout.write(`  screen ${String(shot.width)}×${String(shot.height)}`
+            + `${shot.graphical ? ' graphical' : ' text'}, ${String(shot.bytes)} bytes\n`)
+
+          const tools = await offeredTools(page)
+          expect(tools.length > 0, 'the turn sent no request, so the offered tools could not be read')
+          process.stdout.write(`  tools: ${tools.join(', ')}\n`)
+        } finally {
+          await images.close()
+        }
+      },
+    })),
+
+  {
+    // A machine whose disk this deployment cannot get must say so before it
+    // starts, not after.
+    //
+    // What it used to do was accept the choice, reload, print "Fetching
+    // Windows 3.1 (33 MB)", and then fail several seconds later with a 404
+    // naming a CDN path — a message that is true, useless, and gives no hint
+    // that the answer is a file input two clicks away. The catalog knows which
+    // guests the default host serves, so the refusal is decidable up front.
+    name: 'missing-disk',
+    async run(page) {
+      await page.goto(`${url}?runtime=v86:windows2000`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      await waitForShell(page)
+      const failure = await page.evaluate(async () => {
+        const machine = (globalThis as unknown as {
+          __DSH_WEB_MACHINE__: { boot(): Promise<void>, status(): { failure?: string } }
+        }).__DSH_WEB_MACHINE__
+        try {
+          await machine.boot()
+          return { threw: false, message: '' }
+        } catch (error) {
+          return { threw: true, message: error instanceof Error ? error.message : String(error) }
+        }
+      })
+      expect(failure.threw, 'a guest with no disk anywhere started anyway')
+      // It has to name the file, and it has to name the way out. A message
+      // that only says "failed" sends the reader to the network tab.
+      expect(/windows2k/.test(failure.message),
+        `the refusal does not name the file it needs: ${failure.message}`)
+      expect(/Settings/.test(failure.message) && /image host/.test(failure.message),
+        `the refusal does not say what to do about it: ${failure.message}`)
+      // And nothing was fetched to find that out.
+      const requested: string[] = []
+      page.on('request', request => requested.push(request.url()))
+      await page.waitForTimeout(1500)
+      expect(!requested.some(request => /copy\/images|i\.copy\.sh/.test(request)),
+        `the refusal still went to the network: ${requested.join(', ')}`)
     },
   },
 
@@ -736,6 +988,7 @@ let ran = 0
 const skipped: string[] = []
 for (const scenario of scenarios) {
   if (only !== undefined && scenario.name !== only) continue
+  if (scenario.slow === true && !all && only === undefined) continue
   const context = await browser.newContext()
   const page = await context.newPage()
   await page.addInitScript(`
