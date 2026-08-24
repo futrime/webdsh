@@ -189,6 +189,12 @@ export default defineConfig({
       // Optional native addon the vendored loader probes for; it is only used
       // to reach Node's internal ESM loader, which the browser host replaces.
       { find: /^node-addon-require-builtin$/, replacement: here('./src/node/shim-empty.ts') },
+      // The Win32 FFI binding `dsh-subprocess-local` imports for its
+      // process-tree kill. It refuses to load on this engine before any of
+      // that is reached, which would take the subprocess row — and with it the
+      // shell, the permission service, and every tool row waiting on them —
+      // down on a path no page ever takes.
+      { find: /^koffi$/, replacement: here('./src/node/koffi.ts') },
       // Image decoding for attachments. The browser's own decoder replaces the
       // native library, so image attachments keep working.
       { find: /^sharp$/, replacement: here('./src/node/sharp.ts') },

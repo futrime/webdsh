@@ -58,6 +58,7 @@ function clientExportOf(pkg: Record<string, unknown>): string | undefined {
 interface ClientPackage {
   id: string
   inject: string[]
+  external: string[]
   immediately: boolean
   source: string
 }
@@ -84,7 +85,7 @@ function scanClientPackages(): ClientPackage[] {
     if (typeof dsh !== 'object' || dsh === null) continue
     const declaration = (dsh as Record<string, unknown>).client
     if (typeof declaration !== 'object' || declaration === null) continue
-    const spec = declaration as { platform?: string, inject?: string[], immediately?: boolean }
+    const spec = declaration as { platform?: string, inject?: string[], external?: string[], immediately?: boolean }
     if (spec.platform !== 'web') continue
     const relativeClient = clientExportOf(pkg)
     if (relativeClient === undefined) {
@@ -99,16 +100,56 @@ function scanClientPackages(): ClientPackage[] {
     found.push({
       id: String(pkg.name),
       inject: spec.inject ?? [],
+      external: spec.external ?? [],
       immediately: spec.immediately === true,
       source,
     })
   }
   }
-  return found.sort((a, b) => a.id.localeCompare(b.id))
+  return orderByModuleGraph(found.sort((a, b) => a.id.localeCompare(b.id)))
+}
+
+/**
+ * Order rows so a package another one requires at runtime is registered first.
+ *
+ * The shell's loader walks `external` when a row arrives and expects to find
+ * every named package already registered or reachable, so the graph a static
+ * build publishes has to be topologically sorted the same way upstream's node
+ * half sorts it. A name that is not a row here is a static-table word (React,
+ * the primitives package) and adds no edge.
+ * @param entries - the scanned rows, in name order.
+ * @returns the same rows, dependencies first, name order breaking every tie.
+ */
+function orderByModuleGraph(entries: ClientPackage[]): ClientPackage[] {
+  const byId = new Map(entries.map(entry => [entry.id, entry]))
+  const ordered: ClientPackage[] = []
+  const placed = new Set<string>()
+  const open: string[] = []
+  const visit = (entry: ClientPackage): void => {
+    if (placed.has(entry.id)) return
+    const cycle = open.indexOf(entry.id)
+    if (cycle !== -1) {
+      throw new Error(`assemble: client module graph cycle ${[...open.slice(cycle), entry.id].join(' -> ')}`)
+    }
+    open.push(entry.id)
+    for (const name of entry.external) {
+      const bare = name.endsWith('/client') ? name.slice(0, -'/client'.length) : name
+      const dependency = byId.get(name) ?? byId.get(bare)
+      if (dependency === entry) {
+        throw new Error(`assemble: ${entry.id} names itself in dsh.client.external`)
+      }
+      if (dependency !== undefined) visit(dependency)
+    }
+    open.pop()
+    placed.add(entry.id)
+    ordered.push(entry)
+  }
+  for (const entry of entries) visit(entry)
+  return ordered
 }
 
 /** Copy every client bundle into `public/plugins/` and return its manifest row. */
-function emitClientBundles(packages: ClientPackage[]): { id: string, url: string, rev: string, inject: string[], immediately: boolean }[] {
+function emitClientBundles(packages: ClientPackage[]): { id: string, url: string, rev: string, inject: string[], external: string[], immediately: boolean }[] {
   const target = join(publicDir, 'plugins')
   rmSync(target, { recursive: true, force: true })
   return packages.map((entry) => {
@@ -121,7 +162,14 @@ function emitClientBundles(packages: ClientPackage[]): { id: string, url: string
     if (existsSync(`${entry.source}.map`)) {
       writeFileSync(`${destination}.map`, readFileSync(`${entry.source}.map`))
     }
-    return { id: entry.id, url: `plugins/${entry.id}/client.js?rev=${rev}`, rev, inject: entry.inject, immediately: entry.immediately }
+    return {
+      id: entry.id,
+      url: `plugins/${entry.id}/client.js?rev=${rev}`,
+      rev,
+      inject: entry.inject,
+      external: entry.external,
+      immediately: entry.immediately,
+    }
   })
 }
 

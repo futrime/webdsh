@@ -31,6 +31,7 @@ export interface ClientManifestRow {
   url: string
   rev: string
   inject: string[]
+  external: string[]
   immediately: boolean
 }
 
@@ -40,6 +41,7 @@ export interface WebBootEntry {
   url: string
   rev: string
   inject?: string[]
+  external?: string[]
   immediately?: boolean
 }
 
@@ -53,6 +55,19 @@ export interface WebBootGraph {
 // (whose types this build still consumes), so this plugin provides that key
 // rather than redeclaring it with a different class.
 
+/**
+ * The one package whose client half is in the graph whatever the host composes.
+ *
+ * Every other row is in the graph because its node half is mounted — that is
+ * what a plugin's two halves mean. This package is the exception in both
+ * directions: its node half is the row this build *replaced* (see the overlay's
+ * `modules: disabled`), and its client half is not a surface at all but the
+ * module system every other client bundle is loaded by. Deriving it from the
+ * loader would drop it exactly because the replacement succeeded, and the page
+ * would boot a shell with nothing to load plugins with.
+ */
+const BOOTSTRAP_CLIENT_ID = '@deepseek-ai/dsh-client-modules'
+
 /** Short content hash, matching upstream's revision scheme. */
 function shortHash(input: Uint8Array | string): string {
   return Buffer.from(sha1(toBytes(input))).toString('hex').slice(0, 12)
@@ -63,7 +78,7 @@ function shortHash(input: Uint8Array | string): string {
  * filesystem. `installPluginPackage` writes both the manifest and the bundle,
  * so the lookup is a plain read.
  */
-function readInstalledClientHalf(packageName: string): { bundle: Uint8Array, inject: string[], immediately: boolean } | undefined {
+function readInstalledClientHalf(packageName: string): { bundle: Uint8Array, inject: string[], external: string[], immediately: boolean } | undefined {
   const manifestPath = `/opt/dsh/plugins/node_modules/${packageName}/package.json`
   if (!volume.exists(manifestPath)) return undefined
   let manifest: Record<string, unknown>
@@ -74,7 +89,7 @@ function readInstalledClientHalf(packageName: string): { bundle: Uint8Array, inj
   }
   const dsh = manifest.dsh
   if (typeof dsh !== 'object' || dsh === null) return undefined
-  const declaration = (dsh as Record<string, unknown>).client as { platform?: string, inject?: string[], immediately?: boolean } | undefined
+  const declaration = (dsh as Record<string, unknown>).client as { platform?: string, inject?: string[], external?: string[], immediately?: boolean } | undefined
   if (declaration?.platform !== 'web') return undefined
   const exportsField = manifest.exports as Record<string, unknown> | undefined
   const clientExport = exportsField?.['./client']
@@ -99,6 +114,7 @@ function readInstalledClientHalf(packageName: string): { bundle: Uint8Array, inj
   return {
     bundle: volume.readFile(bundlePath),
     inject: declaration.inject ?? [],
+    external: declaration.external ?? [],
     immediately: declaration.immediately === true,
   }
 }
@@ -141,7 +157,7 @@ export class BrowserClientModules extends Service {
    * @returns whether the table changed.
    */
   private scan(): boolean {
-    const live = new Set<string>()
+    const live = new Set<string>([BOOTSTRAP_CLIENT_ID])
     for (const entry of this.ctx.loader.entries()) {
       if (entry.fiber === undefined || entry.disabled === true) continue
       live.add(entry.options.name)
@@ -176,6 +192,7 @@ export class BrowserClientModules extends Service {
         url: shipped.url,
         rev: shipped.rev,
         ...(shipped.inject.length > 0 ? { inject: shipped.inject } : {}),
+        ...(shipped.external.length > 0 ? { external: shipped.external } : {}),
         ...(shipped.immediately ? { immediately: true } : {}),
       }
     }
@@ -189,12 +206,47 @@ export class BrowserClientModules extends Service {
       url: blob,
       rev,
       ...(installed.inject.length > 0 ? { inject: installed.inject } : {}),
+      ...(installed.external.length > 0 ? { external: installed.external } : {}),
       ...(installed.immediately ? { immediately: true } : {}),
     }
   }
 
+  /**
+   * Order rows so a package another row requires at runtime precedes it.
+   *
+   * The shell's loader walks a row's `external` list when the row arrives and
+   * materializes factory-form CJS synchronously, so a consumer reaching a
+   * dependency that has not registered yet is a hard failure rather than a
+   * slow path. Upstream's node half sorts the composed graph for that reason;
+   * this build's row order comes from loader entry order, which carries no
+   * such guarantee, so it sorts here too. A name that is not a row is a
+   * static-table word and adds no edge.
+   * @param entries - the composed rows, in loader order.
+   * @returns the same rows, dependencies first, loader order breaking ties.
+   */
+  private ordered(entries: WebBootEntry[]): WebBootEntry[] {
+    const byId = new Map(entries.map(entry => [entry.id, entry]))
+    const result: WebBootEntry[] = []
+    const placed = new Set<string>()
+    const open = new Set<string>()
+    const visit = (entry: WebBootEntry): void => {
+      if (placed.has(entry.id) || open.has(entry.id)) return
+      open.add(entry.id)
+      for (const request of entry.external ?? []) {
+        const bare = request.endsWith('/client') ? request.slice(0, -'/client'.length) : request
+        const dependency = byId.get(request) ?? byId.get(bare)
+        if (dependency !== undefined && dependency !== entry) visit(dependency)
+      }
+      open.delete(entry.id)
+      placed.add(entry.id)
+      result.push(entry)
+    }
+    for (const entry of entries) visit(entry)
+    return result
+  }
+
   private compose(): WebBootGraph {
-    const entries = [...this.rows.values()]
+    const entries = this.ordered([...this.rows.values()])
     return { rev: shortHash(JSON.stringify(entries)), entries }
   }
 
