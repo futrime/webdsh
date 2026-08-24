@@ -96,6 +96,19 @@ jobs:
           sleep 3
           npx tsx scripts/v86-e2e.ts --url http://127.0.0.1:4179/
 
+      - name: Image pipeline
+        # The vision path, which runs entirely in the browser here: sharp is
+        # answered by the page's own decoder and canvas, and everything
+        # `dsh-attachment-local` does to an image before a model sees it —
+        # auto-orient, cap, re-encode, strip, verify — goes through it. The two
+        # cases that send an image to a model skip without a key; the two that
+        # check the container facts and the request budgets do not, and they are
+        # the ones a regression would show up in first.
+        run: |
+          node scripts/serve.mjs 4177 &
+          sleep 3
+          npx tsx scripts/vision-e2e.ts --url http://127.0.0.1:4177/
+
       - name: Files, chat file links, and the plugin roster
         # The panel over the same filesystem the agent uses, a file in and a
         # file out of the tab, the host's "open this path" landing somewhere,
