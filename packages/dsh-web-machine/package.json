@@ -1,9 +1,9 @@
 {
-  "name": "@dsh-web/runtime",
+  "name": "@dsh-web/machine",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Choose the machine this session runs on: the Node container, or an emulated PC running DOS, Windows or Linux",
+  "description": "The machine this session runs on: its screen or its terminal, and the setting that chooses it",
   "license": "Apache-2.0",
   "exports": {
     ".": "./lib/index.js",

@@ -583,26 +583,38 @@ const scenarios: Scenario[] = [
     },
   },
   {
-    name: 'terminal',
+    name: 'machine',
     async run(page) {
       await waitForShell(page)
-      // What the terminal *does* is `scripts/vm-e2e.ts`'s subject, since it
-      // needs the VM disk and takes minutes. What belongs here is that the page
-      // offers one and that the machine can start at all — cross-origin
-      // isolation is a property of the deployment, and losing it would take the
-      // terminal with it while every other test still passed.
+      // What the machine panel *does* is `scripts/runtime-e2e.ts` and
+      // `scripts/v86-e2e.ts`'s subject, since those need the runtime or a disk
+      // and take minutes. What belongs here is that the page offers one and
+      // that the machine can start at all — cross-origin isolation is a
+      // property of the deployment, and losing it would take the container with
+      // it while every other test still passed.
       const isolated = await page.evaluate(() => globalThis.crossOriginIsolated)
       expect(isolated, 'the page is not cross-origin isolated, so the VM cannot start')
-      // The terminal is a plugin, so what belongs here is that its row composed
-      // and put its action on the surface — what it *does* is runtime-e2e's
-      // subject, since that needs the runtime and takes minutes.
-      const button = page.getByRole('button', { name: /Terminal/ })
+      // The machine surface is a plugin, so what belongs here is that its row
+      // composed and put both of its halves on the surface: the sidebar action
+      // that opens the panel, and the Settings page that chooses the machine.
+      const button = page.getByRole('button', { name: 'Machine panel', exact: true })
       await button.first().waitFor({ state: 'visible', timeout: 30_000 })
+      // And that its browser half really materialized. The client plugin is
+      // where both surfaces live — the panel and the Settings page — and a row
+      // that composed on the host with a bundle that never ran is a sidebar
+      // action attached to nothing. Which Settings page it draws is
+      // `scripts/v86-e2e.ts`'s `picker`, which opens it the way a person does.
+      const materialized = await page.evaluate(() =>
+        [...((globalThis as { __DSH_MODULES__?: { loadCache: Map<string, unknown> } })
+          .__DSH_MODULES__?.loadCache.keys() ?? [])],
+      )
+      expect(materialized.includes('@dsh-web/machine'),
+        'the machine plugin\'s browser half never materialized')
       const rows = await page.evaluate(() => {
         const found: string[] = []
         for (const entry of globalThis.dsh.ctx.loader?.entries() ?? []) {
           const id = String((entry as { options?: { id?: string } }).options?.id ?? '')
-          if (/web-terminal|web-plugin-install/.test(id)) found.push(id)
+          if (/web-machine|web-plugin-install/.test(id)) found.push(id)
         }
         return found
       })

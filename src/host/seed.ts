@@ -14,12 +14,11 @@ import { volume } from '../vfs/volume.ts'
 import { toBytes } from '../node/binary.ts'
 import { env } from '../node/process.ts'
 import browserPatchSource from './browser.patch.yml?raw'
-import terminalPatchSource from '../../packages/dsh-web-terminal/cordis.patch.yml?raw'
+import machinePatchSource from '../../packages/dsh-web-machine/cordis.patch.yml?raw'
 import installPatchSource from '../../packages/dsh-web-plugins/cordis.patch.yml?raw'
 import starPatchSource from '../../packages/dsh-web-star/cordis.patch.yml?raw'
 import networkPatchSource from '../../packages/dsh-web-network/cordis.patch.yml?raw'
 import filesPatchSource from '../../packages/dsh-web-files/cordis.patch.yml?raw'
-import runtimePatchSource from '../../packages/dsh-web-runtime/cordis.patch.yml?raw'
 import { selectedGuest } from '../runtime/selection.ts'
 
 /**
@@ -30,12 +29,11 @@ import { selectedGuest } from '../runtime/selection.ts'
  * not have to know they exist, and removing one should be removing one file.
  */
 const SHIPPED_PLUGIN_PATCHES: Record<string, string> = {
-  'web-terminal': terminalPatchSource,
+  'web-machine': machinePatchSource,
   'web-plugin-install': installPatchSource,
   'web-star': starPatchSource,
   'web-network': networkPatchSource,
   'web-files': filesPatchSource,
-  'web-runtime-picker': runtimePatchSource,
 }
 
 /** The bundle layers this build lays down, in application order. */

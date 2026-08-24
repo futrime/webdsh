@@ -29,12 +29,11 @@ import { volume } from '../vfs/volume.ts'
 import { toText } from '../node/binary.ts'
 import { pathToFileURL } from '../node/misc.ts'
 import browserPatchSource from './browser.patch.yml?raw'
-import * as terminalPlugin from '../../packages/dsh-web-terminal/src/index.ts'
+import * as machinePlugin from '../../packages/dsh-web-machine/src/index.ts'
 import * as installPlugin from '../../packages/dsh-web-plugins/src/index.ts'
 import * as starPlugin from '../../packages/dsh-web-star/src/index.ts'
 import * as networkPlugin from '../../packages/dsh-web-network/src/index.ts'
 import * as filesPlugin from '../../packages/dsh-web-files/src/index.ts'
-import * as runtimePlugin from '../../packages/dsh-web-runtime/src/index.ts'
 
 /** What the boot produced, for the page to wire the transport onto. */
 export interface HostBoot {
@@ -77,12 +76,11 @@ export async function bootHost(): Promise<HostBoot> {
   registerRuntimeModule('browser:client-modules', { default: BrowserClientModules, name: 'client-modules-browser' })
   // The shipped plugins' node halves, addressed by package name so their rows
   // resolve the way any other plugin's would.
-  registerRuntimeModule('@dsh-web/terminal', terminalPlugin)
+  registerRuntimeModule('@dsh-web/machine', machinePlugin)
   registerRuntimeModule('@dsh-web/plugin-install', installPlugin)
   registerRuntimeModule('@dsh-web/star', starPlugin)
   registerRuntimeModule('@dsh-web/network', networkPlugin)
   registerRuntimeModule('@dsh-web/files', filesPlugin)
-  registerRuntimeModule('@dsh-web/runtime', runtimePlugin)
 
   const ctx = new Context()
   ctx.baseUrl = pathToFileURL(`${DEPLOY_ROOT}/`).href

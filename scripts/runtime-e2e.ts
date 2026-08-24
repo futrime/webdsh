@@ -55,7 +55,7 @@ async function openTerminal(page: Page): Promise<void> {
     await acknowledge.first().click().catch(() => undefined)
     await acknowledge.first().waitFor({ state: 'detached', timeout: 20_000 }).catch(() => undefined)
   }
-  const action = page.getByRole('button', { name: /Terminal/ })
+  const action = page.getByRole('button', { name: 'Machine panel', exact: true })
   await action.first().waitFor({ state: 'visible', timeout: 30_000 })
   await action.first().evaluate((node: HTMLElement) => { node.click() })
 }
@@ -237,7 +237,7 @@ async function main(): Promise<void> {
     process.stdout.write('▶ the session survives being closed\n')
     try {
       await run(page, 'echo before-the-close > closed.txt')
-      const action = page.getByRole('button', { name: 'Terminal', exact: true })
+      const action = page.getByRole('button', { name: 'Machine panel', exact: true })
       await action.first().evaluate((node: HTMLElement) => { node.click() })
       await page.waitForTimeout(1000)
       await action.first().evaluate((node: HTMLElement) => { node.click() })
@@ -248,10 +248,10 @@ async function main(): Promise<void> {
       // how the first version of this check passed against the bug it was
       // written for.
       const painted = await page.evaluate(() =>
-        document.querySelector('.dsh-web-terminal .xterm-rows')?.textContent ?? '(nothing rendered)')
+        document.querySelector('.dsh-web-machine .xterm-rows')?.textContent ?? '(nothing rendered)')
       expect(/before-the-close/.test(painted), `the reopened terminal drew nothing: ${painted.slice(0, 200)}`)
       const visible = await page.evaluate(() => {
-        const panel = document.querySelector('.dsh-web-terminal')
+        const panel = document.querySelector('.dsh-web-machine')
         return panel === null ? 'absent' : getComputedStyle(panel).display
       })
       expect(visible !== 'none' && visible !== 'absent', `the panel is not showing: ${visible}`)

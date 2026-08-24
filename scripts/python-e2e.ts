@@ -102,7 +102,7 @@ async function openTerminal(page: Page): Promise<void> {
     await acknowledge.first().click().catch(() => undefined)
     await acknowledge.first().waitFor({ state: 'detached', timeout: 20_000 }).catch(() => undefined)
   }
-  const action = page.getByRole('button', { name: /Terminal/ })
+  const action = page.getByRole('button', { name: 'Machine panel', exact: true })
   await action.first().waitFor({ state: 'visible', timeout: 30_000 })
   await action.first().evaluate((node: HTMLElement) => { node.click() })
   await page.waitForFunction(

@@ -12,6 +12,7 @@ import './node/install-globals.ts'
 import { attachHost, installVirtualNetwork } from './net/virtual-network.ts'
 import { installRequestRouter } from './net/service-worker.ts'
 import { bootHost } from './host/boot.ts'
+import { installModuleLoader } from './host/module-loader.ts'
 import { disableAllPlugins, installedPluginNames, installPluginManager } from './plugins/manager.ts'
 import { installWindowApi } from './api.ts'
 import { bootRuntime, runtimeSupported } from './runtime/webcontainer.ts'
@@ -91,7 +92,7 @@ async function main(): Promise<void> {
     // two filesystems is the real one right now, which is a question only this
     // app can answer.
     publishFilesBridge()
-    // And which machine this session is, which the Runtime panel both reports
+    // And which machine this session is, which the Machine surface both reports
     // and changes. Published before the host for the same reason the runtime
     // is: the tool row reads the selection while it applies.
     publishMachineBridge()
@@ -146,6 +147,11 @@ async function main(): Promise<void> {
 
     progress.step('Loading the web client')
     injectStyles()
+    // The module-system bootstrap, which upstream injects into the served
+    // HTML and a static page therefore has to run itself: the registration
+    // facade the shell's entry calls `create()` on, and the two bundles that
+    // must already have registered when it does.
+    await installModuleLoader(clientModules.graph())
     // The published shell bundle: its own entry finds #root and runs the
     // client-side boot against the manifest published above.
     await import(/* @vite-ignore */ new URL(SHELL_ENTRY, document.baseURI).href)

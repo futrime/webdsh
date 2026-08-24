@@ -200,25 +200,25 @@ interface Check {
 const checks: Check[] = [
   {
     // The one placement fact the task named: the same row shape as the
-    // terminal's, above it. Read off the rendered boxes rather than the DOM,
+    // machine's, above it. Read off the rendered boxes rather than the DOM,
     // because what "above" means here is what the user sees.
-    name: 'the Files action sits above the Terminal action',
+    name: 'the Files action sits above the Machine action',
     async run(page) {
       await acknowledge(page)
       const placed = await page.evaluate(() => Array.from(document.querySelectorAll('button[aria-label]'))
-        .filter(node => ['Files', 'Terminal'].includes(node.getAttribute('aria-label') ?? ''))
+        .filter(node => ['Files', 'Machine panel'].includes(node.getAttribute('aria-label') ?? ''))
         .map((node) => {
           const box = node.getBoundingClientRect()
           return { label: node.getAttribute('aria-label'), top: Math.round(box.top), height: Math.round(box.height) }
         }))
       const files = placed.find(row => row.label === 'Files')
-      const terminal = placed.find(row => row.label === 'Terminal')
+      const machine = placed.find(row => row.label === 'Machine panel')
       expect(files !== undefined, `no Files action in the sidebar: ${JSON.stringify(placed)}`)
-      expect(terminal !== undefined, `no Terminal action in the sidebar: ${JSON.stringify(placed)}`)
-      expect(files!.top < terminal!.top, `Files is not above Terminal: ${JSON.stringify(placed)}`)
+      expect(machine !== undefined, `no Machine action in the sidebar: ${JSON.stringify(placed)}`)
+      expect(files!.top < machine!.top, `Files is not above Machine: ${JSON.stringify(placed)}`)
       // The same shape, not merely the same place: a row that had drifted to a
       // different height would read as a different kind of control.
-      expect(files!.height === terminal!.height, `the two actions are different heights: ${JSON.stringify(placed)}`)
+      expect(files!.height === machine!.height, `the two actions are different heights: ${JSON.stringify(placed)}`)
     },
   },
   {
@@ -554,17 +554,17 @@ const checks: Check[] = [
   },
   {
     // A toggle used to recompose the tree from a shorter layer stack than the
-    // boot used, which took the terminal, the star row, the network page and
+    // boot used, which took the machine, the star row, the network page and
     // the user's own layer with it. The check is cheap and the failure it
     // guards against is silent.
     name: 'turning a plugin off leaves the rest of the composition standing',
     async run(page) {
       const standing = await page.evaluate(() => ({
-        terminal: document.querySelector('button[aria-label="Terminal"]') !== null,
+        machine: document.querySelector('button[aria-label="Machine panel"]') !== null,
         files: document.querySelector('button[aria-label="Files"]') !== null,
         runtime: typeof (globalThis as { __DSH_WEB_RUNTIME__?: unknown }).__DSH_WEB_RUNTIME__,
       }))
-      expect(standing.terminal, 'the terminal action is gone after a plugin was disabled')
+      expect(standing.machine, 'the machine action is gone after a plugin was disabled')
       expect(standing.files, 'the files action is gone after a plugin was disabled')
       const ran = await shell(page, 'echo still-here')
       expect(/still-here/.test(ran), `commands stopped working after a plugin was disabled: ${ran}`)

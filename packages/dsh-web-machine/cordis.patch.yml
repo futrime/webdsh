@@ -1,0 +1,22 @@
+# The machine, as a profile bundle layer.
+#
+# `dsh web` has neither of the two things this row carries. On a developer's
+# laptop the machine is the laptop — there is nothing to choose and nothing to
+# name — and a terminal is a window the user already has open beside the
+# browser. In a tab there is no outside: the session runs on a machine that had
+# to be picked, and the only way to see that machine is for the surface to show
+# it.
+#
+# One row rather than two because it is one thing. A terminal and a screen are
+# not two features, they are what looking at a machine means depending on which
+# machine it is — a Node container answers on a character stream, an emulated
+# PC has a display — and the choice between them belongs in Settings, beside
+# every other choice about how this deployment behaves.
+#
+# The node half is a plain host row; the `dsh.client` declaration in
+# package.json is what puts the browser half in the client roster. Neither half
+# boots anything: the machine is a page capability, and which one this session
+# runs was decided before this row mounted.
+- insert:
+    - id: web-machine
+      name: '@dsh-web/machine'
