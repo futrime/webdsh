@@ -76,9 +76,13 @@ Open the page, choose a workspace, start talking.
   this session runs on: a terminal when that is the Node container — the same
   machine the agent's tools run in — and the emulated PC's live screen when it
   is one of the guests below, scaled to the panel whatever resolution the guest
-  draws at, with a full-screen button and a working keyboard. Closing it hides
-  it; the session, its scrollback and its working directory are still there
-  when you reopen.
+  draws at, with a full-screen button, a working keyboard and a working mouse.
+  Click the screen and the browser hands the pointer to the machine, so the
+  guest's cursor is the only one on it and it is under your hand; Escape gives
+  it back. A guest whose driver reads pointer *positions* rather than movements
+  needs no click — its cursor is already exactly where yours is, and yours is
+  hidden. Closing the panel hides it; the session, its scrollback and its
+  working directory are still there when you reopen.
 - **Python** — `python3` and `pip` are there for both of them. The first call
   fetches a 14 MB interpreter; after that it is stored, and packages installed
   with `pip` survive a reload. Write `python3`: `jsh` aliases `python` to it and
@@ -89,21 +93,26 @@ Open the page, choose a workspace, start talking.
   **128 machines are offered** — the whole of [v86's own
   catalog](https://copy.sh/v86/), carried in with its configuration:
   `npm run v86:catalog` prints the difference against upstream any time you want
-  to check. Five need no setup at all: **Linux** (busybox on a serial console,
-  the shortest way here to a real POSIX shell), **FreeDOS**, **MS-DOS 7**,
-  **Windows 1.01** and **KolibriOS**.
+  to check. **75 of them need no setup at all** — a 512-byte bootsector
+  game, KolibriOS, Damn Small Linux, Plan 9, SqueakNOS, Skift and seventy more.
+  Every one of those was booted in a real browser to say so, which is what
+  `npm run v86:boot -- --bundled --as-shipped` re-checks.
   The rest are configured and one disk away, because that is the whole of what
   separates this from copy.sh: every one of these machines is the same emulator
-  with a different disk, and copy.sh has a CDN with the disks on it. Three ways
+  with a different disk, and copy.sh has a CDN with the disks on it. Four ways
   to give a machine its disk, in the order they are tried:
   **open the files** from your computer (a machine that boots from a disk *and*
   a saved state takes both, and they are kept in this browser);
   **point the setting at a host** that serves them;
-  or **serve them yourself** — drop images into `public/v86/images/` and this
+  **serve them yourself** — drop images into `public/v86/images/` and this
   deployment answers for them from its own origin, with no third party, no CORS
-  question, and no network needed after the first load. `npm run v86:images`
-  puts them there and records where each came from. A machine whose files this
-  deployment cannot get says so before it starts rather than failing mid-boot.
+  question, and no network needed after the first load, which is what
+  `npm run v86:images` is for;
+  or take the default, which is v86's own `copy/images` plus
+  [futrime/webdsh-images](https://github.com/futrime/webdsh-images) — a mirror
+  of the machines whose licences let anyone serve them, which is where those 75
+  come from. A machine whose files this deployment cannot get says so before it
+  starts rather than failing mid-boot.
 - **Plugins** — Settings → Plugins, or `/plugin add <package>` in the composer.
   Takes an npm name, a tarball URL, `owner/repo#ref`, or a path. The *Installed*
   tab turns one off or removes it; the composition is fixed at boot, so a change
