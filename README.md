@@ -16,7 +16,7 @@ Node itself, in the tab.
 
 - ⚡ **Nothing to run.** No server, no install, no local Node — the harness boots in the page.
 - 🖥️ **Real Node, real Python.** `npm install` and `pip install` both work, and the terminal and the agent share one container.
-- 💾 **Or a whole PC.** Settings → Machine swaps the container for [v86](https://github.com/copy/v86), and the session runs FreeDOS, Windows 1.01, Windows 3.1, Windows 98 or Linux — emulated x86, booted from a disk image, with the tool set that machine actually has, on its own screen.
+- 💾 **Or a whole PC.** Settings → Machine swaps the container for [v86](https://github.com/copy/v86) and offers **128 machines** — the whole of v86's catalog, from a 512-byte bootsector game to Windows 2000 — emulated x86, on its own screen, with the tool set that machine actually has.
 - 👁️ **It can see.** Attach an image and the model reads it: oriented, capped and re-encoded to the route's budget by the browser's own decoder, with the source's EXIF and colour profile stripped on the way.
 - 🧩 **Real plugins.** Install from npm, a tarball, GitHub, or a path — from the browser.
 - 📦 **Real dsh.** The published `@deepseek-ai/*` packages, unmodified: 120 of 135 rows compose exactly as `dsh web` composes them.
@@ -83,20 +83,27 @@ Open the page, choose a workspace, start talking.
   fetches a 14 MB interpreter; after that it is stored, and packages installed
   with `pip` survive a reload. Write `python3`: `jsh` aliases `python` to it and
   loses the quoting on the way, so `python -c "…"` is a syntax error.
-- **Which machine** — Settings → Machine. A session runs on one machine and this is
-  where you pick it; the choice applies on the next load, because which machine
-  a session runs on decides which tools the assistant is given. Five need no
-  setup at all: **Linux** (busybox on a serial console, the shortest way here to
-  a real POSIX shell), **FreeDOS**, **MS-DOS 7**, **Windows 1.01** and
-  **KolibriOS**. Eleven more boot exactly the same way but are not this
-  deployment's to serve a disk for — **Windows 2.03**, **3.0**, **3.1**, **95**,
-  **98**, **ME**, **NT 4.0** and **2000**, **MS-DOS 6.22**, **Buildroot Linux**,
-  and **Arch Linux**, which is a 2022 kernel with bash, python3 and gcc and
-  resumes from a saved machine in about two seconds. For those, open each file
-  it needs from your computer — a machine that boots from a disk *and* a saved
-  state takes both — or point the setting at a host that has them. A machine whose
-  files this deployment cannot get says so before it starts rather than failing
-  mid-boot. Nothing is downloaded until you choose a machine.
+- **Which machine** — Settings → Machine. A session runs on one machine and this
+  is where you pick it; the choice applies on the next load, because which
+  machine a session runs on decides which tools the assistant is given.
+  **128 machines are offered** — the whole of [v86's own
+  catalog](https://copy.sh/v86/), carried in with its configuration:
+  `npm run v86:catalog` prints the difference against upstream any time you want
+  to check. Five need no setup at all: **Linux** (busybox on a serial console,
+  the shortest way here to a real POSIX shell), **FreeDOS**, **MS-DOS 7**,
+  **Windows 1.01** and **KolibriOS**.
+  The rest are configured and one disk away, because that is the whole of what
+  separates this from copy.sh: every one of these machines is the same emulator
+  with a different disk, and copy.sh has a CDN with the disks on it. Three ways
+  to give a machine its disk, in the order they are tried:
+  **open the files** from your computer (a machine that boots from a disk *and*
+  a saved state takes both, and they are kept in this browser);
+  **point the setting at a host** that serves them;
+  or **serve them yourself** — drop images into `public/v86/images/` and this
+  deployment answers for them from its own origin, with no third party, no CORS
+  question, and no network needed after the first load. `npm run v86:images`
+  puts them there and records where each came from. A machine whose files this
+  deployment cannot get says so before it starts rather than failing mid-boot.
 - **Plugins** — Settings → Plugins, or `/plugin add <package>` in the composer.
   Takes an npm name, a tarball URL, `owner/repo#ref`, or a path. The *Installed*
   tab turns one off or removes it; the composition is fixed at boot, so a change
