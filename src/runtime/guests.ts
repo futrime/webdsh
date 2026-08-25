@@ -349,6 +349,38 @@ export interface GuestSpec {
    * differ say both numbers rather than the flattering one.
    */
   boots?: string
+  /**
+   * What this machine's network turns out to be, once it has one.
+   *
+   * Every machine here is constructed with an ethernet card and the page
+   * answers for it — see `src/net/machine-network.ts` — but a card is only
+   * half of it: the other half is a driver in the guest, and whether one is
+   * there is a fact about a disk image nobody can read off a catalog. So it is
+   * measured, per machine, and absent where nobody has looked.
+   */
+  network?: GuestNetwork
+}
+
+/** What is known about one guest's networking. */
+export interface GuestNetwork {
+  /**
+   * How the interface comes up.
+   *
+   * - `dhcp` — a client has to be run, and {@link GuestNetwork.up} is the
+   *   command; the console runs it once, when it first attaches, so a model
+   *   that reaches for `wget` finds a working machine rather than a card
+   *   nobody switched on.
+   * - `auto` — the guest brings its own up, which is what every Windows here
+   *   does with a DHCP server on the wire.
+   * - `none` — measured, and the answer was no: the card is in the machine and
+   *   the guest has no driver that finds it, so `/sys/class/net` holds nothing
+   *   but `lo` and no amount of configuration will change it.
+   */
+  bring: 'dhcp' | 'auto' | 'none'
+  /** For `dhcp`, the command that asks for a lease. */
+  up?: string
+  /** What the network is like on this guest, in the model's terms. */
+  note?: string
 }
 
 /** One megabyte, spelled out. */
@@ -383,8 +415,11 @@ const MEASURED: GuestSpec[] = [
     name: 'Linux',
     console: 'serial',
     summary: 'Buildroot Linux on a 5.7 MB CD — the shortest way here to a real POSIX shell.',
-    contains: 'busybox — ash, grep, sed, awk, find, tar, vi, wc, sort — and nothing else. No package manager, '
-      + 'no compiler, and no route out of the page, so nothing network-shaped reaches anything.',
+    contains: 'busybox — ash, grep, sed, awk, find, tar, vi, wc, sort — and nothing else. No package manager '
+      + 'and no compiler. It is also the one machine here with no network: this kernel has no driver for the '
+      + 'emulated card, measured — `/sys/class/net` holds nothing but `lo`, with either card v86 offers — so '
+      + '`wget` and `ping` reach nothing. Buildroot Linux 5.6, further down this list, is the same shell with '
+      + 'a network that works.',
     bundled: true,
     transfer: 5_666_816,
     images: [{ slot: 'cdrom', file: 'linux.iso', size: 5_666_816 }],
@@ -396,6 +431,9 @@ const MEASURED: GuestSpec[] = [
     // offers it, which is the part that would have been a lie.
     options: { memory_size: 128 * MB, filesystem: {} },
     timeoutMs: 90_000,
+    // Measured, with both cards: the guest enumerates neither, so there is
+    // nothing to bring up and nothing to promise.
+    network: { bring: 'none' },
     banner: '(?:login:|/root% )',
     login: { ask: 'login: ', send: 'root\n' },
     boots: 'about 9 seconds',
@@ -589,9 +627,10 @@ const MEASURED: GuestSpec[] = [
     name: 'Buildroot Linux 5.6',
     console: 'serial',
     summary: 'A newer Buildroot than the bundled one — kernel 5.6.15 against the bundled 2.6.34, measured.',
-    contains: 'busybox, lua, curl, ping and telnet, plus a 9p mount at /mnt. The network device is emulated '
-      + 'but has no route out of the page, so `curl` and `ping` reach nothing, and the login banner\'s offer to '
-      + 'put files in /mnt is the emulator\'s own — no tool here writes there, so use vm_write_file.',
+    contains: 'busybox, lua, curl, ping and telnet, plus a 9p mount at /mnt. This one has a working network: '
+      + 'its console takes a DHCP lease when it attaches, and `wget http://…` reaches the internet through the '
+      + 'page. The login banner\'s offer to put files in /mnt is the emulator\'s own — no tool here writes there, '
+      + 'so use vm_write_file.',
     bundled: false,
     transfer: 5_166_352,
     images: [{ slot: 'bzimage', file: 'buildroot-bzimage.bin', size: 5_166_352 }],
@@ -607,6 +646,12 @@ const MEASURED: GuestSpec[] = [
       filesystem: {},
     },
     timeoutMs: 120_000,
+    // Measured: the NE2000 driver is in this kernel, VirtIO is not, and
+    // busybox's own DHCP client is what asks for the lease. `-n` gives up
+    // rather than retrying forever if nothing answers, and `-q` exits once the
+    // lease is configured, so a machine with the network switched off costs
+    // the first command a second rather than hanging it.
+    network: { bring: 'dhcp', up: 'udhcpc -i eth0 -n -q >/dev/null 2>&1' },
     // `~% ` — measured. Neither `#` nor `$`, which is the whole reason this is
     // a per-guest field: a banner pattern that assumed the two usual prompt
     // characters left this guest sitting at a working shell that nothing ever
@@ -619,9 +664,11 @@ const MEASURED: GuestSpec[] = [
     name: 'Arch Linux',
     console: 'serial',
     summary: 'A complete 32-bit Arch install over a 9p filesystem, resumed from a saved machine.',
-    contains: 'Arch Linux 32 on kernel 5.19 with bash, python3, gcc, pacman, Xorg and Firefox — every file '
-      + 'fetched from the image host on first use, so anything you have not touched yet is a round trip away. '
-      + '`pacman` cannot reach a mirror: there is no route out of the page.',
+    contains: 'Arch Linux 32 on kernel 5.19 with bash, python3, gcc, curl, pacman, Xorg and Firefox — every '
+      + 'file fetched from the image host on first use, so anything you have not touched yet is a round trip '
+      + 'away. It has a working network: the console loads the VirtIO driver and takes a DHCP lease when it '
+      + 'attaches, and `curl http://…` reaches the internet through the page. `pacman` needs a mirror served '
+      + 'over plain HTTP, because TLS cannot terminate in a browser tab.',
     bundled: false,
     transfer: 15_493_096,
     images: [{ slot: 'initial_state', file: 'arch_state-v3.bin.zst' }],
@@ -632,6 +679,13 @@ const MEASURED: GuestSpec[] = [
       net_device: { type: 'virtio' },
     },
     timeoutMs: 240_000,
+    // Measured, and the first half of it is v86's own advice: this guest is
+    // restored from a saved machine, and the state was saved with the network
+    // driver unloaded — which is what v86's networking notes recommend, because
+    // a restored MAC address is a new one and a driver that cached the old one
+    // sends packets nothing answers. So the driver is loaded after the restore,
+    // and only then is there an `eth0` for `dhcpcd` to ask about.
+    network: { bring: 'dhcp', up: 'modprobe virtio_net >/dev/null 2>&1; dhcpcd -q -t 15 eth0 >/dev/null 2>&1' },
     banner: '(?:login:|[#$%] )',
     boots: 'about 2 seconds from its saved machine',
   },

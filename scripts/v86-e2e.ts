@@ -648,12 +648,78 @@ const scenarios: Scenario[] = [
         `the quoting did not survive: ${JSON.stringify(ran.output)}`)
       expect(ran.output.includes('42'), `the arithmetic did not survive: ${JSON.stringify(ran.output)}`)
 
+      // The catalog says this guest has no network because its kernel finds no
+      // card, and a claim in a tool description is worth exactly as much as the
+      // check under it.
+      const interfaces = await run(page, 'ls /sys/class/net')
+      expect(!interfaces.output.includes('eth0'),
+        `the bundled Linux was said to have no network device and has one: ${JSON.stringify(interfaces.output)}`)
+
       const tools = await offeredTools(page)
       expect(tools.length > 0, 'the turn sent no request, so the offered tools could not be read')
       expect(!tools.includes('jsh') && !tools.includes('bash'), `a Linux guest was offered a container shell: ${tools.join(', ')}`)
       expect(tools.includes('sh'), `the sh tool is missing: ${tools.join(', ')}`)
       expect(tools.includes('vm_write_file'), `vm_write_file is missing on a guest with a shell: ${tools.join(', ')}`)
       process.stdout.write(`  tools: ${tools.join(', ')}\n`)
+    },
+  },
+
+  {
+    /**
+     * The machine's route out of the page.
+     *
+     * Buildroot rather than the bundled Linux, and that is the test as much as
+     * the assertions are: the 2.6.34 kernel on `linux.iso` has no driver for
+     * either card v86 emulates, which is why the catalog says so and why this
+     * suite asks a machine that does. Everything here is a claim
+     * `src/net/machine-network.ts` makes — a lease without anyone asking for
+     * one, a host that refuses browsers reached anyway, a port stock v86 resets,
+     * and TLS refused rather than hung.
+     */
+    name: 'network',
+    async run(page) {
+      await page.goto(`${url}?runtime=v86:buildroot`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      await waitForShell(page)
+      expect(await ready(page, 240_000), 'the Buildroot guest did not reach a shell')
+
+      // The console asks for a lease while it attaches, so the first command a
+      // model runs already finds an address. Checked first because everything
+      // below fails uselessly without it.
+      const address = await run(page, 'ip addr show eth0')
+      expect(/inet 192\.168\.86\.\d+/.test(address.output),
+        `the guest has no address: ${JSON.stringify(address.output)}`)
+
+      // example.com sends no CORS headers of any kind, so this only works
+      // because the page's own policy retried it through the configured proxy —
+      // which is the whole difference between the machine's reach and the
+      // container's.
+      const fetched = await run(page, 'wget -q -O - http://example.com', 120_000)
+      expect(fetched.output.includes('Example Domain'),
+        'the guest could not fetch http://example.com through the page — this needs the CORS proxy in '
+        + `Settings → Network to be answering. It said ${JSON.stringify(fetched.output.slice(0, 300))}`)
+
+      // A port v86's own backend resets: this one is answered by the bridge in
+      // `machine-network.ts` rather than by upstream. portquiz.net answers HTTP
+      // on every port, which is what it exists for.
+      const other = await run(page, 'wget -q -O - http://portquiz.net:8080/', 120_000)
+      expect(/port|Outgoing/i.test(other.output),
+        `a request to a non-80 port came back as ${JSON.stringify(other.output.slice(0, 300))}`)
+
+      // TLS cannot terminate in a tab, so the connection is refused rather than
+      // accepted and left silent — a hang is the failure mode this avoids.
+      const tls = await run(page, 'telnet example.com 443', 60_000)
+      expect(/refused/i.test(tls.output),
+        `port 443 did not refuse promptly: ${JSON.stringify(tls.output.slice(0, 200))}`)
+
+      // And the page's own account of all of it, which the settings page shows.
+      const traffic = await page.evaluate(() => (globalThis as unknown as {
+        __DSH_WEB_NETWORK__: { machine: { traffic(): { requests: { url: string, status?: number }[], refusedPorts: number[] } } }
+      }).__DSH_WEB_NETWORK__.machine.traffic())
+      expect(traffic.requests.some(entry => entry.url.includes('example.com') && entry.status === 200),
+        `the page did not record the guest's request: ${JSON.stringify(traffic.requests.slice(-4))}`)
+      expect(traffic.refusedPorts.includes(443),
+        `the page did not record the refused TLS port: ${JSON.stringify(traffic.refusedPorts)}`)
+      process.stdout.write(`  the machine made ${String(traffic.requests.length)} requests through the page\n`)
     },
   },
 

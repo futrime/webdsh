@@ -48,6 +48,8 @@ import type { GuestSpec } from '../runtime/guests.ts'
 import { volume } from '../vfs/volume.ts'
 import { WORKSPACE_ROOT } from './seed.ts'
 import { dirname } from '../vfs/path.ts'
+import { machineNetworkConfig } from '../net/machine-network.ts'
+import { proxyConfig } from '../net/cors-proxy.ts'
 
 /** Services this row waits for before it applies. */
 export const inject = ['tools', 'systemPrompt']
@@ -122,6 +124,74 @@ function renderCommand(result: CommandResult, kind: GuestSpec['console']): strin
   return `${body.replace(/\n+$/, '')}\n${markers.join('\n')}`
 }
 
+
+/**
+ * What the model is told about this machine's network, read from what is
+ * actually wired up rather than from a constant.
+ *
+ * Three facts decide it and all three can be false: the page can be offering a
+ * route (Settings → Network), the guest can have a driver for the card
+ * (measured, per machine, in the catalog), and a relay can be configured. Each
+ * combination is a different session, and the wrong paragraph here is worse
+ * than none — a model told to expect a network spends its turns proving there
+ * is not one.
+ * @param spec - the guest.
+ * @returns the paragraph, as description lines.
+ */
+function networkAdvice(spec: GuestSpec): string[] {
+  const config = machineNetworkConfig()
+  if (!config.enabled) {
+    return [
+      'This machine has no route out of the page: Settings → Network has the machine\'s network switched',
+      'off. Treat the network as absent.',
+    ]
+  }
+  if (spec.network?.bring === 'none') {
+    return [
+      `Treat the network as absent on this machine. ${spec.name} has no driver for the emulated network`,
+      'card — measured, `/sys/class/net` holds nothing but `lo` — so nothing network-shaped reaches',
+      'anything, whatever the page offers.',
+    ]
+  }
+  if (config.relay !== '') {
+    return [
+      `This machine is on the network through a relay (${config.relay}), which carries real TCP: \`https://\`,`,
+      'package managers, `ssh` and anything else the guest has a client for all work, and DNS is real.',
+      'It is somebody else\'s server and it sees everything the machine sends, so do not send a',
+      'credential through it that you would not hand over.',
+      ...spec.network?.bring === 'dhcp' ? [] : ['If nothing reaches the network, the interface may need bringing up — try `udhcpc` or `dhcpcd`.'],
+    ]
+  }
+  const proxy = proxyConfig()
+  return [
+    'This machine is on the network, and it is worth reading how, because it is not a normal one.',
+    'The page is the router: it answers the guest\'s DHCP, DNS and pings itself, and turns the HTTP',
+    'requests inside the guest\'s TCP into browser `fetch` calls.',
+    '  Use `http://` URLs, always. The page sends them as HTTPS wherever the host wants that, so',
+    '  `http://example.com` reaches the same page a browser would — but `https://` typed inside the',
+    '  guest cannot work at all: TLS would have to terminate here, and a tab has no socket for it.',
+    '  Those connections are refused immediately rather than hanging.',
+    proxy.enabled
+      ? '  A host that refuses browser requests is retried through the page\'s CORS proxy automatically,'
+        + ' so most public sites do answer.'
+      : '  A host that refuses browser requests fails, and this session has no CORS proxy configured to'
+        + ' retry it through — Settings → Network is where one is turned on.',
+    '  A failure comes back as an HTTP 502 whose body says what went wrong; read it rather than',
+    '  retrying blind.',
+    '  Anything that is not HTTP — `ssh`, a database client, a raw socket — needs a relay, which is',
+    '  the other setting on that page.',
+    ...spec.network?.bring === 'dhcp'
+      ? ['  The interface is already up: this console takes a DHCP lease before your first command.']
+      : spec.network?.bring === 'auto'
+        ? ['  The guest brings its own interface up.']
+        : [
+            '  Whether this guest has a driver for the card was never measured. If `ip link` or `ifconfig -a`',
+            '  shows no interface but `lo`, it has none and nothing will change that; if it shows one that has',
+            '  no address, ask for a lease (`udhcpc -i eth0`, `dhcpcd`, or whatever this system uses).',
+          ],
+  ]
+}
+
 /**
  * What the model is told the `sh` tool is.
  *
@@ -145,8 +215,7 @@ function shellDescription(spec: GuestSpec): string {
     'see the guest. To get a file onto the machine use `vm_write_file`; to get one off, `cat` it here',
     'and write the output with your file tools.',
     '',
-    'Treat the network as absent. This is a 32-bit machine old enough that nothing modern will',
-    'negotiate TLS with it, so whatever is already installed is what you have.',
+    ...networkAdvice(spec),
     '',
     'Output is complete — it is read from a character stream, not scraped off the screen — so a',
     'command that prints a thousand lines returns a thousand lines. Check the [exit code: N] marker',
@@ -329,6 +398,16 @@ function machinePrompt(spec: GuestSpec): string {
     + `usually already up by the time you reach for it; a cold start takes ${spec.boots}, and a first `
     + 'call made during one waits for the rest of it. It is the same machine the user sees in the '
     + 'Machine panel, so what you type, they watch.',
+    // Said here as well as in the shell tool because a graphical guest has no
+    // shell tool to say it in, and "can this machine reach the web" is exactly
+    // the question a model asks before it opens a browser on one.
+    ...machineNetworkConfig().enabled && spec.network?.bring !== 'none'
+      ? ['It is also on the network, in a way worth knowing about: this page is its router, and it carries '
+        + 'HTTP by turning the guest\'s requests into the browser\'s own. So an `http://` address works — '
+        + 'including from a web browser on the machine itself — and an `https://` one cannot, because TLS '
+        + 'would have to terminate in this tab. Settings → Network can name a relay that carries real TCP '
+        + 'if a session needs one.']
+      : [],
   ].join('\n\n')
 }
 

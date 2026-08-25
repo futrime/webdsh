@@ -27,6 +27,17 @@ interface NetworkBridge {
   test(template?: string): Promise<{ ok: boolean, detail: string }>
   defaults: { template: string, alternative: string }
   proxied(): string[]
+  /** The emulated machine's own route out, which the app publishes beside it. */
+  machine?: MachineBridge
+}
+
+/** What the page offers the emulated machine, and what the machine did with it. */
+interface MachineBridge {
+  config(): { enabled: boolean, relay: string }
+  setConfig(next: { enabled?: boolean, relay?: string }): { enabled: boolean, relay: string }
+  test(relay: string): Promise<{ ok: boolean, detail: string }>
+  relays: { url: string, label: string, detail: string }[]
+  traffic(): { requests: { url: string, status?: number, error?: string }[], refusedPorts: number[] }
 }
 
 /** Where the app publishes it. */
@@ -63,6 +74,174 @@ const STYLE = `
 .dsh-web-network-status[data-error]{color:var(--dsw-alias-state-error-primary,#d33)}
 .dsh-web-network-list{margin:0;padding-left:1.1rem;font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;opacity:.8}
 `
+
+
+/**
+ * The half of this page that is about the emulated machine.
+ *
+ * It is on the Network page rather than the Machine page deliberately: what a
+ * guest can reach is decided by the same thing that decides what the tab can
+ * reach — CORS, and the proxy above — and a user who has just read why
+ * `Failed to fetch` happens should read here why the guest's `wget` says the
+ * same thing.
+ *
+ * @returns the section, or nothing on a build with no emulator.
+ */
+function MachineNetwork(): JSX.Element | null {
+  const bridge = network()?.machine
+  const [enabled, setEnabled] = useState(() => bridge?.config().enabled ?? false)
+  const [relay, setRelay] = useState(() => bridge?.config().relay ?? '')
+  const [status, setStatus] = useState<{ text: string, error?: boolean } | undefined>(undefined)
+  const [busy, setBusy] = useState(false)
+  const [traffic, setTraffic] = useState(() => bridge?.traffic() ?? { requests: [], refusedPorts: [] })
+
+  // What the machine asked for changes while a guest is running, and nothing
+  // announces it, so this is read the same way the proxied-origins list is.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const api = network()?.machine
+      if (api !== undefined) setTraffic(api.traffic())
+    }, 2000)
+    return () => { clearInterval(timer) }
+  }, [])
+
+  const save = useCallback((next: { enabled?: boolean, relay?: string }) => {
+    const api = network()?.machine
+    if (api === undefined) return
+    const applied = api.setConfig(next)
+    setEnabled(applied.enabled)
+    if (next.relay !== undefined) setRelay(applied.relay)
+    setStatus({
+      text: !applied.enabled
+        ? 'Saved. The machine keeps its network card and the cable goes nowhere. Restart it to apply.'
+        : applied.relay === ''
+          ? 'Saved. The page answers the machine itself, over HTTP. Restart the machine to apply.'
+          : `Saved. The machine will use ${applied.relay}. Restart it to apply.`,
+    })
+  }, [])
+
+  const probe = useCallback(async () => {
+    const api = network()?.machine
+    if (api === undefined) return
+    setBusy(true)
+    setStatus({ text: 'Testing…' })
+    try {
+      const result = await api.test(relay.trim())
+      setStatus({ text: result.detail, error: !result.ok })
+    } finally {
+      setBusy(false)
+    }
+  }, [relay])
+
+  if (bridge === undefined) return null
+
+  const failures = traffic.requests.filter(entry => entry.error !== undefined).length
+
+  return (
+    <>
+      <div className="dsh-web-network-field">
+        <h3>The emulated machine</h3>
+        <p>
+          Settings → Machine can run this session on an emulated PC instead of the container. That PC
+          has an ethernet card, and this page is what is on the other end of it: it answers the
+          guest&apos;s ARP, hands it a DHCP lease, answers its DNS and pings, and turns the HTTP
+          requests inside its TCP into <code>fetch</code> calls — which then go through the CORS
+          policy above, direct first and proxied only when a host refuses. That is why an emulated
+          Buildroot can <code>wget http://example.com</code> and the container cannot: the
+          container&apos;s requests never pass through this tab.
+        </p>
+        <p>
+          What it cannot carry is TLS. A guest asking for <code>https://</code> would have to complete
+          a handshake with the far end, and a tab has no socket to carry one, so those connections are
+          refused rather than hung. Plain <code>http://</code> URLs are the way out — the page turns
+          them into HTTPS on the wire wherever the host wants it.
+        </p>
+      </div>
+
+      <label className="dsh-web-network-toggle">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={event => { save({ enabled: event.target.checked }) }}
+        />
+        <span>Give the emulated machine a route out of the page</span>
+      </label>
+
+      <div className="dsh-web-network-field">
+        <label htmlFor="dsh-web-network-relay">Relay (optional)</label>
+        <div className="dsh-web-network-row">
+          <input
+            id="dsh-web-network-relay"
+            type="text"
+            value={relay}
+            spellCheck={false}
+            placeholder="empty — this page answers the machine itself"
+            onChange={event => { setRelay(event.target.value) }}
+            onKeyDown={event => { if (event.key === 'Enter') save({ relay: relay.trim() }) }}
+          />
+          <button type="button" disabled={busy} onClick={() => { save({ relay: relay.trim() }) }}>Save</button>
+          <button type="button" disabled={busy} onClick={() => { void probe() }}>Test</button>
+          <button type="button" disabled={busy} onClick={() => { save({ relay: '' }) }}>Clear</button>
+        </div>
+        <p>
+          A relay is a WebSocket server that owns real sockets and forwards the guest&apos;s bytes to
+          them. With one, the machine gets unrestricted TCP: <code>https://</code>, package managers,
+          <code> ssh</code>, anything — and real DNS instead of the one address this page invents.
+          Without one, nothing leaves this tab except through <code>fetch</code>.
+        </p>
+        <ul className="dsh-web-network-list">
+          {bridge.relays.map(preset => (
+            <li key={preset.url}>
+              <button type="button" onClick={() => { setRelay(preset.url); save({ relay: preset.url }) }}>
+                {preset.label}
+              </button>{' '}
+              <code>{preset.url}</code> — {preset.detail}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="dsh-web-network-warn">
+        A relay sees every byte the guest sends, to every host it talks to, including the ones inside a
+        TLS session it is only forwarding — it is the machine&apos;s entire internet connection, not a
+        fallback for one refused request. The two above are public servers run by other people. Run
+        your own (<code>wisp-js</code>, <code>wsnic</code>) or leave this empty.
+      </div>
+
+      {traffic.requests.length > 0 && (
+        <div className="dsh-web-network-field">
+          <h3>The machine asked for</h3>
+          <p>
+            The last {traffic.requests.length} requests the guest made through this page
+            {failures > 0 ? `, ${failures} of which failed` : ''}.
+          </p>
+          <ul className="dsh-web-network-list">
+            {traffic.requests.slice(-12).reverse().map((entry, index) => (
+              <li key={`${entry.url}-${String(index)}`}>
+                {entry.status === undefined ? '✗' : entry.status} {entry.url}
+                {entry.error === undefined ? '' : ` — ${entry.error}`}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {traffic.refusedPorts.length > 0 && (
+        <div className="dsh-web-network-warn">
+          The guest opened connections this page could not carry, on port{' '}
+          {traffic.refusedPorts.join(', ')}. Those are not HTTP — a TLS or plain-socket protocol — and
+          only a relay can carry them.
+        </div>
+      )}
+
+      {status !== undefined && (
+        <div className="dsh-web-network-status" {...(status.error === true ? { 'data-error': '' } : {})}>
+          {status.text}
+        </div>
+      )}
+    </>
+  )
+}
 
 /** The Network page. */
 function NetworkSection(): JSX.Element {
@@ -218,6 +397,8 @@ function NetworkSection(): JSX.Element {
           {status.text}
         </div>
       )}
+
+      <MachineNetwork />
     </div>
   )
 }

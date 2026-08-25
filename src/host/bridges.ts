@@ -40,6 +40,10 @@ import {
   testProxy,
   type ProxyConfig,
 } from '../net/cors-proxy.ts'
+import {
+  machineNetworkConfig, machineTraffic, RELAY_PRESETS, setMachineNetworkConfig, testRelay,
+  type MachineNetworkConfig,
+} from '../net/machine-network.ts'
 
 /** Where an uploaded plugin tarball is staged before the installer reads it. */
 const UPLOAD_DIR = '/tmp/dsh-plugin-uploads'
@@ -365,6 +369,17 @@ export function publishNetworkBridge(): void {
     // honest answer to "is it being used", and it is the only place the page
     // reports that a request left through a third party.
     proxied: (): string[] => proxiedOrigins(),
+    // The machine's own route out, published beside the page's because they
+    // are two answers to one question — what this session can reach — and a
+    // user reading a settings page about the network should not have to know
+    // that one of them belongs to an emulator.
+    machine: {
+      config: (): MachineNetworkConfig => machineNetworkConfig(),
+      setConfig: (next: Partial<MachineNetworkConfig>): MachineNetworkConfig => setMachineNetworkConfig(next),
+      test: (relay: string) => testRelay(relay),
+      relays: RELAY_PRESETS,
+      traffic: () => machineTraffic(),
+    },
   }
 }
 

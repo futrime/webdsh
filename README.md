@@ -17,6 +17,7 @@ Node itself, in the tab.
 - ⚡ **Nothing to run.** No server, no install, no local Node — the harness boots in the page.
 - 🖥️ **Real Node, real Python.** `npm install` and `pip install` both work, and the terminal and the agent share one container.
 - 💾 **Or a whole PC.** Settings → Machine swaps the container for [v86](https://github.com/copy/v86) and offers **128 machines** — the whole of v86's catalog, from a 512-byte bootsector game to Windows 2000, **87 of them booting with nothing to set up** — emulated x86, on its own screen, with the tool set that machine actually has.
+- 🌐 **The PC is online.** The page is its router: it answers the guest's DHCP, DNS and pings and carries its HTTP as browser `fetch`, through the same CORS policy the rest of the app uses — so `wget http://example.com` works on an emulated Buildroot, which is a host the container itself cannot reach.
 - 👁️ **It can see.** Attach an image and the model reads it: oriented, capped and re-encoded to the route's budget by the browser's own decoder, with the source's EXIF and colour profile stripped on the way.
 - 🧩 **Real plugins.** Install from npm, a tarball, GitHub, or a path — from the browser.
 - 📦 **Real dsh.** The published `@deepseek-ai/*` packages, unmodified: 120 of 135 rows compose exactly as `dsh web` composes them.
@@ -40,9 +41,9 @@ the entire web client come from npm at install time; the only modification is a
 What this repository adds is the platform underneath: a synchronous POSIX
 filesystem mirrored to IndexedDB (`src/vfs`), `node:*` implemented over it
 (`src/node`), the two runtimes a session can run on — WebContainers and an
-emulated x86 PC (`src/runtime`) — an in-page virtual server for `/api` plus the
-CORS policy every outbound request goes through (`src/net`), and the plugins
-this build ships (`packages/`).
+emulated x86 PC (`src/runtime`) — an in-page virtual server for `/api`, the
+CORS policy every outbound request goes through and the network the emulated
+machine is given (`src/net`), and the plugins this build ships (`packages/`).
 
 Six composition rows are swapped, each because the shipped one names something a
 page cannot have — or, in the shell's case, cannot honestly describe. Four more
@@ -97,6 +98,23 @@ disks come from v86's own `copy/images` and the hosts
 `src/runtime/v86-mirror.json` names, mostly
 [AndyZijianZhang/webdsh-images](https://huggingface.co/datasets/AndyZijianZhang/webdsh-images),
 whose `NOTICE.json` records where every image came from and under what licence.
+
+**The machine's network.** An emulated PC gets an ethernet card and this page on
+the other end of it: it answers the guest's ARP, DHCP, DNS and pings itself, and
+turns the HTTP requests inside the guest's TCP into `fetch` calls — which go
+through the CORS policy above, direct first and proxied only when a host refuses
+a browser. So an emulated Buildroot can `wget http://example.com`, a host that
+sends no CORS headers at all and that the container cannot reach either, and a
+guest running a web browser can open an `http://` address. Ports other than 80
+work too, which stock v86 resets. What a tab cannot carry is TLS: `https://`
+*from inside the guest* would have to terminate here, so those connections are
+refused rather than left hanging, and plain `http://` is sent as HTTPS on the
+wire wherever the host wants it. Settings → Network can name a WISP or
+websockproxy relay for a session that needs real TCP — package managers, `ssh` —
+and says plainly what routing every byte through a third party costs. Whether a
+particular guest has a driver for the card is a fact about its disk: it is
+measured per machine, and the machines that were measured say so in their own
+description.
 
 **Plugins.** `/plugin add <package>` in the composer, or Settings → Plugins.
 Takes an npm name, a tarball URL, `owner/repo#ref`, or a path. The composition

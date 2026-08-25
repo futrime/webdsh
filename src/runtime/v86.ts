@@ -38,6 +38,7 @@ import {
 } from './guests.ts'
 import { legacyDisk, storedDisk } from './disks.ts'
 import { runtimeSelection } from './selection.ts'
+import { attachMachineNetwork, machineNetworkConfig, netDevice, type NetworkedEmulator } from '../net/machine-network.ts'
 
 /** As much of v86's surface as this module uses. */
 interface Emulator {
@@ -729,6 +730,12 @@ async function start(): Promise<Machine> {
     bios: { url: new URL(`${BIOS_BASE}seabios.bin`, base).href },
     vga_bios: { url: new URL(`${BIOS_BASE}vgabios.bin`, base).href },
     screen: { container: screen, use_graphical_text: true },
+    // The card the guest's own driver expects, wired to whatever Settings →
+    // Network says the page is offering. Computed rather than written into the
+    // catalog because the backend is a setting and the card is not: upstream's
+    // profiles say which machines want VirtIO, and this build says how any of
+    // them gets out.
+    net_device: netDevice(spec.options),
     // Nothing here plays sound to anyone, and an audio context the browser
     // will not resume without a gesture is a console warning per boot.
     disable_speaker: true,
@@ -743,6 +750,10 @@ async function start(): Promise<Machine> {
     disable_keyboard: true,
     autostart: true,
   })
+
+  // Before anything else the machine does, because a guest that sends a DHCP
+  // discover in its first second must find the page already listening.
+  attachMachineNetwork(emulator as unknown as NetworkedEmulator)
 
   let graphical = false
   // The guest's own account of its pointer, straight off v86's bus. `mouse-enable`
@@ -1018,6 +1029,16 @@ class SerialStream {
 }
 
 /**
+ * How long to wait for a DHCP client to finish.
+ *
+ * Measured at about a second on Buildroot with the page answering the lease,
+ * and a little more on Arch, which loads a driver first. The budget is well
+ * above both because the alternative to waiting is a first command that runs
+ * while the DHCP client is still printing into the same console.
+ */
+const NETWORK_UP_MS = 25_000
+
+/**
  * How long a serial write waits between chunks.
  *
  * The emulated UART accepts bytes faster than DOS reads them out of its
@@ -1267,6 +1288,7 @@ class Console implements MachineConsole {
       const ready = await waitFor(() => this.atSerialPrompt(), 20_000)
       if (!ready) throw new Error('the guest\'s serial console did not answer; it may still be booting')
       this.prepared = true
+      await this.bringUpNetwork()
       return
     }
 
@@ -1283,6 +1305,35 @@ class Console implements MachineConsole {
       throw new Error('CTTY COM1 did not put this guest\'s console on the serial port; the machine may need restarting')
     }
     this.onSerial = true
+  }
+
+  /**
+   * Ask for a DHCP lease, once, before the first command runs.
+   *
+   * A card with no address is a card that does nothing, and on the guests that
+   * need this there is no `init` script that asks: v86's own demo expects a
+   * person to type `udhcpc`. A model would have to know that, on this machine,
+   * before its first `wget` — so the console does it while it is attaching,
+   * where the second it costs is spent inside a wait the caller was already
+   * doing.
+   *
+   * Sent down the wire directly rather than through {@link Console.run},
+   * because this runs *inside* `attach()`, which `run` is waiting on: asking
+   * the queue for a slot from in here is a deadlock. Failure is deliberately
+   * quiet. A guest whose lease does not arrive is a guest whose `wget` will say
+   * so in its own words, which is a better error than one this method could
+   * invent, and a machine that boots slightly slower because the page's network
+   * is off would be a worse trade than a command that fails once.
+   */
+  private async bringUpNetwork(): Promise<void> {
+    const up = this.spec.network?.bring === 'dhcp' ? this.spec.network.up : undefined
+    if (up === undefined || !machineNetworkConfig().enabled) return
+    try {
+      await this.sendLine(up)
+      await waitFor(() => this.atSerialPrompt(), NETWORK_UP_MS)
+    } catch {
+      // The console is attached either way; this was an offer, not a step.
+    }
   }
 
   async run(command: string, options: { timeoutMs?: number, signal?: AbortSignal } = {}): Promise<CommandResult> {
