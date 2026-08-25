@@ -577,12 +577,18 @@ function registerWriteFile(ctx: Context, spec: GuestSpec): void {
 /** What a screenshot call produces. */
 interface Shot {
   path: string
+  /** The picture's own width — what a coordinate read off it is measured in. */
   width: number
+  /** The picture's own height. */
   height: number
   bytes: number
   mode: string
-  /** The whole screen's size, when only part of it was taken. */
+  /** The whole screen's size, when the picture is not the whole screen at 1:1. */
   of?: { width: number, height: number }
+  /** Where the picture's top-left corner sits on the screen, when it was cropped. */
+  origin?: { x: number, y: number }
+  /** Picture pixels per screen pixel, when the picture had to be made smaller. */
+  scale?: number
   /** The attached image, when this route can be shown one. */
   image?: {
     attachmentId: string
@@ -638,6 +644,26 @@ async function routeSeesImages(ctx: Context, exec: { agent?: unknown, signal: Ab
   }
 }
 
+/**
+ * The most pixels a picture may carry to the model.
+ *
+ * Not a preference: it is the request-image budget dsh's own adapters apply —
+ * `DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET` in `dsh-llm-deepseek`, 640,000 — and
+ * anything larger is resized to fit it on the way into the request, by a layer
+ * this tool never sees the output of.
+ *
+ * That resize is why this constant is here. A 1024×768 screen arrives at the
+ * model as a 923×692 picture, and a tool result that says "1024×768" while the
+ * model looks at 923×692 has told it that a pixel it can see is a pixel the
+ * machine has. It is not: every coordinate read off that picture is 10% short,
+ * and a model calibrating a pointer against it derives a different, wrong
+ * scale each time — which is exactly what happened. So the picture is brought
+ * within the budget *here*, where the numbers can be reported honestly, and the
+ * result says what the picture is, what the screen is, and how to get from one
+ * to the other.
+ */
+const REQUEST_PIXEL_BUDGET = 640_000
+
 /** The screenshot tool. */
 function registerScreenshot(ctx: Context, spec: GuestSpec): void {
   let counter = 0
@@ -656,6 +682,13 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
       'line, one menu — because a crop of the part you care about survives downscaling that would',
       'make the same text unreadable in a full-screen shot. A rectangle that runs off the edge is',
       'trimmed to the part that exists rather than refused.',
+      '',
+      'READ THIS BEFORE USING A COORDINATE. The picture is not always the screen at 1:1. A screen',
+      'bigger than the model\'s image budget is made smaller before it reaches you — a 1024×768 screen',
+      'arrives as a 923×692 picture — so a position you read off it is a *picture* pixel, not a screen',
+      'pixel. Every result says what the picture is, what the screen is, and the arithmetic that turns',
+      'one into the other; use those numbers rather than assuming. A small `region` crop is 1:1 and a',
+      'full screen usually is not, so never calibrate with one and act on the other.',
       '',
       'When the screen is in a text mode, `vm_screen` gives you the same content as text, which is',
       'exact rather than read off pixels — reach for that first and use this when the screen is',
@@ -696,6 +729,15 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
               height: { type: 'integer', required: true },
             },
           },
+          origin: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              x: { type: 'integer', required: true },
+              y: { type: 'integer', required: true },
+            },
+          },
+          scale: { type: 'number' },
           image: {
             type: 'object',
             additionalProperties: false,
@@ -712,12 +754,21 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
       },
       render: (_args, value) => {
         const shot = value as unknown as Shot
-        const cropped = shot.of === undefined
+        // What the picture is, and — when it is not the screen at 1:1 — how to
+        // read a position off it. Written as the arithmetic rather than as a
+        // warning, because "this is scaled" is what a model ignores and
+        // `x_screen = …` is what it can follow.
+        const mapping = shot.of === undefined
           ? ''
-          : ` — a ${String(shot.width)}×${String(shot.height)} crop of a `
-            + `${String(shot.of.width)}×${String(shot.of.height)} screen`
-        const text = `${spec.name}: ${String(shot.width)}×${String(shot.height)}, ${shot.mode} mode${cropped}`
-          + `\nsaved ${shot.path}`
+          : `\nThis picture is ${String(shot.width)}×${String(shot.height)} of a `
+            + `${String(shot.of.width)}×${String(shot.of.height)} screen. To turn a position (x, y) `
+            + 'you read off it into screen pixels: '
+            + (shot.scale === undefined
+              ? `x_screen = x + ${String(shot.origin?.x ?? 0)}, y_screen = y + ${String(shot.origin?.y ?? 0)}.`
+              : `x_screen = x ÷ ${String(shot.scale)} + ${String(shot.origin?.x ?? 0)}, `
+                + `y_screen = y ÷ ${String(shot.scale)} + ${String(shot.origin?.y ?? 0)}.`)
+        const text = `${spec.name}: ${String(shot.width)}×${String(shot.height)}, ${shot.mode} mode`
+          + `\nsaved ${shot.path}${mapping}`
           + (shot.mode === 'text' ? '\nThe screen is in a text mode: `vm_screen` reads it exactly.' : '')
           + (shot.image === undefined
             ? '\nThis model does not accept images, so the picture is not attached; the file is there for the user.'
@@ -746,7 +797,7 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
       let bytes = shot.bytes
       let width = shot.width
       let height = shot.height
-      let of: { width: number, height: number } | undefined
+      let origin: { x: number, y: number } | undefined
       if (args.region !== undefined) {
         const { default: sharp } = await import('../node/sharp.ts')
         const cropped = await sharp(shot.bytes)
@@ -756,8 +807,42 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
         bytes = new Uint8Array(cropped.data)
         width = cropped.info.width
         height = cropped.info.height
-        of = { width: shot.width, height: shot.height }
+        // `extract` trims a rectangle that runs off the edge, so where the crop
+        // *starts* is the asked-for corner clamped to the screen — and that is
+        // the number the model needs to put a coordinate back on the screen.
+        origin = {
+          x: Math.max(0, Math.min(args.region.x, shot.width - width)),
+          y: Math.max(0, Math.min(args.region.y, shot.height - height)),
+        }
       }
+
+      // Brought within the model's own image budget here rather than left to
+      // the layer that would otherwise do it silently — see
+      // {@link REQUEST_PIXEL_BUDGET}. `fit: 'inside'` keeps the aspect ratio, so
+      // one number describes the whole mapping.
+      let scale: number | undefined
+      if (width * height > REQUEST_PIXEL_BUDGET) {
+        const ratio = Math.sqrt(REQUEST_PIXEL_BUDGET / (width * height))
+        const { default: sharp } = await import('../node/sharp.ts')
+        const shrunk = await sharp(bytes)
+          .resize({
+            width: Math.max(1, Math.floor(width * ratio)),
+            height: Math.max(1, Math.floor(height * ratio)),
+            fit: 'inside',
+            withoutEnlargement: true,
+          })
+          .png()
+          .toBuffer({ resolveWithObject: true }) as { data: Buffer, info: { width: number, height: number } }
+        scale = shrunk.info.width / width
+        bytes = new Uint8Array(shrunk.data)
+        width = shrunk.info.width
+        height = shrunk.info.height
+      }
+      // Stated whenever the picture is not the screen itself, which is what a
+      // crop and a resize both make true.
+      const of = origin !== undefined || scale !== undefined
+        ? { width: shot.width, height: shot.height }
+        : undefined
 
       const relative = args.path ?? `screenshots/${spec.id}-${String(++counter)}.png`
       const path = relative.startsWith('/') ? relative : `${WORKSPACE_ROOT}/${relative}`
@@ -771,6 +856,8 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
         bytes: bytes.length,
         mode: shot.graphical ? 'graphical' : 'text',
         ...(of === undefined ? {} : { of }),
+        ...(origin === undefined ? {} : { origin }),
+        ...(scale === undefined ? {} : { scale: Number(scale.toFixed(4)) }),
       }
 
       // The picture itself, when there is somewhere for it to go. Both halves
@@ -1009,6 +1096,12 @@ function registerMouse(ctx: Context, spec: GuestSpec): () => void {
       'To reach a known place, start with `home`, which drives the pointer hard into the top-left',
       'corner where it stops, then `move` by roughly half the pixel offset you want. Then take a',
       'screenshot and correct. Do not expect to land first time.',
+      '',
+      'Where the pixel offset comes from matters. `vm_screenshot` says what its picture is, what the',
+      'screen is, and how to convert between them — a full-screen picture is usually smaller than the',
+      'screen, a small `region` crop is exactly the screen. Convert before you count, and take both',
+      'readings the same way: mixing a scaled full-screen reading with a 1:1 crop reading is what',
+      'makes the units-per-pixel come out differently every time.',
       '',
       'The steps, and what they are for:',
       '  `home`                       — the corner, as a starting point you can count from',
