@@ -1,14 +1,14 @@
 {
  "9legacy.img": {
-  "url": "https://zjzh.me/webdsh-images/9legacy.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/9legacy.img",
   "bytes": 16000000
  },
  "BoneOS.iso": {
-  "url": "https://zjzh.me/webdsh-images/BoneOS.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/BoneOS.iso",
   "bytes": 11429888
  },
  "FreeNOS-1.0.3.iso": {
-  "url": "https://zjzh.me/webdsh-images/FreeNOS-1.0.3.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/FreeNOS-1.0.3.iso",
   "bytes": 11014144
  },
  "PCMOS386-9-user-patched.img": {
@@ -16,23 +16,23 @@
   "bytes": 1474560
  },
  "SqueakNOS.iso": {
-  "url": "https://zjzh.me/webdsh-images/SqueakNOS.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/SqueakNOS.iso",
   "bytes": 61171712
  },
  "TinyCore-11.0.iso": {
-  "url": "https://zjzh.me/webdsh-images/TinyCore-11.0.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/TinyCore-11.0.iso",
   "bytes": 19922944
  },
  "Win30.iso": {
-  "url": "https://zjzh.me/webdsh-images/Win30.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/Win30.iso",
   "bytes": 7774208
  },
  "asuro.iso": {
-  "url": "https://zjzh.me/webdsh-images/asuro.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/asuro.iso",
   "bytes": 5361664
  },
  "bj050.img": {
-  "url": "https://zjzh.me/webdsh-images/bj050.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/bj050.img",
   "bytes": 1474560
  },
  "bl3-5.img": {
@@ -40,51 +40,51 @@
   "bytes": 104857600
  },
  "bleskos_2024u32.iso": {
-  "url": "https://zjzh.me/webdsh-images/bleskos_2024u32.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/bleskos_2024u32.iso",
   "bytes": 1835008
  },
  "bootbasic.img": {
-  "url": "https://zjzh.me/webdsh-images/bootbasic.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/bootbasic.img",
   "bytes": 512
  },
  "bootchess.img": {
-  "url": "https://zjzh.me/webdsh-images/bootchess.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/bootchess.img",
   "bytes": 1474560
  },
  "bootdino.img": {
-  "url": "https://zjzh.me/webdsh-images/bootdino.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/bootdino.img",
   "bytes": 512
  },
  "bootlogo.img": {
-  "url": "https://zjzh.me/webdsh-images/bootlogo.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/bootlogo.img",
   "bytes": 512
  },
  "bootos-all.img": {
-  "url": "https://zjzh.me/webdsh-images/bootos-all.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/bootos-all.img",
   "bytes": 368640
  },
  "bootrogue.img": {
-  "url": "https://zjzh.me/webdsh-images/bootrogue.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/bootrogue.img",
   "bytes": 512
  },
  "buildroot-bzimage.bin": {
-  "url": "https://zjzh.me/webdsh-images/buildroot-bzimage.bin",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/buildroot-bzimage.bin",
   "bytes": 5166352
  },
  "buildroot-bzimage68.bin": {
-  "url": "https://zjzh.me/webdsh-images/buildroot-bzimage68.bin",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/buildroot-bzimage68.bin",
   "bytes": 10068480
  },
  "catkernel.iso": {
-  "url": "https://zjzh.me/webdsh-images/catkernel.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/catkernel.iso",
   "bytes": 11968512
  },
  "chimaeraos.img": {
-  "url": "https://zjzh.me/webdsh-images/chimaeraos.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/chimaeraos.img",
   "bytes": 34120704
  },
  "chip4504.img": {
-  "url": "https://zjzh.me/webdsh-images/chip4504.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/chip4504.img",
   "bytes": 1474560
  },
  "curios.img": {
@@ -92,43 +92,43 @@
   "bytes": 83886080
  },
  "dancy.iso": {
-  "url": "https://zjzh.me/webdsh-images/dancy.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/dancy.iso",
   "bytes": 10485760
  },
  "doof-1440.img": {
-  "url": "https://zjzh.me/webdsh-images/doof-1440.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/doof-1440.img",
   "bytes": 1474560
  },
  "dsl-4.11.rc2.iso": {
-  "url": "https://zjzh.me/webdsh-images/dsl-4.11.rc2.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/dsl-4.11.rc2.iso",
   "bytes": 52824064
  },
  "duskos.img": {
-  "url": "https://zjzh.me/webdsh-images/duskos.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/duskos.img",
   "bytes": 8388608
  },
  "elks-hd32-fat.img": {
-  "url": "https://zjzh.me/webdsh-images/elks-hd32-fat.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/elks-hd32-fat.img",
   "bytes": 32514048
  },
  "floppybird.img": {
-  "url": "https://zjzh.me/webdsh-images/floppybird.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/floppybird.img",
   "bytes": 1474560
  },
  "forthos20.img.zst": {
-  "url": "https://zjzh.me/webdsh-images/forthos20.img.zst",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/forthos20.img.zst",
   "bytes": 359461
  },
  "freedos722.img": {
-  "url": "https://zjzh.me/webdsh-images/freedos722.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/freedos722.img",
   "bytes": 737280
  },
  "hOp-0.8.img": {
-  "url": "https://zjzh.me/webdsh-images/hOp-0.8.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/hOp-0.8.img",
   "bytes": 1474560
  },
  "hello-v86.img": {
-  "url": "https://zjzh.me/webdsh-images/hello-v86.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/hello-v86.img",
   "bytes": 512
  },
  "ibm-exploring.img": {
@@ -136,51 +136,51 @@
   "bytes": 368640
  },
  "invaders.img": {
-  "url": "https://zjzh.me/webdsh-images/invaders.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/invaders.img",
   "bytes": 512
  },
  "ipxe.iso": {
-  "url": "https://zjzh.me/webdsh-images/ipxe.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/ipxe.iso",
   "bytes": 4194304
  },
  "jx-demo.img": {
-  "url": "https://zjzh.me/webdsh-images/jx-demo.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/jx-demo.img",
   "bytes": 1474560
  },
  "kolibri.img": {
-  "url": "https://zjzh.me/webdsh-images/kolibri.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/kolibri.img",
   "bytes": 1474560
  },
  "leetos.img": {
-  "url": "https://zjzh.me/webdsh-images/leetos.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/leetos.img",
   "bytes": 1474560
  },
  "linux.iso": {
-  "url": "https://zjzh.me/webdsh-images/linux.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/linux.iso",
   "bytes": 6547456
  },
  "linux3.iso": {
-  "url": "https://zjzh.me/webdsh-images/linux3.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/linux3.iso",
   "bytes": 8638464
  },
  "linux4.iso": {
-  "url": "https://zjzh.me/webdsh-images/linux4.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/linux4.iso",
   "bytes": 7731200
  },
  "mcp2.img": {
-  "url": "https://zjzh.me/webdsh-images/mcp2.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/mcp2.img",
   "bytes": 512
  },
  "mikeos.iso": {
-  "url": "https://zjzh.me/webdsh-images/mikeos.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/mikeos.iso",
   "bytes": 3311616
  },
  "mobius-fd-release5.img": {
-  "url": "https://zjzh.me/webdsh-images/mobius-fd-release5.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/mobius-fd-release5.img",
   "bytes": 1474560
  },
  "mojo-0.2.2.iso": {
-  "url": "https://zjzh.me/webdsh-images/mojo-0.2.2.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/mojo-0.2.2.iso",
   "bytes": 4048896
  },
  "msdos4.img": {
@@ -188,43 +188,43 @@
   "bytes": 1474560
  },
  "mu-shell.img": {
-  "url": "https://zjzh.me/webdsh-images/mu-shell.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/mu-shell.img",
   "bytes": 10321920
  },
  "nanoshell.iso": {
-  "url": "https://zjzh.me/webdsh-images/nanoshell.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/nanoshell.iso",
   "bytes": 6785024
  },
  "netboot.xyz.iso": {
-  "url": "https://zjzh.me/webdsh-images/netboot.xyz.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/netboot.xyz.iso",
   "bytes": 2398208
  },
  "newos-flp.img": {
-  "url": "https://zjzh.me/webdsh-images/newos-flp.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/newos-flp.img",
   "bytes": 1474560
  },
  "newos-notion.img": {
-  "url": "https://zjzh.me/webdsh-images/newos-notion.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/newos-notion.img",
   "bytes": 4128768
  },
  "nodeos-kernel.bin": {
-  "url": "https://zjzh.me/webdsh-images/nodeos-kernel.bin",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/nodeos-kernel.bin",
   "bytes": 14452000
  },
  "nopeos-0.1.iso": {
-  "url": "https://zjzh.me/webdsh-images/nopeos-0.1.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/nopeos-0.1.iso",
   "bytes": 532480
  },
  "oberon.img": {
-  "url": "https://zjzh.me/webdsh-images/oberon.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/oberon.img",
   "bytes": 25165824
  },
  "openwrt-18.06.1-x86-legacy-combined-squashfs.img": {
-  "url": "https://zjzh.me/webdsh-images/openwrt-18.06.1-x86-legacy-combined-squashfs.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/openwrt-18.06.1-x86-legacy-combined-squashfs.img",
   "bytes": 19846474
  },
  "os64boot.iso": {
-  "url": "https://zjzh.me/webdsh-images/os64boot.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/os64boot.iso",
   "bytes": 5580800
  },
  "os8.img": {
@@ -236,11 +236,11 @@
   "bytes": 163840
  },
  "pillman.img": {
-  "url": "https://zjzh.me/webdsh-images/pillman.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/pillman.img",
   "bytes": 512
  },
  "prettyos.img": {
-  "url": "https://zjzh.me/webdsh-images/prettyos.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/prettyos.img",
   "bytes": 1474560
  },
  "qnx-demo-network-4.05.img": {
@@ -248,31 +248,31 @@
   "bytes": 1474560
  },
  "quantixos.iso": {
-  "url": "https://zjzh.me/webdsh-images/quantixos.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/quantixos.iso",
   "bytes": 11784192
  },
  "sanos-flp.img": {
-  "url": "https://zjzh.me/webdsh-images/sanos-flp.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/sanos-flp.img",
   "bytes": 1474560
  },
  "sectorforth.img": {
-  "url": "https://zjzh.me/webdsh-images/sectorforth.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/sectorforth.img",
   "bytes": 512
  },
  "sectorlisp-friendly.bin": {
-  "url": "https://zjzh.me/webdsh-images/sectorlisp-friendly.bin",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/sectorlisp-friendly.bin",
   "bytes": 512
  },
  "skift-20200910.iso": {
-  "url": "https://zjzh.me/webdsh-images/skift-20200910.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/skift-20200910.iso",
   "bytes": 64452608
  },
  "slitaz-rolling-2024.iso": {
-  "url": "https://zjzh.me/webdsh-images/slitaz-rolling-2024.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/slitaz-rolling-2024.iso",
   "bytes": 56573952
  },
  "snowdrop.img": {
-  "url": "https://zjzh.me/webdsh-images/snowdrop.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/snowdrop.img",
   "bytes": 1474560
  },
  "sortix-1.0-i686.iso": {
@@ -280,23 +280,23 @@
   "bytes": 71075840
  },
  "soso.iso": {
-  "url": "https://zjzh.me/webdsh-images/soso.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/soso.iso",
   "bytes": 22546432
  },
  "stillalive-os.img": {
-  "url": "https://zjzh.me/webdsh-images/stillalive-os.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/stillalive-os.img",
   "bytes": 368640
  },
  "t3xforth.img": {
-  "url": "https://zjzh.me/webdsh-images/t3xforth.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/t3xforth.img",
   "bytes": 1474560
  },
  "tetros.img": {
-  "url": "https://zjzh.me/webdsh-images/tetros.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/tetros.img",
   "bytes": 512
  },
  "tilck.img": {
-  "url": "https://zjzh.me/webdsh-images/tilck.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/tilck.img",
   "bytes": 37748736
  },
  "toaruos-1.6.1-core.iso": {
@@ -304,7 +304,7 @@
   "bytes": 67567616
  },
  "vanadiumos.iso": {
-  "url": "https://zjzh.me/webdsh-images/vanadiumos.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/vanadiumos.iso",
   "bytes": 8388608
  },
  "win31.img": {
@@ -316,19 +316,19 @@
   "bytes": 4177920
  },
  "xcom144.img": {
-  "url": "https://zjzh.me/webdsh-images/xcom144.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/xcom144.img",
   "bytes": 1474560
  },
  "xenushdd.img": {
-  "url": "https://zjzh.me/webdsh-images/xenushdd.img",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/xenushdd.img",
   "bytes": 52428800
  },
  "xpud-0.9.2.iso": {
-  "url": "https://zjzh.me/webdsh-images/xpud-0.9.2.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/xpud-0.9.2.iso",
   "bytes": 67108864
  },
  "xwoaf_rebuild4.iso": {
-  "url": "https://zjzh.me/webdsh-images/xwoaf_rebuild4.iso",
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/a8ddc812eb2c25fb282550d0c1d7dac411d03f9a/xwoaf_rebuild4.iso",
   "bytes": 2205696
  }
 }

@@ -43,11 +43,10 @@
  *
  * Eighty-seven of the hundred and twenty-eight machines are reachable that
  * way. The forty-one that are not have one thing in common and it is not their
- * licence: their disks come to about thirty-four gigabytes, they exist only as
- * the pieces copy.sh cut them into, and copy.sh is the only host that has
- * them. There is no arrangement of mirrors here that changes that — a GitHub
- * Pages site may be one gigabyte — so those machines ask for a file, and say
- * so before they start rather than failing mid-boot.
+ * licence: their disks exist only as the pieces copy.sh cut them into, and
+ * copy.sh is the only host that has them — deliberately, and it is their
+ * bandwidth to protect. So those machines ask for a file, and say so before
+ * they start rather than failing mid-boot.
  */
 
 import CATALOG from './v86-catalog.json'
@@ -221,12 +220,12 @@ export interface GuestImage {
    * catalog has a hundred and twenty-eight machines.
    *
    * Two kinds of URL end up here, and the difference matters for what this
-   * project is responsible for. Most are `futrime/webdsh-images`, which *is*
-   * this project redistributing an image, and so holds only images whose
-   * licences allow it. The rest are links to a public repository that already
-   * holds the file — no copy made here, the same posture as the default host,
-   * which is likewise somebody else's repository and likewise has proprietary
-   * disks on it.
+   * project is responsible for. Most are `AndyZijianZhang/webdsh-images` on
+   * Hugging Face, which *is* this project redistributing an image, and so holds
+   * only images whose licences allow it. The rest are links to a public
+   * repository that already holds the file — no copy made here, the same
+   * posture as the default host, which is likewise somebody else's repository
+   * and likewise has proprietary disks on it.
    */
   mirror?: string
 
@@ -794,12 +793,18 @@ function fromCatalog(entry: CatalogEntry): GuestSpec | undefined {
 /**
  * Offer a machine a copy of any file `v86-mirror.json` knows where to get.
  *
- * `futrime/webdsh-images` is most of that map: the machines whose licences let
- * anyone serve them, published over GitHub Pages, which answers range requests
+ * `AndyZijianZhang/webdsh-images` on Hugging Face is most of that map: the
+ * machines whose licences let anyone serve them. The Hub answers range requests
  * with `accept-ranges: bytes` and `access-control-allow-origin: *` — the two
- * things an emulator reading a disk in pieces needs. The rest are links into a
- * public repository that already holds the file, which costs no bandwidth here
- * and copies nothing.
+ * things an emulator reading a disk in pieces needs — and, unlike a GitHub
+ * Pages site, it is not capped at a gigabyte, which is what the first version
+ * of this mirror ran into. Every URL is pinned to a commit rather than a
+ * branch: the length guard below would notice a file changing underneath us,
+ * but it would notice by quietly dropping the machine, and a mirror this
+ * project controls should not need to be caught out.
+ *
+ * The rest are links into a public repository that already holds the file,
+ * which costs no bandwidth here and copies nothing.
  *
  * *Offer*, not impose. It is recorded as {@link GuestImage.mirror} rather than
  * {@link GuestImage.source}, so it stands in for the default host and nothing
