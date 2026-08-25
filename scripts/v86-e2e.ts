@@ -269,8 +269,19 @@ async function proveKeyboardReaches(page: Page, key: string): Promise<void> {
   await page.evaluate(async (pressed: string) => {
     await (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle }).__DSH_WEB_MACHINE__.input.press(pressed)
   }, key)
-  await page.waitForTimeout(4000)
-  const after = await shot()
+  // Polled rather than sampled once after a fixed wait. What is being timed is
+  // an emulated Pentium drawing a menu, and how long that takes is a fact about
+  // the machine underneath: four seconds is plenty on a workstation and not
+  // always enough on a shared CI runner, where this failed with the screen
+  // byte-identical — the same 20675 both times — on a guest that was measured
+  // answering the same keystroke locally. Waiting *for the change* rather than
+  // for the clock makes a slow host slow instead of red.
+  let after = await shot()
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline && after >= low - margin && after <= high + margin) {
+    await page.waitForTimeout(1000)
+    after = await shot()
+  }
   expect(after < low - margin || after > high + margin,
     `${key} moved the screen from ${String(low)}-${String(high)} bytes to ${String(after)}, `
     + `which is inside the ${String(margin)}-byte margin it drifts by on its own — the keyboard is not reaching the guest`)
