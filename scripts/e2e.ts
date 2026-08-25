@@ -11,6 +11,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { lookup } from 'node:dns/promises'
 import { chromium, type ConsoleMessage, type Page } from 'playwright'
 import { FREE_ROUTES } from './free-routes.ts'
 
@@ -580,6 +581,66 @@ const scenarios: Scenario[] = [
         expect(code === undefined, `the keyless turn failed: ${JSON.stringify(keyless.failure)}`)
         expect(keyless.text.trim().length > 0, 'the keyless turn finished without any text')
       }
+    },
+  },
+  {
+    // The page at a hostname that is not localhost.
+    //
+    // Everything else in this file runs against `127.0.0.1`, and one fact the
+    // client publishes is computed from the hostname: `connection.isLoopback`,
+    // which upstream reads as "is the Host on this user's own machine". On a
+    // machine that is the right question — a browser at some other hostname is
+    // talking to someone else's computer. In a page it is the wrong one: the
+    // Host *is* the page, at every hostname.
+    //
+    // Getting it wrong is silent and expensive. The settings mirror starts
+    // `unavailable`, so Settings → Models cannot read the provider directory at
+    // all, "Open configuration file" disappears, and a produced file stops
+    // offering to open where it lives — three features gone, on the deployed
+    // domain only, with every suite green on loopback. `src/host/module-loader.ts`
+    // corrects it; this is the check that it stays corrected.
+    name: 'non-loopback-host',
+    async run(page) {
+      const here = new URL(url)
+      // A public name that resolves to this machine, so the page is reached at
+      // a hostname the client cannot mistake for loopback while the request
+      // still lands on the server this suite started.
+      const alias = 'lvh.me'
+      const resolved = await lookup(alias).then(entry => entry.address, () => undefined)
+      if (resolved !== '127.0.0.1') {
+        console.log(`  skipped: ${alias} does not resolve to 127.0.0.1 here (${String(resolved)})`)
+        return
+      }
+      here.hostname = alias
+      await page.goto(here.href, { waitUntil: 'domcontentloaded', timeout: 120_000 })
+      await waitForShell(page)
+
+      await page.getByRole('button', { name: /Continue/ }).first()
+        .evaluate((node: HTMLElement) => { node.click() }).catch(() => undefined)
+      await page.waitForTimeout(1500)
+      await page.getByRole('button', { name: /^Settings$/ }).first()
+        .evaluate((node: HTMLElement) => { node.click() })
+      await page.waitForTimeout(1500)
+      await page.getByRole('button', { name: /^Models$/ }).first()
+        .evaluate((node: HTMLElement) => { node.click() })
+      await page.waitForTimeout(3000)
+
+      const shown = await page.locator('body').innerText()
+      expect(
+        !/settings are unavailable in this browser/.test(shown),
+        'the settings mirror stood down because the page is not on localhost',
+      )
+      expect(
+        !/Loading the provider directory failed/.test(shown),
+        `Settings → Models could not read the provider directory:\n${shown.slice(0, 600)}`,
+      )
+      // The directory really rendered, rather than the page merely not erroring.
+      expect(/DeepSeek/.test(shown), `the provider directory is empty:\n${shown.slice(0, 600)}`)
+      // And the surface that only appears when the Host is judged local.
+      expect(
+        /Open configuration file/.test(shown),
+        'the settings document action is missing, so the client still thinks the Host is remote',
+      )
     },
   },
   {
