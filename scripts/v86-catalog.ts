@@ -49,6 +49,8 @@ interface UpstreamImage {
   streamed: boolean
   /** The piece size a streamed image was cut into, when the catalog states one. */
   chunkBytes?: number
+  /** An absolute URL, for the profiles that name one instead of a file on the host. */
+  source?: string
 }
 
 /** What the demo page's table says about one machine. */
@@ -135,9 +137,15 @@ function imagesOf(profile: Record<string, unknown>): UpstreamImage[] {
     if (typeof value !== 'object' || value === null) continue
     const image = value as { url?: string, size?: number, use_parts?: boolean, fixed_chunk_size?: number }
     if (typeof image.url !== 'string') continue
+    // A handful of profiles name an absolute URL instead of a file on the
+    // image host — KolibriOS points at its own build server. Stripping a
+    // placeholder that is not there would leave the whole URL sitting where a
+    // file name belongs, and every host would then be prefixed onto it.
+    const absolute = !image.url.startsWith(HOST)
     images.push({
       slot,
-      file: image.url.replace(HOST, ''),
+      file: absolute ? image.url.slice(image.url.lastIndexOf('/') + 1) : image.url.replace(HOST, ''),
+      ...(absolute ? { source: image.url.startsWith('//') ? `https:${image.url}` : image.url } : {}),
       ...(typeof image.size === 'number' ? { size: image.size } : {}),
       streamed: image.use_parts === true,
       ...(typeof image.fixed_chunk_size === 'number' ? { chunkBytes: image.fixed_chunk_size } : {}),

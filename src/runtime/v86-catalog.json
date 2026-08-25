@@ -717,7 +717,8 @@
   "images": [
    {
     "slot": "fda",
-    "file": "//builds.kolibrios.org/en_US/data/data/kolibri.img",
+    "file": "kolibri.img",
+    "source": "https://builds.kolibrios.org/en_US/data/data/kolibri.img",
     "size": 1474560,
     "streamed": false
    }

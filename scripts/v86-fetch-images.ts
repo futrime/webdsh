@@ -34,13 +34,21 @@ import { GUESTS } from '../src/runtime/guests.ts'
 
 const args = process.argv.slice(2)
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const target = join(root, 'public', 'v86', 'images')
 
 /** Read a `--flag value` pair from argv. */
 function valueOf(flag: string): string | undefined {
   const index = args.indexOf(flag)
   return index === -1 ? undefined : args[index + 1]
 }
+/**
+ * Where the files land.
+ *
+ * `public/v86/images/` by default, which is what this deployment serves itself.
+ * `--into` points it somewhere else — at a checkout of a mirror repository, for
+ * instance, which is the same job done once for everybody instead of once per
+ * deployment.
+ */
+const target = valueOf('--into') ?? join(root, 'public', 'v86', 'images')
 
 /** One file to fetch, and where from. */
 interface Wanted {
@@ -59,9 +67,10 @@ function size(bytes: number): string {
 /** What each machine needs, so a maintainer can go and find it. */
 function list(): void {
   for (const guest of GUESTS) {
-    if (guest.images.every(image => image.source !== undefined)) continue
+    // A file the mirror already holds is not a file anyone has to go and find.
+    if (guest.images.every(image => image.source !== undefined || image.mirror !== undefined)) continue
     const files = guest.images
-      .filter(image => image.source === undefined)
+      .filter(image => image.source === undefined && image.mirror === undefined)
       .map(image => `${image.file}${image.size === undefined ? '' : ` (${size(image.size)})`}${image.streamed ? ' [read in pieces]' : ''}`)
     if (files.length === 0) continue
     process.stdout.write(`${guest.id.padEnd(20)} ${guest.name}\n    ${files.join('\n    ')}\n`)
@@ -125,7 +134,7 @@ if (args.includes('--list') || args.length === 0) {
 const manifestPath = valueOf('--manifest')
 const from = valueOf('--from')
 const ids = args.filter((argument, index) =>
-  !argument.startsWith('--') && args[index - 1] !== '--from' && args[index - 1] !== '--manifest')
+  !argument.startsWith('--') && !['--from', '--manifest', '--into'].includes(args[index - 1] ?? ''))
 
 const wanted: Wanted[] = manifestPath !== undefined
   ? JSON.parse(readFileSync(manifestPath, 'utf8')) as Wanted[]
@@ -160,7 +169,7 @@ writeFileSync(noticePath, `${JSON.stringify(notice, null, 1)}\n`)
 const held = Object.keys(notice).length
 const bytes = Object.values(notice).reduce<number>((total, row) => total + ((row as { bytes?: number }).bytes ?? 0), 0)
 process.stdout.write(
-  `\n${String(held)} file(s) under public/v86/images/, ${size(bytes)} in all`
+  `\n${String(held)} file(s) under ${target}, ${size(bytes)} in all`
   + `${failed === 0 ? '' : `; ${String(failed)} failed`}\n`,
 )
 process.stdout.write(`origins and digests recorded in ${noticePath.replace(root, '.')}\n`)

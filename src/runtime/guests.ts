@@ -7,13 +7,14 @@
  * before anything heavy has been fetched. All three read this table, and none
  * of them pulls in the emulator to do it.
  *
- * Every timing and every readiness marker below was measured against a cold
- * boot in a real browser rather than reasoned about. `npm run test:v86` boots
- * all five bundled guests and fails if one stops reaching its own marker; the
- * eleven that need a disk from elsewhere were each driven by hand once and are
- * regression-tested only where the suite can get an image — Windows 3.1 and
- * Windows 98. The rest can rot without anything noticing, which is worth
- * knowing before trusting a line in this table.
+ * Every timing and every readiness marker in {@link MEASURED} was measured
+ * against a cold boot in a real browser rather than reasoned about. `npm run
+ * test:v86` boots the bundled ones and fails if one stops reaching its own
+ * marker; the rest were each driven by hand once and are regression-tested
+ * only where the suite can get an image — Windows 3.1 and Windows 98. The
+ * machines carried in from `v86-catalog.json` are upstream's own configuration
+ * and were never measured at all, which is worth knowing before trusting a
+ * timing on one.
  *
  * ## Where the disks come from, and why that is a question
  *
@@ -24,21 +25,25 @@
  * it is deliberate, and it is copy.sh's bandwidth to protect. This build does
  * not work around it.
  *
- * So a guest gets its disk one of three ways, and the picker offers all three:
+ * So a guest gets its disk one of four ways, in this order:
  *
- * 1. **The default image host** — `copy/images` on GitHub, which is public,
- *    answers `access-control-allow-origin: *`, serves ranges, and has no
- *    referrer policy. Five guests below are complete from it and need no
- *    setup at all. They are the ones marked {@link GuestSpec.bundled}.
- * 2. **A host you name** — one setting, for a deployment that mirrors the
- *    wider image set, or for a browser that is on `copy.sh` already.
- * 3. **A file from your computer** — v86 reads a disk image `File` in slices,
+ * 1. **A file from your computer** — v86 reads a disk image `File` in slices,
  *    so a 300 MB Windows 98 disk opened this way costs no download at all and
  *    works offline. For the proprietary guests this is the lawful path anyway,
  *    and it is the one `scripts/v86-e2e.ts` exercises for Windows 3.1.
+ * 2. **A host you name** — one setting, for a deployment that mirrors the
+ *    wider image set, or for a browser that is on `copy.sh` already.
+ * 3. **This deployment itself**, when `public/v86/images/` has the file. No
+ *    third party, no CORS question, and it still boots with the network off.
+ * 4. **The default image host** — `copy/images` on GitHub, which is public,
+ *    answers `access-control-allow-origin: *`, serves ranges, and has no
+ *    referrer policy — supplemented by `v86-mirror.json`, this project's own
+ *    copy of the open-source disks it does not carry. Together those two are
+ *    what {@link GuestSpec.bundled} means: a machine that needs no setup.
  */
 
 import CATALOG from './v86-catalog.json'
+import MIRROR from './v86-mirror.json'
 
 /**
  * Where a disk is fetched from when nothing else supplies it.
@@ -196,6 +201,18 @@ export interface GuestImage {
    * checks all three.
    */
   source?: string
+
+  /**
+   * The same file on this project's mirror, for when nothing better is set.
+   *
+   * Not the same thing as {@link GuestImage.source}. A `source` is upstream's
+   * own statement of where the file lives, so no image-host setting may move
+   * it; a `mirror` is only what to try when the deployment has not been told
+   * anything — a host the user named, or a copy this deployment serves itself,
+   * both come first. The mirror exists because the default host has five files
+   * and the catalog has a hundred and twenty-eight machines.
+   */
+  mirror?: string
 
   /**
    * The size of one piece of a streamed image, in bytes.
@@ -643,7 +660,7 @@ const MEASURED: GuestSpec[] = [
 interface CatalogEntry {
   id: string
   name: string
-  images: { slot: string, file: string, size?: number, streamed: boolean, chunkBytes?: number }[]
+  images: { slot: string, file: string, size?: number, streamed: boolean, chunkBytes?: number, source?: string }[]
   licence?: string
   family?: string
   medium?: string
@@ -704,6 +721,7 @@ function fromCatalog(entry: CatalogEntry): GuestSpec | undefined {
     images.push({
       slot,
       file: image.file,
+      ...(image.source === undefined ? {} : { source: image.source }),
       ...(image.size === undefined ? {} : { size: image.size }),
       ...(image.streamed ? { streamed: true } : {}),
       ...(image.chunkBytes === undefined ? {} : { chunkBytes: image.chunkBytes }),
@@ -758,6 +776,51 @@ function fromCatalog(entry: CatalogEntry): GuestSpec | undefined {
 }
 
 /**
+ * Offer a machine the mirror's copy of any file the mirror carries.
+ *
+ * `futrime/webdsh-images` is that mirror: the machines whose licences let
+ * anyone serve them, published over GitHub Pages, which answers range requests
+ * with `accept-ranges: bytes` and `access-control-allow-origin: *` — the two
+ * things an emulator reading a disk in pieces needs.
+ *
+ * *Offer*, not impose. It is recorded as {@link GuestImage.mirror} rather than
+ * {@link GuestImage.source}, so it stands in for the default host and nothing
+ * else: a deployment serving the file itself still wins, and so does a host
+ * the user has named. The alternative — writing it as a `source` — quietly
+ * made the image-host setting do nothing for seventy-one files, which is the
+ * one setting on that page.
+ *
+ * A machine every one of whose files is reachable this way needs no setup at
+ * all, which is what `bundled` means.
+ * @param spec - the machine.
+ * @returns the machine, with mirrored files offered the mirror.
+ */
+function withMirror(spec: GuestSpec): GuestSpec {
+  const served = MIRROR as Record<string, { url: string, bytes: number } | undefined>
+  const images = spec.images.map((image) => {
+    const held = served[image.file]
+    if (held === undefined || image.source !== undefined) return image
+    // A file name is not a disk. `linux.iso` names two of them — the 5.6 MB
+    // build this project's own Linux guest was measured on, and the 6.5 MB one
+    // v86's catalog boots as `linux26` — and the mirror can only hold one file
+    // under one name. Handing the wrong one to a guest that declares the
+    // other's length is not a boot that fails, it is a boot that reads past the
+    // end of a disk; so a length that disagrees means this machine does not use
+    // the mirror, and falls back to the host that has its disk.
+    if (image.size !== undefined && !image.file.endsWith('.zst') && image.size !== held.bytes) return image
+    return { ...image, mirror: held.url }
+  })
+  return {
+    ...spec,
+    images,
+    // A 9p root is a directory rather than a file, so a machine that needs one
+    // is not complete however many of its disks are reachable.
+    bundled: spec.bundled
+      || (spec.filesystem === undefined && images.every(image => image.source !== undefined || image.mirror !== undefined)),
+  }
+}
+
+/**
  * Every machine this build offers: the ones it has driven, then the rest of
  * v86's catalog.
  *
@@ -771,7 +834,7 @@ export const GUESTS: GuestSpec[] = [
     .filter(entry => !MEASURED.some(measured => measured.id === entry.id))
     .map(fromCatalog)
     .filter((spec): spec is GuestSpec => spec !== undefined),
-]
+].map(withMirror)
 
 /**
  * Find a machine by id.
@@ -808,8 +871,10 @@ export function unavailableImages(
   if (spec.bundled || host !== DEFAULT_IMAGE_HOST) return []
   const missing = spec.images
     // A file that names its own source is not the host's to serve, so the host
-    // having nothing to say about it decides nothing.
-    .filter(image => image.source === undefined && local[image.slot] === undefined)
+    // having nothing to say about it decides nothing — and neither does a file
+    // the mirror stands in for, which is reachable precisely because this is
+    // the default host.
+    .filter(image => image.source === undefined && image.mirror === undefined && local[image.slot] === undefined)
     .map(image => image.file)
   // A 9p root is a directory of files the guest asks for one at a time. No
   // local file can be one, so a guest that needs a tree the host does not
@@ -856,8 +921,11 @@ export function imageOptions(
 /** One remote file, in the shape v86 accepts. */
 function remoteImage(host: string, image: GuestImage): Record<string, unknown> {
   // A file that names its own source is not the host's to serve, and pointing
-  // the host somewhere else must not move it.
-  const url = image.source ?? `${host}${image.file}`
+  // the host somewhere else must not move it. The mirror is the opposite kind
+  // of answer — it stands in for the default host, and anything the deployment
+  // has actually been pointed at wins over it.
+  const url = image.source
+    ?? (host === DEFAULT_IMAGE_HOST ? image.mirror ?? `${host}${image.file}` : `${host}${image.file}`)
   if (image.slot === 'initial_state') return { url }
   if (image.streamed === true) {
     return {
