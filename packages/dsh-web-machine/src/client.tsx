@@ -542,6 +542,12 @@ function MachinePanel({ open, onClose }: { open: boolean, onClose: () => void })
   const guests = machine?.guests() ?? []
   const status = machine?.status()
   const emulated = active.kind === 'v86'
+  const panel = useRef<HTMLDivElement | null>(null)
+
+  // Runs once and then watches: the panel's own size observation is what tells
+  // this that it opened, closed, or changed which edge it is on, so nothing
+  // here has to be re-keyed on any of those.
+  useEffect(() => dockAside(panel.current, DOCK_VARIABLE), [])
 
   // Hidden rather than unmounted. Closing used to drop the element, which took
   // the terminal with it while the started guard stayed true — so the next open
@@ -551,6 +557,7 @@ function MachinePanel({ open, onClose }: { open: boolean, onClose: () => void })
   return (
     <div
       className="dsh-web-machine"
+      ref={panel}
       {...(emulated ? { 'data-emulated': '' } : {})}
       {...(open ? { 'data-open': '' } : { hidden: true })}
     >
@@ -577,6 +584,66 @@ function MachinePanel({ open, onClose }: { open: boolean, onClose: () => void })
 }
 
 /* ── the setting ───────────────────────────────────────────────────────── */
+
+/** The custom property this panel claims on the app frame. */
+const DOCK_VARIABLE = '--dsh-web-dock-machine'
+
+/**
+ * Make room for a panel docked to the right, instead of covering the app.
+ *
+ * A drawer along the bottom overlays what is under it and that is the right
+ * behaviour for a drawer. A column down the right-hand side is not a drawer —
+ * it is the mirror image of the sidebar, and the sidebar does not sit on top of
+ * the conversation, it takes width from it. Covering half the app with an
+ * opaque column and leaving the half underneath laid out as if nothing had
+ * happened is the version of this that reads as a bug.
+ *
+ * So the frame is padded by however wide the panel is, and its centre column —
+ * a `1fr` track — gives the width up. The frame is found by walking up from the
+ * panel rather than named, because its class is a build hash; the marker
+ * attribute is what the rule below hangs on, and the width arrives as a custom
+ * property so two panels docked at once ask for the larger gap rather than
+ * overwriting each other.
+ * @param panel - the panel element, or null before it mounts.
+ * @param variable - the custom property this panel contributes.
+ * @returns a disposer that gives the width back.
+ */
+function dockAside(panel: HTMLElement | null, variable: string): () => void {
+  if (panel === null) return () => undefined
+  let frame: HTMLElement | null = null
+  for (let node = panel.parentElement; node !== null; node = node.parentElement) {
+    const style = getComputedStyle(node)
+    if (style.display === 'grid' && style.position === 'relative') {
+      frame = node
+      break
+    }
+  }
+  // A shell laid out some other way is a shell this does not understand, and a
+  // panel that covers the app is better than a panel that breaks it.
+  if (frame === null) return () => undefined
+  frame.dataset.dshWebDock = ''
+
+  const apply = (): void => {
+    const box = panel.getBoundingClientRect()
+    // Docked right, judged from where it actually is rather than from a copy of
+    // the media query: hard against the right edge, off the left one, and as
+    // tall as the window. A bottom drawer fails the last two.
+    const aside = box.width > 0
+      && box.left > 1
+      && box.right >= window.innerWidth - 1
+      && box.height >= window.innerHeight - 1
+    frame.style.setProperty(variable, aside ? `${String(Math.round(box.width))}px` : '0px')
+  }
+  apply()
+  const sizes = new ResizeObserver(apply)
+  sizes.observe(panel)
+  window.addEventListener('resize', apply)
+  return () => {
+    sizes.disconnect()
+    window.removeEventListener('resize', apply)
+    frame.style.setProperty(variable, '0px')
+  }
+}
 
 /** One row in the machine list. */
 function MachineRow({
@@ -897,18 +964,30 @@ const STYLE = `
  border-top:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));box-shadow:0 -8px 32px rgba(0,0,0,.18)}
 .dsh-web-machine[data-emulated]{height:min(72vh,44rem)}
 
+/* The app frame gives up the width a right-hand column takes, the way it does
+   for the sidebar on the other side. \`max()\` of the two panels' contributions
+   rather than either alone: both can be open, they dock to the same edge, and
+   the gap that has to be there is the wider of the two. See \`dockAside\`. */
+[data-dsh-web-dock]{box-sizing:border-box;
+ padding-right:max(var(--dsh-web-dock-machine,0px),var(--dsh-web-dock-files,0px));
+ transition:padding-right .16s ease}
+
 /* Which edge it comes in from follows the shape of the window rather than a
    guess about the device. A landscape window has height to spare and width to
    lose, so a full-height column on the right leaves the conversation readable
    beside it; a portrait one — a phone, a split screen — has the opposite
    problem, and a drawer along the bottom is the only shape that fits. The
    breakpoint is an aspect ratio and a floor, because a narrow landscape window
-   is still narrow. */
-@media (min-aspect-ratio: 1/1) and (min-width: 60rem) {
-  .dsh-web-machine{left:auto;top:0;bottom:0;height:auto;width:min(46vw,54rem);
+   is still narrow.
+   Two numbers rather than one, because the column takes width from the
+   conversation rather than covering it: the window has to be wide enough for
+   three columns before this is an improvement, and the panel is capped so the
+   conversation keeps about twenty-six rems whatever the panel would like. */
+@media (min-aspect-ratio: 1/1) and (min-width: 80rem) {
+  .dsh-web-machine{left:auto;top:0;bottom:0;height:auto;width:min(46vw,54rem,100vw - 44rem);
    border-top:0;border-left:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));
    box-shadow:-8px 0 32px rgba(0,0,0,.18)}
-  .dsh-web-machine[data-emulated]{height:auto;width:min(58vw,68rem)}
+  .dsh-web-machine[data-emulated]{height:auto;width:min(58vw,68rem,100vw - 44rem)}
 }
 
 .dsh-web-machine-bar{display:flex;align-items:center;gap:.75rem;padding:.4rem .75rem;flex:none;
