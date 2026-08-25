@@ -715,11 +715,15 @@ function MachineSettings(): JSX.Element {
 
 /* ── the sidebar row ───────────────────────────────────────────────────── */
 
-/** A tower with a prompt on it, in the outline language the sidebar's icons use. */
-function MachineIcon(): JSX.Element {
+/**
+ * A tower with a prompt on it, in the outline language the sidebar's icons use.
+ * @param props - `className` when the glyph is borrowed by a surface with its
+ * own layout rules for it, such as the Settings nav.
+ */
+function MachineIcon({ className }: { className?: string }): JSX.Element {
   return (
     <svg
-      className="dsh-web-machine-action-icon" width="16" height="16" viewBox="0 0 16 16" fill="none"
+      className={className ?? 'dsh-web-machine-action-icon'} width="16" height="16" viewBox="0 0 16 16" fill="none"
       stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
     >
       <rect x="1.6" y="3" width="12.8" height="8.4" rx="1.6" />
@@ -729,6 +733,22 @@ function MachineIcon(): JSX.Element {
       <path d="M8.1 8.8h3.1" />
     </svg>
   )
+}
+
+/**
+ * Claim the Settings nav glyph for one section.
+ *
+ * The table is on `globalThis` rather than in a slot because the shell reads
+ * it from inside its own bundle, which knows nothing about this plugin; see
+ * `scripts/assemble.ts`. Writing a key nobody reads is harmless, so this stays
+ * correct on a build where the seam is absent — the section keeps the gear.
+ * @param id - the `settings.section` id this glyph belongs to.
+ * @param draw - the glyph, given the class the shell lays its icons out with.
+ */
+function navGlyph(id: string, draw: (className: string) => JSX.Element): void {
+  const table = globalThis as { __DSH_SETTINGS_NAV_ICON__?: Record<string, (className: string) => JSX.Element> }
+  table.__DSH_SETTINGS_NAV_ICON__ ??= {}
+  table.__DSH_SETTINGS_NAV_ICON__[id] = draw
 }
 
 /** The sidebar footer action that opens it. */
@@ -905,6 +925,12 @@ export function apply(ctx: Context): void {
   // be told to do. Between Models (order 10) and Plugins (15), because those
   // three are the same kind of decision in descending order of consequence —
   // which machine this runs on decides which tools exist at all.
+  //
+  // The glyph goes in beside the label, through the seam `scripts/assemble.ts`
+  // cuts into the settings shell: a section that does not claim one gets the
+  // settings gear, and a nav column where Machine, Network and General are all
+  // the same gear says the three rows are the same kind of thing.
+  navGlyph('machine', className => <MachineIcon className={className} />)
   slots.inject('settings.section', () => slots.register(
     { name: 'settings.section', id: 'machine', order: 12, label: () => 'Machine' },
     MachineSettings,

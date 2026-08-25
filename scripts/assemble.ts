@@ -148,12 +148,56 @@ function orderByModuleGraph(entries: ClientPackage[]): ClientPackage[] {
   return ordered
 }
 
+/**
+ * The settings shell picks each nav glyph from a fixed list of section ids and
+ * gives everything else the gear.
+ *
+ * That is a reasonable default and a poor outcome here, because this
+ * deployment contributes two whole sections — Machine and Network — and a nav
+ * column with three identical gears in it tells a reader that the three rows
+ * are the same kind of thing. They are not: one is preferences, one is which
+ * computer the agent runs on, one is how the page reaches the internet.
+ *
+ * Upstream offers no seam for it, so this adds the smallest one that could
+ * work: before its own list, `navIcon` asks a table on `globalThis` whether
+ * the section brought its own glyph. Nothing is drawn here — the glyph lives
+ * in the plugin that owns the section, next to the label it owns, which is
+ * where it would live if upstream had shipped the seam itself.
+ */
+const NAV_ICON_MARKER = 'function navIcon(id) {'
+
+/**
+ * Open the nav-glyph seam in the settings shell's bundle.
+ *
+ * A rewrite of somebody else's build output is only safe if it fails loudly
+ * when their build changes, so this insists on exactly one marker rather than
+ * quietly matching none.
+ * @param id - the package the bundle belongs to.
+ * @param source - its published bundle.
+ * @returns the bundle, patched if it is the one that draws the nav.
+ */
+function patchClientBundle(id: string, source: string): string {
+  if (id !== '@deepseek-ai/dsh-client-ui-settings-general') return source
+  const found = source.split(NAV_ICON_MARKER).length - 1
+  if (found !== 1) {
+    throw new Error(
+      `assemble: expected one \`${NAV_ICON_MARKER}\` in ${id} and found ${String(found)}`
+      + ' — the settings nav has been reshaped upstream, so the glyph seam needs re-cutting',
+    )
+  }
+  // On one line, so the source map beside the bundle keeps pointing at the
+  // right lines of upstream's source for everything after it.
+  const seam = 'const contributed = globalThis.__DSH_SETTINGS_NAV_ICON__?.[id];'
+    + ' if (typeof contributed === "function") return contributed(SettingsRoot_module_css_default.navIcon);'
+  return source.replace(NAV_ICON_MARKER, `${NAV_ICON_MARKER} ${seam}`)
+}
+
 /** Copy every client bundle into `public/plugins/` and return its manifest row. */
 function emitClientBundles(packages: ClientPackage[]): { id: string, url: string, rev: string, inject: string[], external: string[], immediately: boolean }[] {
   const target = join(publicDir, 'plugins')
   rmSync(target, { recursive: true, force: true })
   return packages.map((entry) => {
-    const bytes = readFileSync(entry.source)
+    const bytes = Buffer.from(patchClientBundle(entry.id, readFileSync(entry.source, 'utf8')), 'utf8')
     const rev = shortHash(bytes)
     const destination = join(target, entry.id, 'client.js')
     mkdirSync(dirname(destination), { recursive: true })

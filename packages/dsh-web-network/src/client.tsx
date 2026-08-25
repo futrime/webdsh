@@ -222,6 +222,45 @@ function NetworkSection(): JSX.Element {
   )
 }
 
+/**
+ * A globe, in the outline language the settings nav's glyphs use.
+ *
+ * This section is about what the page can reach, and the two things a reader
+ * needs to tell apart at a glance are "settings about this app" and "settings
+ * about the world outside it".
+ * @param props - the class the shell lays its nav icons out with.
+ * @returns the glyph.
+ */
+function NetworkIcon({ className }: { className?: string }): JSX.Element {
+  return (
+    <svg
+      className={className} width="16" height="16" viewBox="0 0 16 16" fill="none"
+      stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="6.1" />
+      <path d="M2.1 6.2h11.8" />
+      <path d="M2.1 9.8h11.8" />
+      <path d="M8 1.9c1.7 1.7 2.6 3.8 2.6 6.1S9.7 12.4 8 14.1C6.3 12.4 5.4 10.3 5.4 8S6.3 3.6 8 1.9Z" />
+    </svg>
+  )
+}
+
+/**
+ * Claim the Settings nav glyph for one section.
+ *
+ * The table is on `globalThis` rather than in a slot because the shell reads
+ * it from inside its own bundle, which knows nothing about this plugin; see
+ * `scripts/assemble.ts`. Writing a key nobody reads is harmless, so this stays
+ * correct on a build where the seam is absent — the section keeps the gear.
+ * @param id - the `settings.section` id this glyph belongs to.
+ * @param draw - the glyph, given the class the shell lays its icons out with.
+ */
+function navGlyph(id: string, draw: (className: string) => JSX.Element): void {
+  const table = globalThis as { __DSH_SETTINGS_NAV_ICON__?: Record<string, (className: string) => JSX.Element> }
+  table.__DSH_SETTINGS_NAV_ICON__ ??= {}
+  table.__DSH_SETTINGS_NAV_ICON__[id] = draw
+}
+
 /** Services this half waits for. */
 export const inject = ['slots']
 
@@ -243,7 +282,9 @@ export function apply(ctx: Context): void {
   if (slots === undefined) return
 
   // Between Models (10) and Plugins (15): a user who cannot reach a provider
-  // goes to Models first, and this is the next thing they need.
+  // goes to Models first, and this is the next thing they need. The glyph goes
+  // in beside the label so this row does not read as a second General.
+  navGlyph('network', className => <NetworkIcon className={className} />)
   slots.inject('settings.section', () => slots.register({
     name: 'settings.section',
     id: 'network',
