@@ -374,9 +374,9 @@ const scenarios: Scenario[] = [
             sessionId,
             content: [{
               type: 'text',
-              text: 'Take a screenshot of the machine, then look at that image with read_image and tell me what '
-                + 'you actually see on the screen. Name the window titles and describe the desktop. Do not guess '
-                + 'from what you know about the operating system — describe the picture.',
+              text: 'Take a screenshot of the machine and tell me what you actually see on the screen. '
+                + 'Name the window titles and describe the desktop. Do not guess from what you know about '
+                + 'the operating system — describe the picture.',
             }],
           },
         })
@@ -389,7 +389,12 @@ const scenarios: Scenario[] = [
       expect(result.error === undefined, `the turn never ran: ${String(result.error)}`)
       const tools = result.tools ?? []
       expect(tools.includes('vm_screenshot'), `the model never photographed the screen; it called ${tools.join(', ')}`)
-      expect(tools.includes('read_image'), `the model never looked at the photograph; it called ${tools.join(', ')}`)
+      // One call, not two. `vm_screenshot` returns the picture beside its
+      // result the way `read_image` returns a file, so a model that had to go
+      // back for the image afterwards would mean that stopped working — the
+      // prompt above no longer mentions `read_image` at all.
+      expect(!tools.includes('read_image'),
+        `the screenshot did not carry its own image; the model had to call read_image: ${tools.join(', ')}`)
       // What is on a Windows 1.01 desktop and on nothing else the model might
       // have hallucinated: the MS-DOS Executive file list is the whole screen.
       expect(

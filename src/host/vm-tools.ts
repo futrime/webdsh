@@ -24,6 +24,16 @@
  *
  * Every guest gets the screen tools, because every guest has a screen.
  *
+ * Two of them are not offered all the time, and that is the same idea one step
+ * further again. `vm_screen` reads the VGA text buffer, so it is there while
+ * the screen is a text screen — during a boot, at a DOS prompt — and gone once
+ * the guest starts drawing pixels, because a desktop has no text in that
+ * buffer and the tool answered every call with a blank screen. `vm_mouse`
+ * moves a pointer the guest may not have turned on; at a DOS prompt it moves
+ * nothing. Both are registered and withdrawn as the guest changes what it is
+ * doing, so what the model is offered is what currently works. See
+ * {@link keepOffered}.
+ *
  * What none of them gets is `jsh`: there is no container in this session, no
  * Node, no npm and no CPython, and a tool offering them would be describing a
  * machine that is not running. `src/host/machine-tools.ts` is the row that
@@ -31,9 +41,9 @@
  */
 
 import { TOOL_ABORTED, defineTool } from '@deepseek-ai/dsh-tools'
-import { HarnessError } from '@deepseek-ai/dsh-llm'
+import { HarnessError, type ContentBlock, type ImageBlock } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
-import { KEY_NAMES, bootMachine, machineGuest, type CommandResult, type Machine } from '../runtime/v86.ts'
+import { KEY_NAMES, bootMachine, currentMachine, machineGuest, type CommandResult, type Machine } from '../runtime/v86.ts'
 import type { GuestSpec } from '../runtime/guests.ts'
 import { volume } from '../vfs/volume.ts'
 import { WORKSPACE_ROOT } from './seed.ts'
@@ -221,11 +231,77 @@ export function apply(ctx: Context): void {
   // with `echo` instead of being handed a tool that can hang the machine.
   if (spec.console === 'serial') registerWriteFile(ctx, spec)
   registerScreenshot(ctx, spec)
-  registerScreenText(ctx, spec)
   registerType(ctx, spec)
   registerKey(ctx, spec)
-  registerMouse(ctx, spec)
   registerWait(ctx, spec)
+
+  // The two that come and go. Before the machine has started, both answers are
+  // taken from the catalog rather than the machine: a guest that ends up
+  // graphical has no text screen worth reading, and one v86 says wants no mouse
+  // never gets one. Once it is running, the machine's own account replaces the
+  // guess.
+  keepOffered(ctx, () => registerScreenText(ctx, spec), () => {
+    const running = currentMachine()
+    if (running === undefined) return (spec.screen ?? (spec.console === 'gui' ? 'graphical' : 'text')) === 'text'
+    // Exactly while the screen is a text screen, which is the thing this tool
+    // reads. Not "while there is a transcript": Windows 3.1 writes plenty to
+    // the text buffer on its way through DOS, and half an hour later the tool
+    // was still being offered and still returning that same boot log to a
+    // model asking what is on the screen now. It is offered during the boot,
+    // when the answer is live and useful, and withdrawn when the guest starts
+    // drawing pixels.
+    return !running.graphical()
+  })
+  keepOffered(ctx, () => registerMouse(ctx, spec), () => {
+    if (spec.mouseDisabled === true) return false
+    const running = currentMachine()
+    // Before it starts, offered to the guests upstream draws a pointer for and
+    // withheld from the ones it does not — a DOS prompt has no mouse, and a
+    // tool that moves nothing is a call spent finding that out.
+    if (running === undefined) return spec.console === 'gui'
+    return running.pointer().enabled
+  })
+}
+
+/** How often the row re-asks whether a tool still works. */
+const OFFER_POLL_MS = 2000
+
+/**
+ * Keep a tool registered exactly while it can do its job.
+ *
+ * The tool registry hands back a disposer, so "offered" is a thing this row can
+ * change its mind about — and it has to, because what an emulated machine can
+ * do is not settled when the session is composed. A guest that is at a DOS
+ * prompt now may be running Windows in a minute, and the tools that made sense
+ * for one are dead weight on the other.
+ *
+ * Polled rather than driven by an event, because the facts it reads —
+ * whether the screen is graphical, whether the guest turned its mouse on —
+ * belong to the guest and arrive on no channel this side owns. Two seconds is
+ * far below the time between turns and far above what the check costs.
+ * @param ctx - the row's context, which owns the disposers.
+ * @param register - registers the tool and returns its disposer.
+ * @param works - whether the tool can currently do anything.
+ */
+function keepOffered(ctx: Context, register: () => () => void, works: () => boolean): void {
+  let dispose: (() => void) | undefined
+  const settle = (): void => {
+    const wanted = works()
+    if (wanted && dispose === undefined) dispose = register()
+    else if (!wanted && dispose !== undefined) {
+      dispose()
+      dispose = undefined
+    }
+  }
+  settle()
+  const timer = setInterval(settle, OFFER_POLL_MS)
+  ctx.effect(function* () {
+    yield () => {
+      clearInterval(timer)
+      dispose?.()
+      dispose = undefined
+    }
+  }, 'machine tool availability')
 }
 
 /** What the model is told about the machine it is on. */
@@ -419,26 +495,108 @@ function registerWriteFile(ctx: Context, spec: GuestSpec): void {
   }))
 }
 
+/** What a screenshot call produces. */
+interface Shot {
+  path: string
+  width: number
+  height: number
+  bytes: number
+  mode: string
+  /** The whole screen's size, when only part of it was taken. */
+  of?: { width: number, height: number }
+  /** The attached image, when this route can be shown one. */
+  image?: {
+    attachmentId: string
+    mediaType: 'image/png'
+    bytes: number
+    width: number
+    height: number
+    name?: string
+  }
+}
+
+/** The attachment store, when one is mounted. */
+interface Attachments {
+  saveImage(input: { data: Uint8Array, mediaType: string, name?: string }): Promise<{
+    attachmentId: string
+    mediaType: string
+    bytes: number
+    width: number
+    height: number
+    name?: string
+  }>
+}
+
+/**
+ * Whether the model this call is running on can be shown a picture.
+ *
+ * Asked rather than assumed, because it decides between two different tools:
+ * one that hands the screen over and one that can only say where it was saved.
+ * A route that does not declare image input is not a failure — most of the free
+ * routes this build registers do not — so this returns false rather than
+ * throwing, and the caller falls back to the path.
+ * @param ctx - the row's context.
+ * @param exec - the tool-execution context, which knows the calling agent.
+ * @returns whether an image block would reach the model.
+ */
+async function routeSeesImages(ctx: Context, exec: { agent?: unknown, signal: AbortSignal }): Promise<boolean> {
+  try {
+    const agent = exec.agent as {
+      session?: { requestHeader?: () => { config?: { provider?: string, model?: string } } | undefined }
+      options?: { provider?: string, model?: string }
+    } | undefined
+    const routed = agent?.session?.requestHeader?.()?.config
+    const provider = routed?.provider ?? agent?.options?.provider
+    const model = routed?.model ?? agent?.options?.model
+    const llm = ctx.get('llm') as {
+      resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<{ inputModalities?: string[] }>
+    } | undefined
+    if (provider === undefined || model === undefined || llm === undefined) return false
+    const info = await llm.resolveModelInfo(provider, model, exec.signal)
+    return info.inputModalities?.includes('image') === true
+  } catch {
+    return false
+  }
+}
+
 /** The screenshot tool. */
 function registerScreenshot(ctx: Context, spec: GuestSpec): void {
   let counter = 0
   ctx.tools.register(defineTool({
     name: 'vm_screenshot',
     description: [
-      `Photograph ${spec.name}'s screen and save it into the workspace as a PNG.`,
+      `Photograph ${spec.name}'s screen. The picture comes back with the result, the way \`read_image\``,
+      'returns a file — there is no second call to make.',
       '',
-      'It is written to a file rather than returned inline, because the model this session runs on may',
-      'not accept images at all. If yours does, `read_image` on the path this returns puts the screen',
-      'in front of you; if it does not, the user can still open the file from the Files panel and tell',
-      'you what is on it.',
+      'It is also saved into the workspace as a PNG, so the user can open it from the Files panel and',
+      'so you can point at it later. On a model that does not accept images you get the path and the',
+      'size and nothing to look at, which is the whole of what this tool can do there.',
       '',
-      'When the screen is in a text mode, `vm_screen` gives you the same content as text, which you',
-      'can actually read — reach for that first and use this when the screen is graphical.',
+      '`region` takes a rectangle of the screen instead of the whole thing, in screen pixels with',
+      '`0,0` at the top left. Reach for it when you are reading something small — a dialog, a status',
+      'line, one menu — because a crop of the part you care about survives downscaling that would',
+      'make the same text unreadable in a full-screen shot. A rectangle that runs off the edge is',
+      'trimmed to the part that exists rather than refused.',
+      '',
+      'When the screen is in a text mode, `vm_screen` gives you the same content as text, which is',
+      'exact rather than read off pixels — reach for that first and use this when the screen is',
+      'graphical.',
     ].join('\n'),
     parameters: {
       path: {
         type: 'string',
         description: 'Where to save it, relative to the workspace. Defaults to screenshots/<machine>-<n>.png.',
+      },
+      region: {
+        type: 'object',
+        description: 'A rectangle of the screen to take instead of all of it, in screen pixels.',
+        additionalProperties: false,
+        properties: {
+          x: { type: 'integer', required: true, description: 'Left edge, from the left of the screen.' },
+          y: { type: 'integer', required: true, description: 'Top edge, from the top of the screen.' },
+          width: { type: 'integer', required: true, description: 'How wide, in pixels.' },
+          height: { type: 'integer', required: true, description: 'How tall, in pixels.' },
+        },
       },
     },
     output: {
@@ -451,18 +609,51 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
           height: { type: 'integer', required: true },
           bytes: { type: 'integer', required: true },
           mode: { type: 'string', required: true },
+          of: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              width: { type: 'integer', required: true },
+              height: { type: 'integer', required: true },
+            },
+          },
+          image: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              attachmentId: { type: 'string', required: true },
+              mediaType: { type: 'string', required: true, enum: ['image/png'] },
+              bytes: { type: 'integer', required: true },
+              width: { type: 'integer', required: true },
+              height: { type: 'integer', required: true },
+              name: { type: 'string' },
+            },
+          },
         },
       },
       render: (_args, value) => {
-        const shot = value as unknown as { path: string, width: number, height: number, mode: string }
-        return [{
-          type: 'text' as const,
-          text: `saved ${shot.path} — ${String(shot.width)}×${String(shot.height)}, ${shot.mode} mode`
-            + (shot.mode === 'text' ? '. The screen is in a text mode: read it with vm_screen.' : ''),
-        }]
+        const shot = value as unknown as Shot
+        const cropped = shot.of === undefined
+          ? ''
+          : ` — a ${String(shot.width)}×${String(shot.height)} crop of a `
+            + `${String(shot.of.width)}×${String(shot.of.height)} screen`
+        const text = `${spec.name}: ${String(shot.width)}×${String(shot.height)}, ${shot.mode} mode${cropped}`
+          + `\nsaved ${shot.path}`
+          + (shot.mode === 'text' ? '\nThe screen is in a text mode: `vm_screen` reads it exactly.' : '')
+          + (shot.image === undefined
+            ? '\nThis model does not accept images, so the picture is not attached; the file is there for the user.'
+            : '')
+        const parts: ContentBlock[] = [{ type: 'text', text }]
+        // The picture rides beside the text, which is what `read_image` does
+        // and what makes this one call instead of two. `attachment` is the
+        // service's own reference, handed straight back.
+        if (shot.image !== undefined) {
+          parts.push({ type: 'image', attachment: shot.image as unknown as ImageBlock['attachment'] })
+        }
+        return parts
       },
     },
-    async execute(args: { path?: string }, exec): Promise<{ path: string, width: number, height: number, bytes: number, mode: string }> {
+    async execute(args: { path?: string, region?: { x: number, y: number, width: number, height: number } }, exec): Promise<Shot> {
       if (exec.signal.aborted) aborted()
       const running = await machine()
       // Deliberately not waiting for the guest's readiness marker. A cold
@@ -472,16 +663,56 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
       // answering the prompt it stopped at.
       await running.console.releaseScreen()
       const shot = await running.screenshot()
+
+      let bytes = shot.bytes
+      let width = shot.width
+      let height = shot.height
+      let of: { width: number, height: number } | undefined
+      if (args.region !== undefined) {
+        const { default: sharp } = await import('../node/sharp.ts')
+        const cropped = await sharp(shot.bytes)
+          .extract({ left: args.region.x, top: args.region.y, width: args.region.width, height: args.region.height })
+          .png()
+          .toBuffer({ resolveWithObject: true }) as { data: Buffer, info: { width: number, height: number } }
+        bytes = new Uint8Array(cropped.data)
+        width = cropped.info.width
+        height = cropped.info.height
+        of = { width: shot.width, height: shot.height }
+      }
+
       const relative = args.path ?? `screenshots/${spec.id}-${String(++counter)}.png`
       const path = relative.startsWith('/') ? relative : `${WORKSPACE_ROOT}/${relative}`
       volume.mkdirp(dirname(path))
-      volume.writeFile(path, shot.bytes)
-      return {
+      volume.writeFile(path, bytes)
+
+      const result: Shot = {
         path,
-        width: shot.width,
-        height: shot.height,
-        bytes: shot.bytes.length,
+        width,
+        height,
+        bytes: bytes.length,
         mode: shot.graphical ? 'graphical' : 'text',
+        ...(of === undefined ? {} : { of }),
+      }
+
+      // The picture itself, when there is somewhere for it to go. Both halves
+      // have to hold: a store to put it in, and a model that will be shown it.
+      // Where either does not, the file on disk is the whole answer and the
+      // render above says so rather than leaving the model waiting for a
+      // picture that never arrives.
+      const attachments = ctx.get('attachments') as Attachments | undefined
+      if (attachments === undefined || !await routeSeesImages(ctx, exec)) return result
+      try {
+        const saved = await attachments.saveImage({
+          data: bytes,
+          mediaType: 'image/png',
+          name: path.slice(path.lastIndexOf('/') + 1),
+        })
+        return { ...result, image: { ...saved, mediaType: 'image/png' } }
+      } catch {
+        // A screen too large for this deployment's image limits is still a
+        // screen that was saved. Losing the tool call over the attachment
+        // would be the worse trade.
+        return result
       }
     },
     presentCall: () => ({ card: 'generic' as const, title: `${spec.name} screen`, kind: 'read' as const }),
@@ -489,8 +720,8 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
 }
 
 /** The text-screen tool. */
-function registerScreenText(ctx: Context, spec: GuestSpec): void {
-  ctx.tools.register(defineTool({
+function registerScreenText(ctx: Context, spec: GuestSpec): () => void {
+  return ctx.tools.register(defineTool({
     name: 'vm_screen',
     description: [
       `Read ${spec.name}'s screen as text.`,
@@ -685,56 +916,85 @@ function registerKey(ctx: Context, spec: GuestSpec): void {
 }
 
 /** The pointer tool. */
-function registerMouse(ctx: Context, spec: GuestSpec): void {
-  ctx.tools.register(defineTool({
+function registerMouse(ctx: Context, spec: GuestSpec): () => void {
+  return ctx.tools.register(defineTool({
     name: 'vm_mouse',
     description: [
-      `Move ${spec.name}'s pointer and click.`,
+      `Drive ${spec.name}'s pointer: a list of steps, carried out in order.`,
       '',
       'The emulated mouse is a PS/2 mouse, and a PS/2 mouse reports movement, not position — there',
-      'is no way to say "go to (x, y)", because a real one cannot say it either. So `dx` and `dy` are',
+      'is no way to say "go to (x, y)", because a real one cannot say it either. So `move` takes',
       'mouse units, and how far the pointer travels per unit is up to the guest\'s own driver:',
       'Windows 3.1 at 1024×768 moves about two pixels per unit, measured.',
       '',
-      'To reach a known place: pass `home: true`, which drives the pointer hard into the top-left',
-      'corner where it stops, and then move by roughly half the pixel offset you want. Then take a',
+      'To reach a known place, start with `home`, which drives the pointer hard into the top-left',
+      'corner where it stops, then `move` by roughly half the pixel offset you want. Then take a',
       'screenshot and correct. Do not expect to land first time.',
       '',
-      'The keyboard is the better tool for anything a menu can do. Use this for what only a pointer',
-      'can do: dragging, and clicking something with no keyboard path to it.',
+      'The steps, and what they are for:',
+      '  `home`                       — the corner, as a starting point you can count from',
+      '  `move`   {dx, dy}            — relative movement',
+      '  `click`  {button?, count?}   — press and release; `count: 2` is a double-click',
+      '  `down` / `up` {button?}      — hold and let go; a drag is down, move, up',
+      '  `scroll` {dy, dx?}           — the wheel, in notches; positive `dy` scrolls down',
+      '  `wait`   {ms}                — let the guest catch up mid-sequence',
+      '',
+      'That is enough for the things one call could not do before: double-click to open an icon,',
+      'drag a window by its title bar, right-click for a context menu and click an item in it,',
+      'hold a scrollbar and drag it, or click into a list and then scroll it.',
+      '',
+      'The keyboard is still the better tool for anything a menu can do. Use this for what only a',
+      'pointer can do.',
       '',
       'A guest with no mouse driver loaded — most bare DOS — ignores all of this, and the screen will',
       'not move. That is the guest, not a failure of the call.',
     ].join('\n'),
     parameters: {
-      dx: { type: 'number', description: 'Horizontal movement in mouse units; positive is right.' },
-      dy: { type: 'number', description: 'Vertical movement in mouse units; positive is down.' },
-      home: { type: 'boolean', description: 'Drive the pointer into the top-left corner first.' },
-      click: { type: 'string', enum: ['left', 'middle', 'right'], description: 'Click a button after moving.' },
+      actions: {
+        type: 'array',
+        required: true,
+        description: 'The steps to carry out, in order.',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            type: {
+              type: 'string',
+              required: true,
+              enum: ['home', 'move', 'click', 'down', 'up', 'scroll', 'wait'],
+              description: 'Which step this is.',
+            },
+            dx: { type: 'number', description: 'For `move`, horizontal mouse units; for `scroll`, horizontal notches.' },
+            dy: { type: 'number', description: 'For `move`, vertical mouse units; for `scroll`, vertical notches.' },
+            button: { type: 'string', enum: ['left', 'middle', 'right'], description: 'Which button; left by default.' },
+            count: { type: 'integer', description: 'For `click`, how many times in quick succession. 2 is a double-click.' },
+            ms: { type: 'integer', description: 'For `wait`, how long in milliseconds.' },
+          },
+        },
+      },
     },
     output: {
       schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
+          did: { type: 'array', required: true, items: { type: 'string' } },
           moved: { type: 'array', required: true, items: { type: 'number' } },
-          clicked: { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] },
+          held: { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] },
         },
       },
       render: (_args, value) => {
-        const action = value as unknown as { moved: number[], clicked: string | null }
+        const done = value as unknown as { did: string[], moved: number[], held: string | null }
         return [{
           type: 'text' as const,
-          text: `moved (${String(action.moved[0])}, ${String(action.moved[1])})`
-            + (action.clicked === null ? '' : ` and clicked ${action.clicked}`)
-            + '. Take a screenshot to see where the pointer landed.',
+          text: `${done.did.join(', ')}`
+            + `\nnet movement (${String(done.moved[0])}, ${String(done.moved[1])}) mouse units`
+            + (done.held === null ? '' : `\nthe ${done.held} button is still down — send an \`up\` step to release it`)
+            + '\nTake a screenshot to see where the pointer landed.',
         }]
       },
     },
-    async execute(
-      args: { dx?: number, dy?: number, home?: boolean, click?: 'left' | 'middle' | 'right' },
-      exec,
-    ): Promise<{ moved: number[], clicked: string | null }> {
+    async execute(args: { actions: Step[] }, exec): Promise<{ did: string[], moved: number[], held: string | null }> {
       if (exec.signal.aborted) aborted()
       const running = await machine()
       // Deliberately not waiting for the guest's readiness marker. A cold
@@ -743,45 +1003,162 @@ function registerMouse(ctx: Context, spec: GuestSpec): void {
       // the one thing it is most needed for — watching a machine boot, and
       // answering the prompt it stopped at.
       await running.console.releaseScreen()
-      if (args.home === true) {
-        // A PS/2 packet carries nine signed bits of movement per axis, so a
-        // delta outside ±255 is truncated into the byte and arrives as some
-        // other number — measured against v86's own `send_mouse_packet`, which
-        // pushes the delta into a byte queue with the sign in a separate bit.
-        // So the corner is reached with sixteen deltas that fit, which is
-        // 3840 pixels of travel in each direction: further than any screen
-        // this emulator produces, from anywhere on it.
-        for (let step = 0; step < 16; step++) {
-          running.moveMouse(-240, -240)
-          await new Promise(resolve => setTimeout(resolve, 15))
+
+      const did: string[] = []
+      let netX = 0
+      let netY = 0
+      let held: 'left' | 'middle' | 'right' | null = null
+      try {
+        for (const step of args.actions) {
+          if (exec.signal.aborted) aborted()
+          const button = step.button ?? 'left'
+          switch (step.type) {
+            case 'home': {
+              await driveHome(running)
+              did.push('drove to the top-left corner')
+              break
+            }
+            case 'move': {
+              const sent = await glide(running, Math.trunc(step.dx ?? 0), Math.trunc(step.dy ?? 0))
+              netX += sent[0]
+              netY += sent[1]
+              did.push(`moved (${String(sent[0])}, ${String(sent[1])})`)
+              break
+            }
+            case 'click': {
+              const times = Math.max(1, Math.min(5, Math.trunc(step.count ?? 1)))
+              for (let n = 0; n < times; n++) {
+                running.button(button, true)
+                await pause(DOWN_MS)
+                running.button(button, false)
+                // Under the double-click interval every guest of this era uses,
+                // so two clicks are one gesture rather than two.
+                if (n + 1 < times) await pause(DOUBLE_MS)
+              }
+              did.push(times === 1 ? `clicked ${button}` : `${String(times)}× clicked ${button}`)
+              break
+            }
+            case 'down': {
+              running.button(button, true)
+              held = button
+              did.push(`held ${button} down`)
+              break
+            }
+            case 'up': {
+              running.button(button, false)
+              if (held === button) held = null
+              did.push(`released ${button}`)
+              break
+            }
+            case 'scroll': {
+              const notches = Math.trunc(step.dy ?? 0)
+              const across = Math.trunc(step.dx ?? 0)
+              // One event per notch: v86 reduces any wheel event to a single
+              // notch in the direction it points, so three notches is three
+              // events and a bigger number in one event is the same as one.
+              for (let n = 0; n < Math.abs(notches); n++) {
+                running.scroll(0, Math.sign(notches))
+                await pause(WHEEL_MS)
+              }
+              for (let n = 0; n < Math.abs(across); n++) {
+                running.scroll(Math.sign(across), 0)
+                await pause(WHEEL_MS)
+              }
+              if (notches !== 0 || across !== 0) {
+                did.push(`scrolled ${String(notches)} down, ${String(across)} across`)
+              }
+              break
+            }
+            case 'wait': {
+              const ms = Math.max(0, Math.min(10_000, Math.trunc(step.ms ?? 100)))
+              await pause(ms)
+              did.push(`waited ${String(ms)}ms`)
+              break
+            }
+          }
         }
+      } finally {
+        // A button left down because the sequence threw is a guest stuck
+        // mid-drag, and nothing else will let it up.
+        if (held !== null && exec.signal.aborted) running.button(held, false)
       }
-      const dx = Math.trunc(args.dx ?? 0)
-      const dy = Math.trunc(args.dy ?? 0)
-      // Broken into small steps for the same reason: a guest with pointer
-      // acceleration turns one big delta into an unpredictable jump.
-      const steps = Math.max(Math.abs(dx), Math.abs(dy)) === 0 ? 0 : Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 8)
-      // Accumulated rather than divided: eight steps of `round(100/13)` deliver
-      // 104, and a tool that reported the 100 it was asked for would be telling
-      // the model a number the guest never saw.
-      let sentX = 0
-      let sentY = 0
-      for (let step = 0; step < steps; step++) {
-        const wantX = Math.round(dx * (step + 1) / steps)
-        const wantY = Math.round(dy * (step + 1) / steps)
-        running.moveMouse(wantX - sentX, wantY - sentY)
-        sentX = wantX
-        sentY = wantY
-        await new Promise(resolve => setTimeout(resolve, 15))
-      }
-      if (args.click !== undefined) {
-        await new Promise(resolve => setTimeout(resolve, 150))
-        await running.click(args.click)
-      }
-      return { moved: [sentX, sentY], clicked: args.click ?? null }
+      if (did.length === 0) did.push('did nothing: the action list was empty')
+      return { did, moved: [netX, netY], held }
     },
     presentCall: () => ({ card: 'generic' as const, title: `${spec.name} pointer`, kind: 'execute' as const }),
   }))
+}
+
+/** One step of a pointer sequence. */
+interface Step {
+  type: 'home' | 'move' | 'click' | 'down' | 'up' | 'scroll' | 'wait'
+  dx?: number
+  dy?: number
+  button?: 'left' | 'middle' | 'right'
+  count?: number
+  ms?: number
+}
+
+/** How long a button stays down within one click. */
+const DOWN_MS = 40
+
+/** The gap between the clicks of a double-click, under every era's threshold. */
+const DOUBLE_MS = 80
+
+/** The gap between wheel notches. */
+const WHEEL_MS = 30
+
+/** The gap between the small steps one `move` is broken into. */
+const STEP_MS = 15
+
+/** Sleep. */
+async function pause(ms: number): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/**
+ * Drive the pointer into the top-left corner, where it stops.
+ *
+ * A PS/2 packet carries nine signed bits of movement per axis, so a delta
+ * outside ±255 is truncated into the byte and arrives as some other number —
+ * measured against v86's own `send_mouse_packet`, which pushes the delta into a
+ * byte queue with the sign in a separate bit. So the corner is reached with
+ * sixteen deltas that fit, which is 3840 pixels of travel in each direction:
+ * further than any screen this emulator produces, from anywhere on it.
+ * @param running - the machine.
+ */
+async function driveHome(running: Machine): Promise<void> {
+  for (let step = 0; step < 16; step++) {
+    running.moveMouse(-240, -240)
+    await pause(STEP_MS)
+  }
+}
+
+/**
+ * Move by a delta, in steps small enough for a guest's pointer acceleration.
+ *
+ * Accumulated rather than divided: eight steps of `round(100/13)` deliver 104,
+ * and a tool that reported the 100 it was asked for would be telling the model
+ * a number the guest never saw.
+ * @param running - the machine.
+ * @param dx - horizontal movement, in mouse units.
+ * @param dy - vertical movement, in mouse units.
+ * @returns what was actually sent.
+ */
+async function glide(running: Machine, dx: number, dy: number): Promise<[number, number]> {
+  const distance = Math.max(Math.abs(dx), Math.abs(dy))
+  const steps = distance === 0 ? 0 : Math.ceil(distance / 8)
+  let sentX = 0
+  let sentY = 0
+  for (let step = 0; step < steps; step++) {
+    const wantX = Math.round(dx * (step + 1) / steps)
+    const wantY = Math.round(dy * (step + 1) / steps)
+    running.moveMouse(wantX - sentX, wantY - sentY)
+    sentX = wantX
+    sentY = wantY
+    await pause(STEP_MS)
+  }
+  return [sentX, sentY]
 }
 
 /** The wait tool. */

@@ -244,6 +244,24 @@ function anyTransparentPixel(pixels: Uint8ClampedArray): boolean {
   return false
 }
 
+/**
+ * A crop rectangle that is inside the image.
+ * @param region - what was asked for.
+ * @param width - the source width.
+ * @param height - the source height.
+ * @returns the part of it that exists; at least one pixel.
+ */
+function clampRegion(region: ExtractRegion, width: number, height: number): ExtractRegion {
+  const left = Math.max(0, Math.min(Math.round(region.left), width - 1))
+  const top = Math.max(0, Math.min(Math.round(region.top), height - 1))
+  return {
+    left,
+    top,
+    width: Math.max(1, Math.min(Math.round(region.width), width - left)),
+    height: Math.max(1, Math.min(Math.round(region.height), height - top)),
+  }
+}
+
 /** Output dimensions for a resize request, in sharp's `fit` vocabulary. */
 function fitted(width: number, height: number, options: ResizeOptions): { width: number, height: number } {
   const targetWidth = options.width ?? width
@@ -260,9 +278,18 @@ function fitted(width: number, height: number, options: ResizeOptions): { width:
   }
 }
 
+/** A rectangle of the source, in source pixels. */
+export interface ExtractRegion {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
 /** One step of a sharp pipeline, replayed on each terminal call. */
 interface Operations {
   autoOrient: boolean
+  extract?: ExtractRegion
   resize?: ResizeOptions
   raw: boolean
   output?: OutputFormat
@@ -300,6 +327,7 @@ class SharpImage {
   clone(): SharpImage {
     const copy = new SharpImage(this.data, {
       ...this.ops,
+      extract: this.ops.extract === undefined ? undefined : { ...this.ops.extract },
       resize: this.ops.resize === undefined ? undefined : { ...this.ops.resize },
     })
     // The decode belongs to the bytes, not to the operations, and every clone
@@ -416,14 +444,27 @@ class SharpImage {
     return this
   }
 
-  /** Decode, orient and resize, leaving the result on a canvas. */
+  /** `sharp().extract()` — take a rectangle of the source and drop the rest. */
+  extract(region: ExtractRegion): this {
+    this.ops.extract = { ...region }
+    return this
+  }
+
+  /** Decode, orient, crop and resize, leaving the result on a canvas. */
   private async render(): Promise<OffscreenCanvas> {
     const bitmap = await this.bitmap()
     // The decoder oriented it. `rotate()` asked for exactly that; without it,
     // sharp would have handed back the stored pixels, so they are restored.
     const source = this.ops.autoOrient ? bitmap : unoriented(bitmap, this.orientation())
-    const sourceWidth = source === bitmap ? bitmap.width : (source as OffscreenCanvas).width
-    const sourceHeight = source === bitmap ? bitmap.height : (source as OffscreenCanvas).height
+    const fullWidth = source === bitmap ? bitmap.width : (source as OffscreenCanvas).width
+    const fullHeight = source === bitmap ? bitmap.height : (source as OffscreenCanvas).height
+    // Clamped rather than rejected. sharp throws on a rectangle that leaves the
+    // image; a caller here is a model naming a corner of a screen it has only
+    // seen a picture of, and the useful answer to "a bit past the edge" is the
+    // part that is there.
+    const crop = this.ops.extract === undefined ? undefined : clampRegion(this.ops.extract, fullWidth, fullHeight)
+    const sourceWidth = crop?.width ?? fullWidth
+    const sourceHeight = crop?.height ?? fullHeight
     const size = this.ops.resize === undefined
       ? { width: sourceWidth, height: sourceHeight }
       : fitted(sourceWidth, sourceHeight, this.ops.resize)
@@ -432,7 +473,8 @@ class SharpImage {
     // `nearest` is asked for when the caller is sampling colours rather than
     // producing an image, and interpolation would invent ones that are not there.
     if (this.ops.resize?.kernel === 'nearest') context.imageSmoothingEnabled = false
-    context.drawImage(source, 0, 0, size.width, size.height)
+    if (crop === undefined) context.drawImage(source, 0, 0, size.width, size.height)
+    else context.drawImage(source, crop.left, crop.top, crop.width, crop.height, 0, 0, size.width, size.height)
     return canvas
   }
 

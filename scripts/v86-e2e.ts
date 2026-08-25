@@ -137,7 +137,12 @@ interface MachineHandle {
     transcript(): Promise<string[]>
     shot(): Promise<{ width: number, height: number, bytes: number, graphical: boolean }>
   }
-  input: { type(text: string): Promise<void>, press(key: string): Promise<void> }
+  input: {
+    type(text: string): Promise<void>
+    press(key: string): Promise<void>
+    mouse(dx: number, dy: number): Promise<void>
+    click(which?: 'left' | 'middle' | 'right'): Promise<void>
+  }
   status(): { emulated: boolean, guest?: string, running: boolean, failure?: string }
 }
 
@@ -155,6 +160,13 @@ async function putFile(page: Page, path: string, content: string): Promise<{ exp
     const machine = (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle }).__DSH_WEB_MACHINE__
     return machine.console.putFile(target as string, body as string)
   }, [path, content] as const)
+}
+
+/** What the guest is doing with its pointer, and whether it is being given one. */
+async function pointerState(page: Page): Promise<{ enabled: boolean, absolute: boolean, held: boolean }> {
+  return page.evaluate(() => (globalThis as unknown as {
+    __DSH_WEB_MACHINE__: { pointer(): { enabled: boolean, absolute: boolean, held: boolean } }
+  }).__DSH_WEB_MACHINE__.pointer())
 }
 
 /** How many bytes the screen's PNG comes to, which is a cheap "did it change". */
@@ -498,11 +510,15 @@ const scenarios: Scenario[] = [
       expect(!tools.includes('jsh'), `a DOS session was offered jsh: ${tools.join(', ')}`)
       expect(!tools.includes('bash'), `a DOS session was offered bash: ${tools.join(', ')}`)
       expect(tools.includes('dos'), `a DOS session was not offered the dos tool: ${tools.join(', ')}`)
-      for (const wanted of ['vm_screen', 'vm_screenshot', 'vm_key', 'vm_type', 'vm_mouse', 'vm_wait']) {
+      for (const wanted of ['vm_screen', 'vm_screenshot', 'vm_key', 'vm_type', 'vm_wait']) {
         expect(tools.includes(wanted), `${wanted} is missing: ${tools.join(', ')}`)
       }
-      // And not the one this guest has no working channel for.
+      // And not the ones this guest has no working channel for. `vm_write_file`
+      // because DOS's `COPY CON` wedges on a redirected console; `vm_mouse`
+      // because a DOS prompt has never turned a mouse on, so the tool would
+      // move nothing and cost a call to find that out.
       expect(!tools.includes('vm_write_file'), `a DOS session was offered vm_write_file: ${tools.join(', ')}`)
+      expect(!tools.includes('vm_mouse'), `a DOS prompt with no mouse was offered vm_mouse: ${tools.join(', ')}`)
       process.stdout.write(`  tools: ${tools.join(', ')}\n`)
     },
   },
@@ -674,6 +690,11 @@ const scenarios: Scenario[] = [
       expect(!tools.includes('jsh') && !tools.includes('sh') && !tools.includes('dos'),
         `a graphical guest was offered a command tool: ${tools.join(', ')}`)
       expect(tools.includes('vm_screenshot') && tools.includes('vm_key'), `the screen tools are missing: ${tools.join(', ')}`)
+      // The other half of the rule the DOS scenario checks: this guest turned
+      // its mouse on, so the pointer tool is there. `vm_screen` is there too,
+      // and correctly — Windows 1.01 boots through DOS and writes to the text
+      // screen on the way, so the tool has something to return.
+      expect(tools.includes('vm_mouse'), `a guest with a pointer was not offered vm_mouse: ${tools.join(', ')}`)
       process.stdout.write(`  tools: ${tools.join(', ')}\n`)
     },
   },
@@ -724,6 +745,12 @@ const scenarios: Scenario[] = [
       expect(tools.length > 0, 'the turn sent no request, so the offered tools could not be read')
       expect(!tools.includes('jsh') && !tools.includes('sh') && !tools.includes('dos'),
         `Windows 3.1 was offered a command tool: ${tools.join(', ')}`)
+      // The tool that would answer every call with a blank screen is not
+      // offered. This guest resumes into a desktop and writes nothing to the
+      // text buffer, so `vm_screen` has nothing to return and never will —
+      // which is what a person watching it return empty screens reported.
+      expect(!tools.includes('vm_screen'), `a guest with no text screen was offered vm_screen: ${tools.join(', ')}`)
+      expect(tools.includes('vm_mouse'), `a guest with a pointer was not offered vm_mouse: ${tools.join(', ')}`)
       process.stdout.write(`  tools: ${tools.join(', ')}\n`)
     },
   },
@@ -797,9 +824,16 @@ const scenarios: Scenario[] = [
     name: 'pointer-and-dock',
     async run(page) {
       await page.setViewportSize({ width: 1440, height: 900 })
-      await page.goto(`${url}?runtime=v86:kolibrios`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      // Windows 3.1 and not KolibriOS, for one reason: Program Manager sits
+      // perfectly still. Half of what is under test here is a *negative* — that
+      // the guest's cursor does not move — and the only instrument for that is
+      // whether the picture changed, which is useless on a desktop that redraws
+      // itself. KolibriOS swings by thirty kilobytes a second with nothing
+      // touching it; this one is byte-identical at rest, measured below rather
+      // than assumed.
+      await page.goto(`${url}?runtime=v86:windows31`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       await waitForShell(page)
-      expect(await ready(page, 120_000), 'KolibriOS did not come up')
+      expect(await ready(page, 240_000), 'Windows 3.1 did not come up')
       await openMachinePanel(page)
       // The desktop enables its mouse a moment after it is drawn.
       await page.waitForTimeout(4000)
@@ -820,14 +854,42 @@ const scenarios: Scenario[] = [
       const relative = await cursor()
       expect(!relative.owned && relative.cursor !== 'none',
         `a relative-pointer guest hid the host cursor (${relative.cursor})`)
-      expect(/give the machine the mouse/.test(relative.hint),
+      expect(/Click the screen to hand it over/.test(relative.hint),
         `the panel does not offer the mouse to a guest that has one: "${relative.hint}"`)
 
-      // Clicking hands it over. Pointer lock is what makes the two cursors one:
-      // the browser takes the host's away and delivers raw movement.
       const box = await page.locator('.dsh-web-machine-screen').boundingBox()
       expect(box !== null, 'the screen has no box to click')
       const centre = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 }
+
+      /** Drag the real mouse across the screen and say whether anything moved. */
+      const sweep = async (): Promise<boolean> => {
+        const before = await shotBytes(page)
+        for (let step = 0; step < 6; step += 1) {
+          await page.mouse.move(centre.x - 240 + step * 90, centre.y - 140 + step * 55, { steps: 8 })
+          await page.waitForTimeout(120)
+        }
+        await page.waitForTimeout(900)
+        return before !== await shotBytes(page)
+      }
+
+      // The instrument, before it is trusted: this desktop does not redraw
+      // itself, so a changed picture below means the mouse changed it.
+      const rest: number[] = []
+      for (let sample = 0; sample < 4; sample += 1) {
+        rest.push(await shotBytes(page))
+        await page.waitForTimeout(800)
+      }
+      expect(new Set(rest).size === 1,
+        `this guest's screen moves on its own (${rest.join(', ')}), so it cannot measure a still cursor`)
+
+      // Nobody asked. Moving the real mouse over the panel — on the way to
+      // something else, most likely — must not drag the guest's cursor around
+      // with it.
+      expect(!await sweep(), 'the guest\'s cursor followed the mouse without being given it')
+      expect((await pointerState(page)).held === false, 'the guest is being given pointer input it was not offered')
+
+      // Clicking hands it over. Pointer lock is what makes the two cursors one:
+      // the browser takes the host's away and delivers raw movement.
       await page.mouse.click(centre.x, centre.y)
       await page.waitForTimeout(1200)
       expect(await page.evaluate(() => document.pointerLockElement !== null),
@@ -835,13 +897,23 @@ const scenarios: Scenario[] = [
       const held = await cursor()
       expect(held.owned && held.cursor === 'none',
         `the host cursor is still showing under pointer lock (${held.cursor})`)
+      expect((await pointerState(page)).held, 'the pointer was taken but the guest was not given it')
 
-      // And the guest is receiving the movement, which is the point of taking
-      // it: a cursor that moves is a screen that changes.
-      const before = await shotBytes(page)
-      await page.mouse.move(centre.x + 220, centre.y + 140, { steps: 20 })
+      // And now it is receiving the movement, which is the point of taking it.
+      expect(await sweep(), 'the guest did not react to the mouse while it had it')
+
+      // Letting go stops it again — and the model's own mouse keeps working
+      // either way, which is the thing this could most easily have broken.
+      await page.evaluate(() => { document.exitPointerLock() })
+      await page.waitForTimeout(800)
+      expect((await pointerState(page)).held === false, 'the guest kept the mouse after the pointer was released')
+      const parked = await shotBytes(page)
+      await page.evaluate(async () => {
+        const machine = (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle }).__DSH_WEB_MACHINE__
+        for (let step = 0; step < 12; step += 1) await machine.input.mouse(40, 24)
+      })
       await page.waitForTimeout(900)
-      expect(before !== await shotBytes(page), 'the guest did not react to the mouse while it had it')
+      expect(parked !== await shotBytes(page), 'the model\'s mouse tool stopped working when the person let go')
 
       // The other way to one cursor, which is the guest's to choose and not
       // this panel's: a driver that reads the VMware backdoor port is told

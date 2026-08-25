@@ -65,94 +65,50 @@ at a domain root, a project path, or a local directory.
 
 ## Usage
 
-Open the page, choose a workspace, start talking.
+Open the page, choose a workspace, start talking. 42 models across six routes
+are registered up front, so it answers before it asks you for anything.
 
-- **Files** — the sidebar action above the Machine action. Docks the same way
-  the Machine panel does, for the same reason. Browse the workspace,
-  open a file, drop files in, and take things out: one file as itself, a
-  directory or a tick-box selection as a zip. It is the same filesystem the
-  agent and the terminal use, not a copy. A file path the assistant names in
-  the chat opens here when you click it.
-- **Machine** — `` Ctrl+` `` or the sidebar action. A full-height column down
-  the right on a landscape window and a drawer along the bottom on a portrait
-  one, following the shape of the window rather than a guess about the device.
-  Docked to the side it takes width from the conversation the way the sidebar
-  does, rather than covering it. One panel showing whatever
-  this session runs on: a terminal when that is the Node container — the same
-  machine the agent's tools run in — and the emulated PC's live screen when it
-  is one of the guests below, scaled to the panel whatever resolution the guest
-  draws at, with a full-screen button, a working keyboard and a working mouse.
-  Click the screen and the browser hands the pointer to the machine, so the
-  guest's cursor is the only one on it and it is under your hand; Escape gives
-  it back. A guest whose driver reads pointer *positions* rather than movements
-  needs no click — its cursor is already exactly where yours is, and yours is
-  hidden. Closing the panel hides it; the session, its scrollback and its
-  working directory are still there when you reopen.
-- **Python** — `python3` and `pip` are there for both of them. The first call
-  fetches a 14 MB interpreter; after that it is stored, and packages installed
-  with `pip` survive a reload. Write `python3`: `jsh` aliases `python` to it and
-  loses the quoting on the way, so `python -c "…"` is a syntax error.
-- **Which machine** — Settings → Machine. A session runs on one machine and this
-  is where you pick it; the choice applies on the next load, because which
-  machine a session runs on decides which tools the assistant is given.
-  **128 machines are offered** — the whole of [v86's own
-  catalog](https://copy.sh/v86/), carried in with its configuration:
-  `npm run v86:catalog` prints the difference against upstream any time you want
-  to check. **87 of them need no setup at all** — a 512-byte bootsector
-  game, KolibriOS, Damn Small Linux, Plan 9, Windows 3.1, QNX, ToaruOS and
-  eighty more. Every one of those was booted in a real browser to say so, which
-  is what `npm run v86:boot -- --bundled --as-shipped` re-checks.
-  The rest are configured and one disk away, because that is the whole of what
-  separates this from copy.sh: every one of these machines is the same emulator
-  with a different disk, and copy.sh has a CDN with the disks on it. Four ways
-  to give a machine its disk, in the order they are tried:
-  **open the files** from your computer (a machine that boots from a disk *and*
-  a saved state takes both, and they are kept in this browser);
-  **point the setting at a host** that serves them;
-  **serve them yourself** — drop images into `public/v86/images/` and this
-  deployment answers for them from its own origin, with no third party, no CORS
-  question, and no network needed after the first load, which is what
-  `npm run v86:images` is for;
-  or take the default, which is v86's own `copy/images` plus the hosts
-  `src/runtime/v86-mirror.json` names — mostly
-  [futrime/webdsh-images](https://github.com/futrime/webdsh-images), a mirror of
-  the machines whose licences let anyone serve them, and for the rest a link
-  into a public repository that already holds the file. That is where those 87
-  come from.
-  The **41 that still ask for a disk** are not a licence problem: their images
-  come to about 34 GB, they exist only as the pieces copy.sh cut them into, and
-  copy.sh is the only host that has them — a GitHub Pages site may be one
-  gigabyte, so no arrangement of mirrors here closes that gap. Every one of them
-  says what it needs before it starts rather than failing mid-boot, and every
-  machine — including the 87 — offers a file input, because a disk of your own
-  is a reasonable thing to prefer even when one is provided.
-- **Plugins** — Settings → Plugins, or `/plugin add <package>` in the composer.
-  Takes an npm name, a tarball URL, `owner/repo#ref`, or a path. The *Installed*
-  tab turns one off or removes it; the composition is fixed at boot, so a change
-  applies on the next reload and the panel says so.
-- **Models** — 42 models across six routes are registered up front and need no
-  account, so the page answers before it asks for anything. Settings → Models
-  offers the rest of the provider catalog; typing a key is the whole of
-  configuring one.
-- **Network** — Settings → Network picks the CORS proxy, used only after a
-  direct request has actually failed, and reported to you when it is.
-- **Persistence** — workspace, sessions and transcripts survive a reload.
-  `window.dsh.exportFs()` downloads a zip; `window.dsh.reset()` clears it all.
+Three things live in the sidebar:
 
-On an emulated machine the assistant is given different tools, because it is a
-different machine: `sh` on the Linux guest, `dos` on the DOS ones — both reading
-a real character stream, so a command's whole output comes back rather than the
-last 25 lines of it — and `vm_screenshot`, `vm_screen`, `vm_key`, `vm_type`,
-`vm_mouse` and `vm_wait` everywhere, which is the whole of the tool set on a
-guest that only draws pixels. There is no `jsh`, no Node and no Python in that
-session, and the guest's disk shares nothing with the workspace your file tools
-read. The panel and the tools say so.
+- **Files** — the workspace, as the agent and the terminal see it. Drop files
+  in; take a file, a directory or a tick-box selection back out. Click a path
+  the assistant mentions to open it here.
+- **Machine** — `` Ctrl+` ``. What this session runs on: a terminal for the Node
+  container, the live screen for an emulated PC. Click the screen and the
+  machine gets your keyboard and mouse; Escape gives them back.
+- **Settings** — which machine, which models, which CORS proxy, which plugins.
 
-Worth knowing: the container's shell is `jsh`, not bash, and it ships no `git`;
-`python3` is CPython 3.14 compiled to WebAssembly, fetched on first use and kept
-afterwards, so it has pip but no compiler, no subprocesses and no sockets; and a
-host that refuses browsers is reachable only through the proxy, which does not
-extend to the container.
+Both panels dock beside the conversation on a wide window and along the bottom
+on a narrow one, and take width from it rather than covering it.
+
+**Machines.** Settings → Machine offers **128** — the whole of [v86's
+catalog](https://copy.sh/v86/) — and **87 boot with nothing to set up**. The
+choice applies on the next load, because it decides which tools the assistant
+gets: `jsh`, Node and Python in the container; `sh` or `dos` plus
+`vm_screenshot`, `vm_key`, `vm_type`, `vm_mouse` and friends on a guest, whose
+disk shares nothing with your workspace. A guest is offered the tools that
+currently work on it and not the ones that would come back empty — no
+`vm_screen` on a desktop with no text, no `vm_mouse` at a prompt that never
+turned a mouse on. The other 41 want a disk image —
+open one from your computer and it stays in your browser, or point the setting
+at a host that serves them. `npm run v86:catalog` prints the difference against
+upstream; `npm run v86:boot -- --bundled --as-shipped` re-boots all 87. The
+disks come from v86's own `copy/images` and the hosts
+`src/runtime/v86-mirror.json` names, mostly
+[AndyZijianZhang/webdsh-images](https://huggingface.co/datasets/AndyZijianZhang/webdsh-images),
+whose `NOTICE.json` records where every image came from and under what licence.
+
+**Plugins.** `/plugin add <package>` in the composer, or Settings → Plugins.
+Takes an npm name, a tarball URL, `owner/repo#ref`, or a path. The composition
+is fixed at boot, so a change applies on the next reload.
+
+**Persistence.** Workspace, sessions and transcripts survive a reload.
+`window.dsh.exportFs()` downloads a zip; `window.dsh.reset()` clears it all.
+
+Worth knowing: the container's shell is `jsh`, not bash, and ships no `git`;
+`python3` is CPython 3.14 compiled to WebAssembly, fetched on first use, so it
+has pip but no compiler, no subprocesses and no sockets — and write `python3`,
+because `jsh` aliases `python` and loses the quoting on the way.
 
 ## Maintainers
 
@@ -170,4 +126,4 @@ emulated machines and the agent finishing real jobs on each of them.
 
 [Apache-2.0](LICENSE) © [Zijian Zhang](https://github.com/futrime). The
 `@deepseek-ai/*` packages it composes are published by DeepSeek AI under their
-own terms.
+own terms, and the disk images it fetches remain under their own authors'.
