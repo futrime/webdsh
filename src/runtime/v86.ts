@@ -350,6 +350,17 @@ export interface Machine {
   /** Whether the screen is in a graphical mode rather than a text one. */
   graphical(): boolean
   /**
+   * What the guest is doing with the pointer.
+   *
+   * `enabled` is the guest having turned its mouse on — a DOS prompt has not,
+   * a desktop has. `absolute` is the guest reading the VMware backdoor
+   * pointer, which carries a position rather than a movement: with it the
+   * guest's cursor is wherever the real one is, and without it the guest is
+   * integrating relative motion and the two cursors drift apart the moment
+   * their sensitivities differ.
+   */
+  pointer(): { enabled: boolean, absolute: boolean }
+  /**
    * Deliver one real key event to the guest.
    *
    * The panel's own listener calls this, and nothing else can: v86 is
@@ -522,13 +533,48 @@ function createScreen(): HTMLElement {
  * @param element - the screen container.
  */
 export function parkScreen(element: HTMLElement): void {
-  element.style.cssText = 'position:fixed;left:-10000px;top:0;width:720px;pointer-events:none;z-index:-1'
+  place(element, {
+    position: 'fixed', left: '-10000px', top: '0', width: '720px',
+    pointerEvents: 'none', zIndex: '-1', display: 'block', margin: '0', maxWidth: '',
+  })
   if (element.parentElement !== document.body) document.body.append(element)
 }
 
-/** Take the screen out of its parking spot so a panel can show it. */
+/**
+ * Take the screen out of its parking spot so a panel can show it.
+ *
+ * `width: fit-content` and not `max-width: 100%`, because this element's box
+ * is what the pointer is measured against: v86 turns a real mouse position
+ * into a guest one by taking it as a fraction of this rectangle, so a
+ * container wider than the picture inside it puts the guest's cursor to the
+ * left of the real one by however much slack there is.
+ * @param element - the screen container.
+ */
 export function unparkScreen(element: HTMLElement): void {
-  element.style.cssText = 'display:block;margin:0 auto;max-width:100%'
+  place(element, {
+    position: '', left: '', top: '', width: 'fit-content',
+    pointerEvents: '', zIndex: '', display: 'block', margin: '0 auto', maxWidth: '100%',
+  })
+}
+
+/**
+ * Write the layout properties of the screen container, and only those.
+ *
+ * Not `cssText`, which replaces the whole declaration: v86's mouse adapter
+ * writes `cursor: none` on this same element when the guest starts drawing its
+ * own pointer, and a panel that opened afterwards used to erase it — giving
+ * two cursors on a guest that had gone to the trouble of telling us it only
+ * needs one.
+ * @param element - the screen container.
+ * @param styles - the properties to set; an empty string clears one.
+ */
+function place(element: HTMLElement, styles: Record<string, string>): void {
+  for (const [name, value] of Object.entries(styles)) {
+    element.style.setProperty(
+      name.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`),
+      value === '' ? null : value,
+    )
+  }
 }
 
 /** Bytes as a size a person reads. */
@@ -671,6 +717,12 @@ async function start(): Promise<Machine> {
   })
 
   let graphical = false
+  // The guest's own account of its pointer, straight off v86's bus. `mouse-enable`
+  // is the guest turning the PS/2 mouse on; `vmware-absolute-mouse` is its driver
+  // opening the backdoor port that carries a position instead of a movement.
+  const pointer = { enabled: false, absolute: false }
+  emulator.add_listener('mouse-enable', ((on: boolean) => { pointer.enabled = on }) as (argument: never) => void)
+  emulator.add_listener('vmware-absolute-mouse', ((on: boolean) => { pointer.absolute = on }) as (argument: never) => void)
   emulator.add_listener('screen-set-size', ((size: [number, number, number]) => {
     graphical = size[2] > 0
     if (!graphical) text.resize(size[0], size[1])
@@ -774,6 +826,7 @@ async function start(): Promise<Machine> {
     },
     screenshot: async () => screenshot(emulator, graphical),
     graphical: () => graphical,
+    pointer: () => ({ ...pointer }),
     sendKeyEvent: (code: string, down: boolean) => {
       const key = CODE_SCANCODES[code]
       if (key === undefined) return false

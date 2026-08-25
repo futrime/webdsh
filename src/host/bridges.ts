@@ -229,6 +229,12 @@ export function publishMachineBridge(): void {
      * listening for one.
      */
     key: (code: string, down: boolean): boolean => currentMachine()?.sendKeyEvent(code, down) ?? false,
+    /**
+     * What the guest is doing with the pointer, for a panel deciding whether
+     * to show the host's cursor over the screen.
+     */
+    pointer: (): { enabled: boolean, absolute: boolean } =>
+      currentMachine()?.pointer() ?? { enabled: false, absolute: false },
     /** Throw the machine away so the next boot is a cold one. */
     restart: async (): Promise<void> => { await stopMachine() },
 

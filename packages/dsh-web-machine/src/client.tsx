@@ -81,6 +81,7 @@ interface MachineBridge {
   boot(onProgress?: (step: string) => void): Promise<void>
   adoptScreen(host: HTMLElement): Promise<() => void>
   key(code: string, down: boolean): boolean
+  pointer(): { enabled: boolean, absolute: boolean }
   restart(): Promise<void>
 }
 
@@ -171,6 +172,8 @@ function Screen({ guestName }: { guestName: string }): JSX.Element {
   const [focused, setFocused] = useState(false)
   const [full, setFull] = useState(false)
   const [scale, setScale] = useState(1)
+  const [pointer, setPointer] = useState({ enabled: false, absolute: false })
+  const [locked, setLocked] = useState(false)
 
   /**
    * Match the screen to the box it is in.
@@ -224,6 +227,30 @@ function Screen({ guestName }: { guestName: string }): JSX.Element {
       release?.()
     }
   }, [fit])
+
+  // Whether the guest is drawing a cursor, and of which kind, is the guest's
+  // decision and it makes it while running — a DOS prompt has no pointer, and
+  // the desktop it starts a minute later does. There is no event for it on the
+  // bridge, so it is asked for: twice a second, which is far below what a
+  // person notices and far above what a property read costs.
+  useEffect(() => {
+    const read = (): void => {
+      const machine = machineBridge()
+      if (machine === undefined) return
+      const next = machine.pointer()
+      setPointer(previous =>
+        previous.enabled === next.enabled && previous.absolute === next.absolute ? previous : next)
+    }
+    read()
+    const timer = setInterval(read, 500)
+    return () => { clearInterval(timer) }
+  }, [])
+
+  useEffect(() => {
+    const onChange = (): void => { setLocked(document.pointerLockElement === scaler.current) }
+    document.addEventListener('pointerlockchange', onChange)
+    return () => { document.removeEventListener('pointerlockchange', onChange) }
+  }, [])
 
   // Two things change the fit and neither is a render: the window, and the
   // guest changing video mode. A DOS box that starts a graphical program swaps
@@ -297,11 +324,38 @@ function Screen({ guestName }: { guestName: string }): JSX.Element {
 
   if (failed !== undefined) return <p className="dsh-web-machine-notice">{failed}</p>
 
+  // One cursor, not two. There are two ways to get there and which one is
+  // available is the guest's choice, not this panel's:
+  //
+  // - A guest whose driver reads the VMware backdoor port is told *where* the
+  //   pointer is, so its cursor is already exactly under the real one. v86
+  //   hides the host cursor itself when that happens; `data-owned` is this
+  //   panel agreeing rather than fighting it, because the element v86 writes
+  //   that style on is the one inside this scaler.
+  // - Every other guest gets a PS/2 mouse, which reports movement. Where its
+  //   cursor ends up is then its own driver's arithmetic — two pixels per unit
+  //   on Windows 3.1, measured — and no amount of care here makes the two
+  //   cursors coincide. Pointer lock is the honest answer: the browser takes
+  //   the real cursor away entirely and hands over raw movement, so the
+  //   guest's cursor is the only one on the screen and it is under your hand
+  //   by definition. Escape gives it back, and the browser guarantees that.
+  const owned = pointer.enabled && pointer.absolute
+  const lockable = pointer.enabled && !pointer.absolute
+  const grab = useCallback(() => {
+    scaler.current?.focus()
+    if (!lockable || document.pointerLockElement !== null) return
+    // Not awaited and not reported: a browser that refuses the lock (no user
+    // gesture, or the user pressed Escape moments ago) leaves the panel
+    // working exactly as it did before pointer lock existed.
+    void Promise.resolve(scaler.current?.requestPointerLock() as unknown).catch(() => undefined)
+  }, [lockable])
+
   return (
     <div className="dsh-web-machine-stage" ref={stage}>
       <div
         className="dsh-web-machine-screen"
         {...(focused ? { 'data-focused': '' } : {})}
+        {...(owned || locked ? { 'data-owned': '' } : {})}
         ref={scaler}
         tabIndex={0}
         role="application"
@@ -310,16 +364,20 @@ function Screen({ guestName }: { guestName: string }): JSX.Element {
         onBlur={() => { setFocused(false) }}
         onKeyDown={onKey}
         onKeyUp={onKey}
-        onClick={() => { scaler.current?.focus() }}
+        onClick={grab}
       />
       <div className="dsh-web-machine-overlay">
         {step === ''
           ? <span className="dsh-web-machine-zoom">{`${String(Math.round(scale * 100))}%`}</span>
           : <span className="dsh-web-machine-step">{step}</span>}
         <span className="dsh-web-machine-hint">
-          {focused
-            ? 'The keyboard is going to the machine. Click outside to give it back.'
-            : 'Click the screen to type at the machine.'}
+          {locked
+            ? 'The mouse and keyboard are going to the machine. Press Escape to get them back.'
+            : lockable
+              ? 'Click the screen to give the machine the mouse and keyboard.'
+              : focused
+                ? 'The keyboard is going to the machine. Click outside to give it back.'
+                : 'Click the screen to type at the machine.'}
         </span>
         <button type="button" onClick={toggleFull}>{full ? 'Leave full screen' : 'Full screen'}</button>
       </div>
@@ -809,6 +867,12 @@ const STYLE = `
 .dsh-web-machine-screen{transform-origin:center center;line-height:0;outline:none;
  box-shadow:0 0 0 2px transparent;transition:box-shadow .12s}
 .dsh-web-machine-screen[data-focused]{box-shadow:0 0 0 2px var(--dsw-alias-border-focus,#2f81f7)}
+/* The guest is drawing the cursor, or the browser has taken it away: either
+   way there is exactly one pointer on this screen and it is not the host's.
+   The rule is on the scaler as well as v86's own container because the
+   transform gives this element a box of its own, and a hair of it can stick
+   out past the picture. */
+.dsh-web-machine-screen[data-owned],.dsh-web-machine-screen[data-owned] *{cursor:none}
 /* Nearest-neighbour: every guest here draws pixels that mean something at
    their own size, and a smoothing filter over a DOS text screen is a blurred
    DOS text screen. */
