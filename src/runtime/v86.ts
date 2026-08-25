@@ -742,11 +742,12 @@ async function start(): Promise<Machine> {
       if (settledReady) return true
       settledReady = await awaitReady(
         spec, text, serial, () => graphical, () => { emulator.serial0_send('\r') },
-        // Whether the screen has anything on it, judged from the screen. The
-        // data URL of a blank display is a few hundred bytes of header; a
-        // display with a picture on it is thousands. Called only once the
-        // display has settled, so this is not a per-poll cost.
-        () => (emulator.screen_make_screenshot()?.src ?? '').length > 3000,
+        // The picture itself, as a data URL. What it is used for is two
+        // questions that are really one: whether the display has anything on
+        // it — a blank one is a few hundred bytes of header, one with a
+        // picture on it is thousands — and whether what it has on it is still
+        // changing. Sampled at intervals rather than per poll, by the caller.
+        () => emulator.screen_make_screenshot()?.src ?? '',
         timeoutMs ?? readyBudget,
       )
       // After one full wait, later callers get a glance rather than the budget.
@@ -1363,6 +1364,9 @@ async function waitFor(condition: () => boolean, timeoutMs: number, signal?: Abo
   return condition()
 }
 
+/** How often the readiness check looks at the picture. */
+const SAMPLE_MS = 2000
+
 /**
  * Wait until the guest has reached its own readiness marker.
  *
@@ -1377,10 +1381,13 @@ async function waitFor(condition: () => boolean, timeoutMs: number, signal?: Abo
  *   and will sit there silently forever; poking it is the only way to find out
  *   whether anything is listening.
  * - A graphical guest is ready when it is drawing pixels and its display mode
- *   has stopped changing. That is *not* the same as "the desktop is up": a cold
- *   Windows 95 reaches a static 320×400 splash in six seconds and its desktop a
- *   minute later, and both satisfy this. Everything downstream is told to look
- *   at the screen rather than trust the marker, and this is why.
+ *   has stopped changing — or, failing that, when the picture itself has held
+ *   still for twenty seconds, because a machine upstream calls graphical may
+ *   stop at a text prompt and never enter the mode at all. That is *not* the
+ *   same as "the desktop is up": a cold Windows 95 reaches a static 320×400
+ *   splash in six seconds and its desktop a minute later, and both satisfy
+ *   this. Everything downstream is told to look at the screen rather than
+ *   trust the marker, and this is why.
  *
  * A timeout is reported rather than thrown: the machine is running either way,
  * and a caller that can look at the screen is better served by a screenshot of
@@ -1393,13 +1400,51 @@ async function awaitReady(
   serial: SerialStream,
   graphical: () => boolean,
   poke: () => void,
-  painted: () => boolean,
+  picture: () => string,
   timeoutMs?: number,
 ): Promise<boolean> {
   const banner = spec.banner === undefined ? undefined : new RegExp(spec.banner)
   let stableSince = 0
   let lastShape = ''
   let lastPoke = 0
+  let lastSample = 0
+  /** Recent pictures, newest last, one every {@link SAMPLE_MS}. */
+  const samples: string[] = []
+
+  /** Whether the display has anything on it. */
+  const painted = (): boolean => picture().length > 3000
+
+  /**
+   * Whether the picture itself has stopped changing, and has something on it.
+   *
+   * The mode-shape check above cannot tell a machine that is still booting in
+   * text mode from one that has arrived at a text prompt: both are `80x25` and
+   * neither changes shape. This can, because a boot writes to the screen and a
+   * prompt does not.
+   *
+   * "Stopped changing" is two frames rather than one, because a text-mode
+   * prompt has a cursor and the cursor blinks: a settled screen alternates
+   * between exactly two pictures thirteen bytes apart, forever, and an
+   * equality test against the previous frame therefore never holds. A boot
+   * that is still writing produces a new picture nearly every time.
+   *
+   * Sampled at intervals rather than per poll — a screenshot is a canvas read
+   * and a PNG encode, and this runs for minutes.
+   * @param seconds - how long the picture must have held still.
+   * @returns whether the display has been showing the same thing that long.
+   */
+  const settled = (seconds: number): boolean => {
+    const now = Date.now()
+    if (now - lastSample >= SAMPLE_MS) {
+      lastSample = now
+      samples.push(picture())
+    }
+    const wanted = Math.ceil((seconds * 1000) / SAMPLE_MS)
+    if (samples.length < wanted) return false
+    const window = samples.slice(-wanted)
+    const last = window[window.length - 1]
+    return last.length > 3000 && new Set(window).size <= 2
+  }
   return waitFor(() => {
     // A DOS machine whose prompt has been watched is ready when it shows it.
     // One whose prompt nobody here has seen falls through to the general rule
@@ -1429,13 +1474,29 @@ async function awaitReady(
     // a BIOS line, a boot menu — and two of them were reported ready while
     // still sitting in DOS.
     const ends = spec.screen ?? (spec.console === 'gui' ? 'graphical' : 'text')
-    if (ends === 'graphical') return graphical()
+    if (ends === 'graphical') {
+      if (graphical()) return true
+      // Upstream's table says what a machine *is*, not what its screen is
+      // doing: five of the machines it marks graphical stop in text mode and
+      // wait for a keypress — 9legacy asks where root is, and the rest sit at
+      // a prompt of their own — and holding them to a mode they never enter
+      // spent their whole budget with the answer on the screen. So the mode is
+      // required only while there is any reason to believe the machine is
+      // still working: three quarters of a minute of an unchanging picture is
+      // a machine that has arrived somewhere, whatever mode it arrived in.
+      //
+      // Three quarters and not twenty seconds because a boot can be quiet for
+      // a while and still be a boot: Skift spends about forty-five seconds on
+      // a motionless text screen before its desktop appears, and at twenty it
+      // was called ready while still loading.
+      return settled(45)
+    }
     // Two seconds without a mode change. A boot changes mode several times on
     // the way; a machine that has arrived somewhere does not.
     //
     // "Arrived" used to mean "is drawing pixels", and that was wrong for most
     // of the catalog: a great many of these machines never leave text mode —
-    // a bootsector game, MikeOS, 9legacy — and waited out their whole budget
+    // a bootsector game, MikeOS, MS-DOS 4 — and waited out their whole budget
     // with a full screen in front of them, reported as never having started.
     // What settles it is that the screen has stopped changing *and* has
     // something on it, whichever kind of screen it is.

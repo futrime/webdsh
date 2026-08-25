@@ -18,9 +18,18 @@
  * directory, and serves it with the headers a disk image needs. A deployment
  * that wants these machines points the setting at a mirror of its own.
  *
+ * There is a second thing worth checking and it is not the same thing: whether
+ * a machine boots *as this build ships it* — off whatever the runtime resolves
+ * on its own, which for most of them is this project's mirror. That is the
+ * claim the machine list makes to a visitor who changes no settings, so
+ * `--as-shipped` sets no image host at all and `--bundled` runs it over every
+ * machine that claims to need no setup.
+ *
  * Usage:
  *   npx tsx scripts/v86-boot-probe.ts <guest-id> [<guest-id>...] [--url <url>] [--headed]
- *   npx tsx scripts/v86-boot-probe.ts --sample 8      # a spread across media
+ *   npx tsx scripts/v86-boot-probe.ts --sample 8              # a spread across media
+ *   npx tsx scripts/v86-boot-probe.ts --bundled --as-shipped  # the zero-setup claim
+ *   npx tsx scripts/v86-boot-probe.ts --bundled --as-shipped --jobs 6
  */
 
 import { createServer, type Server } from 'node:http'
@@ -33,6 +42,10 @@ import { GUESTS } from '../src/runtime/guests.ts'
 const args = process.argv.slice(2)
 const url = valueOf('--url') ?? 'http://127.0.0.1:4173/'
 const headed = args.includes('--headed')
+/** Boot off whatever the build resolves, rather than off the fixture mirror. */
+const asShipped = args.includes('--as-shipped')
+/** How many machines to boot at once. Each one is a browser context and a VM. */
+const jobs = Math.max(1, Number(valueOf('--jobs') ?? '4'))
 const cache = join(tmpdir(), 'dshw-v86-images')
 
 /** Read a `--flag value` pair from argv. */
@@ -115,12 +128,16 @@ interface Outcome {
 }
 
 /** Boot one machine and look at it. */
-async function boot(page: Page, id: string, origin: string, budgetMs: number): Promise<Outcome> {
+async function boot(page: Page, id: string, origin: string | undefined, budgetMs: number): Promise<Outcome> {
   const started = Date.now()
   const seconds = (): number => Math.round((Date.now() - started) / 1000)
-  await page.addInitScript((host: string) => {
-    localStorage.setItem('dsh-web:v86-image-host', host)
-  }, origin)
+  // No host set means the runtime picks: a file this deployment serves, then
+  // the mirror, then the default host. That is the path a visitor is on.
+  if (origin !== undefined) {
+    await page.addInitScript((host: string) => {
+      localStorage.setItem('dsh-web:v86-image-host', host)
+    }, origin)
+  }
   await page.goto(`${url}?runtime=v86:${id}`, { waitUntil: 'domcontentloaded', timeout: 120_000 })
   await page.waitForFunction(() => {
     const root = document.getElementById('root')
@@ -184,39 +201,65 @@ function sample(count: number): string[] {
   return picked
 }
 
-const explicit = args.filter(argument => !argument.startsWith('--') && args[args.indexOf(argument) - 1] !== '--url')
-const requested = explicit.length > 0 ? explicit : sample(Number(valueOf('--sample') ?? '6'))
+const flags = ['--url', '--sample', '--jobs']
+const explicit = args.filter((argument, index) => !argument.startsWith('--') && !flags.includes(args[index - 1] ?? ''))
+const requested = explicit.length > 0
+  ? explicit
+  : args.includes('--bundled')
+    ? GUESTS.filter(guest => guest.bundled).map(guest => guest.id)
+    : sample(Number(valueOf('--sample') ?? '6'))
 
-const mirror = await startMirror()
+// The fixture mirror is only stood up when something is going to use it: it
+// fetches from `i.copy.sh`, and a run that boots off this build's own sources
+// has no business touching that host at all.
+const mirror = asShipped ? undefined : await startMirror()
 const browser = await chromium.launch({ headless: !headed })
 const outcomes: Outcome[] = []
-try {
-  for (const id of requested) {
-    const spec = GUESTS.find(guest => guest.id === id)
-    if (spec === undefined) {
-      outcomes.push({ id, ok: false, seconds: 0, detail: 'no such machine in this build' })
-      continue
-    }
-    process.stdout.write(`▶ ${id}\n`)
-    const context = await browser.newContext()
-    const page = await context.newPage()
-    try {
-      const outcome = await boot(page, id, mirror.origin, spec.timeoutMs)
-      outcomes.push(outcome)
-      process.stdout.write(`  ${outcome.ok ? '✔' : '✘'} ${id} (${String(outcome.seconds)}s) — ${outcome.detail}\n`)
-    } catch (error) {
-      outcomes.push({ id, ok: false, seconds: 0, detail: error instanceof Error ? error.message : String(error) })
-      process.stdout.write(`  ✘ ${id}: ${error instanceof Error ? error.message : String(error)}\n`)
-    } finally {
-      await context.close()
-    }
+
+/** Boot one machine in a context of its own, and never throw. */
+async function probe(id: string): Promise<Outcome> {
+  const spec = GUESTS.find(guest => guest.id === id)
+  if (spec === undefined) return { id, ok: false, seconds: 0, detail: 'no such machine in this build' }
+  const context = await browser.newContext()
+  const page = await context.newPage()
+  try {
+    return await boot(page, id, mirror?.origin, spec.timeoutMs)
+  } catch (error) {
+    return { id, ok: false, seconds: 0, detail: error instanceof Error ? error.message : String(error) }
+  } finally {
+    await context.close()
   }
+}
+
+try {
+  // A pool rather than a loop: each machine is an independent browser context
+  // and most of the wall-clock is a guest booting, so seventy of them one after
+  // another is an hour of watching one CPU wait.
+  const queue = [...requested]
+  let done = 0
+  const workers = Array.from({ length: Math.min(jobs, queue.length) }, async () => {
+    for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+      const outcome = await probe(id)
+      outcomes.push(outcome)
+      done += 1
+      process.stdout.write(
+        `  ${outcome.ok ? '✔' : '✘'} [${String(done)}/${String(requested.length)}] `
+        + `${outcome.id} (${String(outcome.seconds)}s) — ${outcome.detail}\n`,
+      )
+    }
+  })
+  await Promise.all(workers)
 } finally {
   await browser.close()
-  process.stdout.write(`\nthe mirror served ${String(mirror.served())} files\n`)
-  await mirror.close()
+  if (mirror !== undefined) {
+    process.stdout.write(`\nthe mirror served ${String(mirror.served())} files\n`)
+    await mirror.close()
+  }
 }
 
 const good = outcomes.filter(outcome => outcome.ok)
-process.stdout.write(`${String(good.length)} of ${String(outcomes.length)} booted\n`)
+process.stdout.write(`\n${String(good.length)} of ${String(outcomes.length)} booted\n`)
+for (const outcome of outcomes.filter(one => !one.ok)) {
+  process.stdout.write(`  ✘ ${outcome.id}: ${outcome.detail}\n`)
+}
 if (good.length !== outcomes.length) process.exit(1)
