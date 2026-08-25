@@ -465,6 +465,23 @@ const STYLE = `
  flex-direction:column;background:var(--dsw-alias-bg-layer-1,Canvas);color:var(--dsw-alias-label-primary,CanvasText);
  border-top:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));box-shadow:0 -8px 32px rgba(0,0,0,.18);
  font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+
+/* Which edge it comes in from follows the shape of the window rather than a
+   guess about the device: a landscape window has height to spare and width to
+   lose, so a full-height column on the right leaves the conversation readable
+   beside it; a portrait one has the opposite problem and wants a drawer along
+   the bottom. The same rule, and the same breakpoint, as the machine panel —
+   two drawers that answered differently would be two different apps. */
+@media (min-aspect-ratio: 1/1) and (min-width: 60rem) {
+  .dsh-web-files{left:auto;top:0;bottom:0;height:auto;width:min(46vw,54rem);
+   border-top:0;border-left:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));
+   box-shadow:-8px 0 32px rgba(0,0,0,.18)}
+  /* Side by side needs width the column has not got, so the viewer goes under
+     the list rather than beside it. */
+  .dsh-web-files-body{flex-direction:column}
+  .dsh-web-files-list{max-width:none;flex:1;border-right:0;
+   border-bottom:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2))}
+}
 .dsh-web-files-bar,.dsh-web-files-viewer-bar{display:flex;align-items:center;gap:.75rem;padding:.4rem .75rem;flex:none;
  border-bottom:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2))}
 .dsh-web-files-title{font-weight:600}

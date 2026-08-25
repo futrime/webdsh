@@ -157,6 +157,33 @@ async function putFile(page: Page, path: string, content: string): Promise<{ exp
   }, [path, content] as const)
 }
 
+/** How many bytes the screen's PNG comes to, which is a cheap "did it change". */
+async function shotBytes(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    const machine = (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle }).__DSH_WEB_MACHINE__
+    return (await machine.screen.shot()).bytes
+  })
+}
+
+/**
+ * Tell the panel what the guest is doing with its pointer.
+ *
+ * A stub, and deliberately: the two pointer kinds are the guest's choice, and
+ * no machine this deployment can reach without a disk of your own runs a
+ * driver that picks the absolute one. What is under test is the panel, so the
+ * panel is given the fact and watched.
+ * @param page - the page.
+ * @param state - the pointer state to report.
+ */
+async function setPointer(page: Page, state: { enabled: boolean, absolute: boolean }): Promise<void> {
+  await page.evaluate((next: { enabled: boolean, absolute: boolean }) => {
+    const bridge = (globalThis as unknown as { __DSH_WEB_MACHINE__: { pointer: () => unknown } }).__DSH_WEB_MACHINE__
+    bridge.pointer = () => next
+  }, state)
+  // The panel reads it twice a second.
+  await page.waitForTimeout(1200)
+}
+
 /** Wait for the machine to reach its readiness marker. */
 async function ready(page: Page, timeoutMs: number): Promise<boolean> {
   return page.evaluate(async (budget: number) => {
@@ -757,6 +784,111 @@ const scenarios: Scenario[] = [
     // the next a stamp in the corner of it. So the screen is fitted to the
     // panel, and this is the check that it is: same box for both guests,
     // aspect ratio intact, and neither of them left small.
+    name: 'pointer-and-dock',
+    async run(page) {
+      await page.setViewportSize({ width: 1440, height: 900 })
+      await page.goto(`${url}?runtime=v86:kolibrios`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      await waitForShell(page)
+      expect(await ready(page, 120_000), 'KolibriOS did not come up')
+      await openMachinePanel(page)
+      // The desktop enables its mouse a moment after it is drawn.
+      await page.waitForTimeout(4000)
+
+      /** What the panel is showing about the pointer. */
+      const cursor = async (): Promise<{ owned: boolean, cursor: string, hint: string }> => page.evaluate(() => {
+        const screen = document.querySelector('.dsh-web-machine-screen')
+        if (!(screen instanceof HTMLElement)) throw new Error('the machine panel is not showing a screen')
+        return {
+          owned: screen.hasAttribute('data-owned'),
+          cursor: getComputedStyle(screen).cursor,
+          hint: document.querySelector('.dsh-web-machine-hint')?.textContent ?? '',
+        }
+      })
+
+      // A guest with a PS/2 mouse: the host's cursor is still the host's,
+      // because the two would not agree about where it is.
+      const relative = await cursor()
+      expect(!relative.owned && relative.cursor !== 'none',
+        `a relative-pointer guest hid the host cursor (${relative.cursor})`)
+      expect(/give the machine the mouse/.test(relative.hint),
+        `the panel does not offer the mouse to a guest that has one: "${relative.hint}"`)
+
+      // Clicking hands it over. Pointer lock is what makes the two cursors one:
+      // the browser takes the host's away and delivers raw movement.
+      const box = await page.locator('.dsh-web-machine-screen').boundingBox()
+      expect(box !== null, 'the screen has no box to click')
+      const centre = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 }
+      await page.mouse.click(centre.x, centre.y)
+      await page.waitForTimeout(1200)
+      expect(await page.evaluate(() => document.pointerLockElement !== null),
+        'clicking the screen did not take the pointer')
+      const held = await cursor()
+      expect(held.owned && held.cursor === 'none',
+        `the host cursor is still showing under pointer lock (${held.cursor})`)
+
+      // And the guest is receiving the movement, which is the point of taking
+      // it: a cursor that moves is a screen that changes.
+      const before = await shotBytes(page)
+      await page.mouse.move(centre.x + 220, centre.y + 140, { steps: 20 })
+      await page.waitForTimeout(900)
+      expect(before !== await shotBytes(page), 'the guest did not react to the mouse while it had it')
+
+      // The other way to one cursor, which is the guest's to choose and not
+      // this panel's: a driver that reads the VMware backdoor port is told
+      // where the pointer is rather than how far it moved, so its cursor is
+      // already under the real one and the real one is redundant. None of the
+      // machines reachable without a disk of your own has that driver, so the
+      // fact is supplied rather than waited for — what is under test is the
+      // panel's response to it.
+      await page.evaluate(() => { document.exitPointerLock() })
+      await page.waitForTimeout(600)
+      await setPointer(page, { enabled: true, absolute: true })
+      const absolute = await cursor()
+      expect(absolute.owned && absolute.cursor === 'none',
+        `a guest drawing its own aligned cursor left the host's showing (${absolute.cursor})`)
+
+      // A guest with no mouse at all gets neither treatment.
+      await setPointer(page, { enabled: false, absolute: false })
+      const none = await cursor()
+      expect(!none.owned && none.cursor !== 'none',
+        `a guest with no pointer hid the host cursor (${none.cursor})`)
+
+      /** Where the panel sits, and how big. */
+      const dock = async (): Promise<{ x: number, y: number, width: number, height: number }> => page.evaluate(() => {
+        const panel = document.querySelector('.dsh-web-machine')
+        if (!(panel instanceof HTMLElement)) throw new Error('the machine panel is not in the document')
+        const shape = panel.getBoundingClientRect()
+        return { x: shape.x, y: shape.y, width: shape.width, height: shape.height }
+      })
+
+      // A window with width to spare: a full-height column on the right, so
+      // the conversation stays readable beside it.
+      const wide = await dock()
+      expect(wide.x > 100 && wide.height >= 898,
+        `on a 1440×900 window the panel is ${JSON.stringify(wide)}, which is not a right-hand column`)
+
+      // A window with none: a drawer along the bottom, because a column in a
+      // portrait window is a column of nothing.
+      await page.setViewportSize({ width: 720, height: 1280 })
+      await page.waitForTimeout(1200)
+      const tall = await dock()
+      expect(tall.x < 2 && tall.width >= 718 && tall.y > 100,
+        `on a 720×1280 window the panel is ${JSON.stringify(tall)}, which is not a bottom drawer`)
+
+      // The colours are the surface's, not a dark literal: this panel used to
+      // be the one surface in the app that stayed black when the theme went
+      // light. The way it is no longer is that nothing here names a colour.
+      const painted = await page.evaluate(() => {
+        const panel = document.querySelector('.dsh-web-machine')
+        if (!(panel instanceof HTMLElement)) throw new Error('no panel to read')
+        return { panel: getComputedStyle(panel).backgroundColor, page: getComputedStyle(document.body).backgroundColor }
+      })
+      expect(painted.panel === painted.page,
+        `the panel is painted ${painted.panel} on a page painted ${painted.page}`)
+    },
+  },
+
+  {
     name: 'screen-fit',
     async run(page) {
       /** Measure the panel, the stage, and the screen inside it. */

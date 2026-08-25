@@ -387,6 +387,28 @@ function Screen({ guestName }: { guestName: string }): JSX.Element {
 
 /* ── the container's terminal ──────────────────────────────────────────── */
 
+/**
+ * The colours the surface actually resolved to, for a widget that paints its own.
+ *
+ * Computed rather than declared: the panel's background is a theme token with
+ * a system-colour fallback, so the only way to know what it came out as is to
+ * ask the element. A cursor colour is not something the surface publishes, so
+ * that one stays a choice — a green that reads on either end of the range.
+ * @param element - the panel itself, which is the element carrying the colours.
+ * @returns an xterm theme.
+ */
+function surfaceColours(element: Element | null): { background: string, foreground: string, cursor: string } {
+  const fallback = { background: '#0d1017', foreground: '#dfe3ea', cursor: '#7fd1a0' }
+  if (element === null) return fallback
+  const style = getComputedStyle(element)
+  const background = style.backgroundColor
+  const foreground = style.color
+  // A transparent background is the element not having one of its own, which
+  // tells us nothing about what is behind it.
+  if (background === '' || background === 'transparent' || background.startsWith('rgba(0, 0, 0, 0')) return fallback
+  return { background, foreground: foreground === '' ? fallback.foreground : foreground, cursor: fallback.cursor }
+}
+
 /** The Node container's console, which is a terminal. */
 function TerminalScreen({ open }: { open: boolean }): JSX.Element {
   const host = useRef<HTMLDivElement | null>(null)
@@ -457,7 +479,12 @@ function TerminalScreen({ open }: { open: boolean }): JSX.Element {
         cursorBlink: true,
         fontSize: 12.5,
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-        theme: { background: '#0d1017', foreground: '#dfe3ea', cursor: '#7fd1a0' },
+        // Read off the panel this terminal is inside rather than written down
+        // here. xterm paints its own background, so a hard-coded dark pair was
+        // a black rectangle in a light panel; asking the element what colour it
+        // ended up means the terminal follows the theme for free, including
+        // themes this build has never seen.
+        theme: surfaceColours(host.current?.closest('.dsh-web-machine') ?? null),
       })
       const fit = new FitAddon()
       fitter.current = fit
@@ -847,18 +874,44 @@ function MachineAction({ open, onToggle, wide }: { open: boolean, onToggle: () =
 }
 
 const STYLE = `
+/* Colours from the surface's own tokens, with the system pair underneath.
+   The literals that were here — a near-black panel and a pale grey type —
+   made this the one surface in the app that stayed dark when the theme went
+   light. Canvas and CanvasText are the browser's own pair and they move
+   together, so a token this deployment's theme happens not to define still
+   lands on a background and a foreground that belong to each other. */
 .dsh-web-machine[hidden]{display:none}
 .dsh-web-machine{position:fixed;left:0;right:0;bottom:0;height:min(52vh,32rem);z-index:60;display:flex;
- flex-direction:column;background:#0d1017;border-top:1px solid rgba(127,127,127,.3);box-shadow:0 -8px 32px rgba(0,0,0,.35)}
+ flex-direction:column;background:var(--dsw-alias-bg-layer-1,Canvas);color:var(--dsw-alias-label-primary,CanvasText);
+ border-top:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));box-shadow:0 -8px 32px rgba(0,0,0,.18)}
 .dsh-web-machine[data-emulated]{height:min(72vh,44rem)}
-.dsh-web-machine-bar{display:flex;align-items:center;gap:.75rem;padding:.4rem .75rem;color:#dfe3ea;flex:none;
- border-bottom:1px solid rgba(127,127,127,.2);font:12px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+
+/* Which edge it comes in from follows the shape of the window rather than a
+   guess about the device. A landscape window has height to spare and width to
+   lose, so a full-height column on the right leaves the conversation readable
+   beside it; a portrait one — a phone, a split screen — has the opposite
+   problem, and a drawer along the bottom is the only shape that fits. The
+   breakpoint is an aspect ratio and a floor, because a narrow landscape window
+   is still narrow. */
+@media (min-aspect-ratio: 1/1) and (min-width: 60rem) {
+  .dsh-web-machine{left:auto;top:0;bottom:0;height:auto;width:min(46vw,54rem);
+   border-top:0;border-left:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));
+   box-shadow:-8px 0 32px rgba(0,0,0,.18)}
+  .dsh-web-machine[data-emulated]{height:auto;width:min(58vw,68rem)}
+}
+
+.dsh-web-machine-bar{display:flex;align-items:center;gap:.75rem;padding:.4rem .75rem;flex:none;
+ color:var(--dsw-alias-label-primary,CanvasText);
+ border-bottom:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2));
+ font:12px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
 .dsh-web-machine-title{font-weight:600}
 .dsh-web-machine-now{opacity:.55;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dsh-web-machine-bar button{font:inherit;background:transparent;border:1px solid rgba(127,127,127,.4);color:inherit;
- border-radius:.35rem;padding:.15rem .5rem;cursor:pointer}
+.dsh-web-machine-bar button{font:inherit;background:transparent;color:inherit;cursor:pointer;
+ border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4));border-radius:.35rem;padding:.15rem .5rem}
+.dsh-web-machine-bar button:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}
 .dsh-web-machine-terminal{flex:1;min-height:0;padding:.35rem .5rem}
-.dsh-web-machine-notice{padding:1rem;color:#9aa3b2;font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace}
+.dsh-web-machine-notice{padding:1rem;font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;
+ color:var(--dsw-alias-label-secondary,inherit);opacity:.85}
 
 /* The screen, and the box it is fitted into. Grid rather than flex so a screen
    larger than the box still centres on it — the transform brings it back
