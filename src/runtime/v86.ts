@@ -345,21 +345,49 @@ export interface Machine {
   moveMouse(dx: number, dy: number): void
   /** Press and release a mouse button. */
   click(which: 'left' | 'middle' | 'right'): Promise<void>
+  /**
+   * Hold a mouse button down, or let it up.
+   *
+   * Separate from {@link Machine.click} because a drag is a press, a move and
+   * a release, and a tool that could only click could not express one.
+   * @param which - the button.
+   * @param down - whether it goes down or comes up.
+   */
+  button(which: 'left' | 'middle' | 'right', down: boolean): void
+  /**
+   * Turn the wheel.
+   * @param dx - horizontal notches; positive is right.
+   * @param dy - vertical notches; positive is down, the direction a reader
+   * scrolls to move further into a document.
+   */
+  scroll(dx: number, dy: number): void
   /** A PNG of what the screen shows. */
   screenshot(): Promise<{ bytes: Uint8Array, width: number, height: number, graphical: boolean }>
   /** Whether the screen is in a graphical mode rather than a text one. */
   graphical(): boolean
   /**
-   * What the guest is doing with the pointer.
+   * What the guest is doing with the pointer, and whether it is getting one.
    *
    * `enabled` is the guest having turned its mouse on — a DOS prompt has not,
    * a desktop has. `absolute` is the guest reading the VMware backdoor
    * pointer, which carries a position rather than a movement: with it the
    * guest's cursor is wherever the real one is, and without it the guest is
    * integrating relative motion and the two cursors drift apart the moment
-   * their sensitivities differ.
+   * their sensitivities differ. `held` is whether pointer input is currently
+   * reaching it at all — see {@link Machine.usePointer}.
    */
-  pointer(): { enabled: boolean, absolute: boolean }
+  pointer(): { enabled: boolean, absolute: boolean, held: boolean }
+  /**
+   * Hand the mouse to the guest, or take it back.
+   *
+   * Off until something asks, because the emulator's adapter listens on
+   * `window` and forwards anything over the screen: a guest with a mouse
+   * otherwise has a cursor that follows yours around whenever the panel is
+   * open, drifting further from it the longer you move. The panel asks when
+   * you take pointer lock and gives it back when you leave.
+   * @param on - whether the guest should receive pointer input.
+   */
+  usePointer(on: boolean): void
   /**
    * Deliver one real key event to the guest.
    *
@@ -777,11 +805,59 @@ async function start(): Promise<Machine> {
 
   report(`${spec.name} is starting`)
 
-  // Two machines want their pointer left off: v86's own catalog says so, and
-  // the reason is a guest driver that mishandles a mouse it never asked for.
-  // It is a call rather than a constructor option, so it happens here, once
-  // the machine exists.
-  if (spec.mouseDisabled === true) emulator.mouse_set_enabled(false)
+  /**
+   * Whether the emulator is currently listening to the mouse at all.
+   *
+   * Two reasons it might not be. Two machines want their pointer left off
+   * outright: v86's own catalog says so, and the reason is a guest driver that
+   * mishandles a mouse it never asked for. And a guest with a relative mouse
+   * ignores it until somebody asks for it — see {@link Machine.usePointer}.
+   *
+   * Tracked here rather than read back, because v86 exposes the setter and not
+   * the field.
+   */
+  let mouseOn = spec.mouseDisabled !== true
+
+  /**
+   * Hand the mouse to the guest, or take it back.
+   *
+   * The emulator's adapter listens on `window` and forwards anything over the
+   * screen, so a guest with a mouse used to have a cursor that followed yours
+   * around the moment the panel was open — including while you were reading
+   * the conversation next to it, and including the drift that makes a relative
+   * mouse's cursor and yours disagree about where they are. Nothing here is
+   * urgent enough to be driven by accident.
+   *
+   * A machine v86 says wants no mouse never gets one.
+   * @param on - whether the guest should receive pointer input.
+   */
+  const usePointer = (on: boolean): void => {
+    const wanted = on && spec.mouseDisabled !== true
+    if (wanted === mouseOn) return
+    mouseOn = wanted
+    emulator.mouse_set_enabled(wanted)
+  }
+  usePointer(false)
+
+  /**
+   * Do something that speaks to the mouse, whoever currently has it.
+   *
+   * The model's `vm_mouse` and `vm_click` go through the same adapter a hand
+   * on a real mouse does, so switching that adapter off to stop the pointer
+   * wandering would switch the tools off with it. The adapter is therefore
+   * turned on around the dispatch and put back, synchronously, so nothing else
+   * can arrive in between.
+   * @param act - what to dispatch.
+   */
+  const asMouse = (act: () => void): void => {
+    const held = mouseOn
+    if (!held) usePointer(true)
+    try {
+      act()
+    } finally {
+      if (!held) usePointer(false)
+    }
+  }
 
   live = emulator
   let settledReady = false
@@ -818,15 +894,27 @@ async function start(): Promise<Machine> {
       return typeText(emulator, value)
     },
     press: (key: string) => { pressKey(emulator, key) },
-    moveMouse: (dx: number, dy: number) => { moveMouse(screen, dx, dy) },
+    moveMouse: (dx: number, dy: number) => { asMouse(() => { moveMouse(screen, dx, dy) }) },
+    button: (which, down) => { asMouse(() => { pressButton(screen, which, down) }) },
+    scroll: (dx, dy) => { asMouse(() => { turnWheel(screen, dx, dy) }) },
     click: async (which) => {
-      pressButton(screen, which, true)
-      await new Promise(resolve => setTimeout(resolve, 60))
-      pressButton(screen, which, false)
+      // Held across the gap between press and release, not toggled twice: a
+      // button that goes down while the guest is listening and comes up while
+      // it is not is a button the guest still thinks is held.
+      const held = mouseOn
+      if (!held) usePointer(true)
+      try {
+        pressButton(screen, which, true)
+        await new Promise(resolve => setTimeout(resolve, 60))
+        pressButton(screen, which, false)
+      } finally {
+        if (!held) usePointer(false)
+      }
     },
     screenshot: async () => screenshot(emulator, graphical),
     graphical: () => graphical,
-    pointer: () => ({ ...pointer }),
+    pointer: () => ({ ...pointer, held: mouseOn }),
+    usePointer,
     sendKeyEvent: (code: string, down: boolean) => {
       const key = CODE_SCANCODES[code]
       if (key === undefined) return false
@@ -1675,6 +1763,30 @@ function moveMouse(screen: HTMLElement, dx: number, dy: number): void {
   target.dispatchEvent(new MouseEvent('mousemove', {
     bubbles: true, cancelable: true, view: window, movementX: dx, movementY: dy,
   }))
+}
+
+/**
+ * Turn the wheel over the screen.
+ *
+ * v86's adapter reads `wheelDelta` and reduces it to one notch per event in
+ * whichever direction it points, so the magnitude here decides the sign and
+ * nothing else; a caller wanting three notches sends three events. `deltaY` is
+ * set too, because that is the property a modern listener reads and the
+ * adapter's fallback path uses `detail`.
+ * @param screen - the screen container.
+ * @param dx - horizontal notches; positive is right.
+ * @param dy - vertical notches; positive is down.
+ */
+function turnWheel(screen: HTMLElement, dx: number, dy: number): void {
+  const target = screen.getElementsByTagName('canvas')[0] ?? screen
+  const event = new WheelEvent('wheel', {
+    bubbles: true, cancelable: true, view: window, deltaX: dx, deltaY: dy, deltaMode: 0,
+  })
+  // `wheelDelta` is the legacy property v86 reads first and it is not settable
+  // through the constructor. Its sign is the opposite of `deltaY`'s.
+  Object.defineProperty(event, 'wheelDelta', { value: -dy * 120, configurable: true })
+  Object.defineProperty(event, 'detail', { value: dy, configurable: true })
+  target.dispatchEvent(event)
 }
 
 /** Press or release a mouse button on the screen element. */

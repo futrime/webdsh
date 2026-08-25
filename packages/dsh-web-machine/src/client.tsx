@@ -84,7 +84,8 @@ interface MachineBridge {
   boot(onProgress?: (step: string) => void): Promise<void>
   adoptScreen(host: HTMLElement): Promise<() => void>
   key(code: string, down: boolean): boolean
-  pointer(): { enabled: boolean, absolute: boolean }
+  pointer(): { enabled: boolean, absolute: boolean, held: boolean }
+  usePointer(on: boolean): void
   restart(): Promise<void>
 }
 
@@ -175,7 +176,7 @@ function Screen({ guestName }: { guestName: string }): JSX.Element {
   const [focused, setFocused] = useState(false)
   const [full, setFull] = useState(false)
   const [scale, setScale] = useState(1)
-  const [pointer, setPointer] = useState({ enabled: false, absolute: false })
+  const [pointer, setPointer] = useState({ enabled: false, absolute: false, held: false })
   const [locked, setLocked] = useState(false)
 
   /**
@@ -242,17 +243,30 @@ function Screen({ guestName }: { guestName: string }): JSX.Element {
       if (machine === undefined) return
       const next = machine.pointer()
       setPointer(previous =>
-        previous.enabled === next.enabled && previous.absolute === next.absolute ? previous : next)
+        previous.enabled === next.enabled && previous.absolute === next.absolute && previous.held === next.held
+          ? previous
+          : next)
     }
     read()
     const timer = setInterval(read, 500)
     return () => { clearInterval(timer) }
   }, [])
 
+  // Taking the pointer is what hands the mouse to the guest, and losing it is
+  // what takes it back. Both directions matter: leaving with Escape has to stop
+  // the guest's cursor where it is, not leave it following a mouse that is now
+  // doing something else.
   useEffect(() => {
-    const onChange = (): void => { setLocked(document.pointerLockElement === scaler.current) }
+    const onChange = (): void => {
+      const mine = document.pointerLockElement === scaler.current
+      setLocked(mine)
+      machineBridge()?.usePointer(mine)
+    }
     document.addEventListener('pointerlockchange', onChange)
-    return () => { document.removeEventListener('pointerlockchange', onChange) }
+    return () => {
+      document.removeEventListener('pointerlockchange', onChange)
+      machineBridge()?.usePointer(false)
+    }
   }, [])
 
   // Two things change the fit and neither is a render: the window, and the
@@ -344,6 +358,16 @@ function Screen({ guestName }: { guestName: string }): JSX.Element {
   //   by definition. Escape gives it back, and the browser guarantees that.
   const owned = pointer.enabled && pointer.absolute
   const lockable = pointer.enabled && !pointer.absolute
+
+  // The exception to "click first". A guest reading positions puts its cursor
+  // exactly where yours is, so there is nothing to click *for*: no drift to
+  // correct and no second cursor to get rid of. Withholding the mouse from one
+  // of those would be ceremony for its own sake.
+  useEffect(() => {
+    if (!owned) return
+    machineBridge()?.usePointer(true)
+    return () => { machineBridge()?.usePointer(false) }
+  }, [owned])
   const grab = useCallback(() => {
     scaler.current?.focus()
     if (!lockable || document.pointerLockElement !== null) return
@@ -377,7 +401,7 @@ function Screen({ guestName }: { guestName: string }): JSX.Element {
           {locked
             ? 'The mouse and keyboard are going to the machine. Press Escape to get them back.'
             : lockable
-              ? 'Click the screen to give the machine the mouse and keyboard.'
+              ? 'The machine has a mouse but is not being given one. Click the screen to hand it over.'
               : focused
                 ? 'The keyboard is going to the machine. Click outside to give it back.'
                 : 'Click the screen to type at the machine.'}

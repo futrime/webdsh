@@ -233,8 +233,17 @@ export function publishMachineBridge(): void {
      * What the guest is doing with the pointer, for a panel deciding whether
      * to show the host's cursor over the screen.
      */
-    pointer: (): { enabled: boolean, absolute: boolean } =>
-      currentMachine()?.pointer() ?? { enabled: false, absolute: false },
+    pointer: (): { enabled: boolean, absolute: boolean, held: boolean } =>
+      currentMachine()?.pointer() ?? { enabled: false, absolute: false, held: false },
+    /**
+     * Hand the mouse to the guest, or take it back.
+     *
+     * The panel calls this when it takes and releases pointer lock. Until it
+     * does, a guest with a mouse gets none: a cursor that wanders across a
+     * desktop because you moved the real one past the panel on the way to
+     * something else is not input anybody asked to give.
+     */
+    usePointer: (on: boolean): void => { currentMachine()?.usePointer(on) },
     /** Throw the machine away so the next boot is a cold one. */
     restart: async (): Promise<void> => { await stopMachine() },
 
