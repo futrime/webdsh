@@ -16,7 +16,7 @@ Node itself, in the tab.
 
 - ⚡ **Nothing to run.** No server, no install, no local Node — the harness boots in the page.
 - 🖥️ **Real Node, real Python.** `npm install` and `pip install` both work, and the terminal and the agent share one container.
-- 💾 **Or a whole PC.** Settings → Machine swaps the container for [v86](https://github.com/copy/v86) and offers **128 machines** — the whole of v86's catalog, from a 512-byte bootsector game to Windows 2000 — emulated x86, on its own screen, with the tool set that machine actually has.
+- 💾 **Or a whole PC.** Settings → Machine swaps the container for [v86](https://github.com/copy/v86) and offers **128 machines** — the whole of v86's catalog, from a 512-byte bootsector game to Windows 2000, **87 of them booting with nothing to set up** — emulated x86, on its own screen, with the tool set that machine actually has.
 - 👁️ **It can see.** Attach an image and the model reads it: oriented, capped and re-encoded to the route's budget by the browser's own decoder, with the source's EXIF and colour profile stripped on the way.
 - 🧩 **Real plugins.** Install from npm, a tarball, GitHub, or a path — from the browser.
 - 📦 **Real dsh.** The published `@deepseek-ai/*` packages, unmodified: 120 of 135 rows compose exactly as `dsh web` composes them.
@@ -67,12 +67,17 @@ at a domain root, a project path, or a local directory.
 
 Open the page, choose a workspace, start talking.
 
-- **Files** — the sidebar action above the Machine action. Browse the workspace,
+- **Files** — the sidebar action above the Machine action. Docks the same way
+  the Machine panel does, for the same reason. Browse the workspace,
   open a file, drop files in, and take things out: one file as itself, a
   directory or a tick-box selection as a zip. It is the same filesystem the
   agent and the terminal use, not a copy. A file path the assistant names in
   the chat opens here when you click it.
-- **Machine** — `` Ctrl+` `` or the sidebar action. One panel showing whatever
+- **Machine** — `` Ctrl+` `` or the sidebar action. A full-height column down
+  the right on a landscape window and a drawer along the bottom on a portrait
+  one, following the shape of the window rather than a guess about the device.
+  Docked to the side it takes width from the conversation the way the sidebar
+  does, rather than covering it. One panel showing whatever
   this session runs on: a terminal when that is the Node container — the same
   machine the agent's tools run in — and the emulated PC's live screen when it
   is one of the guests below, scaled to the panel whatever resolution the guest
@@ -93,10 +98,10 @@ Open the page, choose a workspace, start talking.
   **128 machines are offered** — the whole of [v86's own
   catalog](https://copy.sh/v86/), carried in with its configuration:
   `npm run v86:catalog` prints the difference against upstream any time you want
-  to check. **75 of them need no setup at all** — a 512-byte bootsector
-  game, KolibriOS, Damn Small Linux, Plan 9, SqueakNOS, Skift and seventy more.
-  Every one of those was booted in a real browser to say so, which is what
-  `npm run v86:boot -- --bundled --as-shipped` re-checks.
+  to check. **87 of them need no setup at all** — a 512-byte bootsector
+  game, KolibriOS, Damn Small Linux, Plan 9, Windows 3.1, QNX, ToaruOS and
+  eighty more. Every one of those was booted in a real browser to say so, which
+  is what `npm run v86:boot -- --bundled --as-shipped` re-checks.
   The rest are configured and one disk away, because that is the whole of what
   separates this from copy.sh: every one of these machines is the same emulator
   with a different disk, and copy.sh has a CDN with the disks on it. Four ways
@@ -108,11 +113,19 @@ Open the page, choose a workspace, start talking.
   deployment answers for them from its own origin, with no third party, no CORS
   question, and no network needed after the first load, which is what
   `npm run v86:images` is for;
-  or take the default, which is v86's own `copy/images` plus
-  [futrime/webdsh-images](https://github.com/futrime/webdsh-images) — a mirror
-  of the machines whose licences let anyone serve them, which is where those 75
-  come from. A machine whose files this deployment cannot get says so before it
-  starts rather than failing mid-boot.
+  or take the default, which is v86's own `copy/images` plus the hosts
+  `src/runtime/v86-mirror.json` names — mostly
+  [futrime/webdsh-images](https://github.com/futrime/webdsh-images), a mirror of
+  the machines whose licences let anyone serve them, and for the rest a link
+  into a public repository that already holds the file. That is where those 87
+  come from.
+  The **41 that still ask for a disk** are not a licence problem: their images
+  come to about 34 GB, they exist only as the pieces copy.sh cut them into, and
+  copy.sh is the only host that has them — a GitHub Pages site may be one
+  gigabyte, so no arrangement of mirrors here closes that gap. Every one of them
+  says what it needs before it starts rather than failing mid-boot, and every
+  machine — including the 87 — offers a file input, because a disk of your own
+  is a reasonable thing to prefer even when one is provided.
 - **Plugins** — Settings → Plugins, or `/plugin add <package>` in the composer.
   Takes an npm name, a tarball URL, `owner/repo#ref`, or a path. The *Installed*
   tab turns one off or removes it; the composition is fixed at boot, so a change
