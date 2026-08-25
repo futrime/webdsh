@@ -9,6 +9,7 @@
 
 // Must be first: several dsh modules read `process` while their bodies evaluate.
 import './node/install-globals.ts'
+import { installDownloadLinks } from './net/download-links.ts'
 import { attachHost, installVirtualNetwork } from './net/virtual-network.ts'
 import { installRequestRouter } from './net/service-worker.ts'
 import { bootHost } from './host/boot.ts'
@@ -77,6 +78,10 @@ async function main(): Promise<void> {
   const progress = renderBootProgress()
   try {
     installVirtualNetwork()
+    // Immediately after, and for the same reason: a route this page answers is
+    // a route the *browser* cannot fetch, and a download link is the browser
+    // fetching. See `download-links.ts`.
+    installDownloadLinks()
     // Before the host, not after it: a plugin reads this while it applies, and
     // the host applying plugins is what `bootHost` does. The runtime bridge
     // closes over nothing the host provides, so there is nothing to wait for —
