@@ -43,6 +43,7 @@ interface Emulator {
   add_listener(event: string, listener: (argument: never) => void): void
   keyboard_send_scancodes(codes: number[]): void
   screen_make_screenshot(): HTMLImageElement | null
+  mouse_set_enabled(enabled: boolean): void
   serial0_send(data: string): void
 }
 
@@ -696,6 +697,12 @@ async function start(): Promise<Machine> {
 
   report(`${spec.name} is starting`)
 
+  // Two machines want their pointer left off: v86's own catalog says so, and
+  // the reason is a guest driver that mishandles a mouse it never asked for.
+  // It is a call rather than a constructor option, so it happens here, once
+  // the machine exists.
+  if (spec.mouseDisabled === true) emulator.mouse_set_enabled(false)
+
   live = emulator
   let settledReady = false
   let readyBudget = spec.timeoutMs
@@ -706,7 +713,13 @@ async function start(): Promise<Machine> {
     ready: async (timeoutMs?: number) => {
       if (settledReady) return true
       settledReady = await awaitReady(
-        spec, text, serial, () => graphical, () => { emulator.serial0_send('\r') }, timeoutMs ?? readyBudget,
+        spec, text, serial, () => graphical, () => { emulator.serial0_send('\r') },
+        // Whether the screen has anything on it, judged from the screen. The
+        // data URL of a blank display is a few hundred bytes of header; a
+        // display with a picture on it is thousands. Called only once the
+        // display has settled, so this is not a per-poll cost.
+        () => (emulator.screen_make_screenshot()?.src ?? '').length > 3000,
+        timeoutMs ?? readyBudget,
       )
       // After one full wait, later callers get a glance rather than the budget.
       readyBudget = 2000
@@ -1352,6 +1365,7 @@ async function awaitReady(
   serial: SerialStream,
   graphical: () => boolean,
   poke: () => void,
+  painted: () => boolean,
   timeoutMs?: number,
 ): Promise<boolean> {
   const banner = spec.banner === undefined ? undefined : new RegExp(spec.banner)
@@ -1359,8 +1373,13 @@ async function awaitReady(
   let lastShape = ''
   let lastPoke = 0
   return waitFor(() => {
-    if (spec.console === 'dos') {
-      const prompts = spec.prompts ?? []
+    // A DOS machine whose prompt has been watched is ready when it shows it.
+    // One whose prompt nobody here has seen falls through to the general rule
+    // below rather than being held against a guessed pattern: every DOS
+    // version spells its prompt differently, and a machine sitting at a
+    // perfectly good `A>` should not be reported as never having started.
+    const prompts = spec.prompts
+    if (spec.console === 'dos' && prompts !== undefined) {
       return text.lines().some(line => prompts.some(prompt => line.trimStart().startsWith(prompt)))
     }
     if (spec.console === 'serial') {
@@ -1376,9 +1395,30 @@ async function awaitReady(
       lastShape = shape
       stableSince = Date.now()
     }
-    // Two seconds without a mode change, once it is drawing pixels. A boot
-    // changes mode several times on the way; a desktop does not.
-    return graphical() && stableSince !== 0 && Date.now() - stableSince > 2000
+    if (stableSince === 0 || Date.now() - stableSince <= 2000) return false
+    // A machine whose screen ends up graphical is not up until it is drawing
+    // pixels. It passes through a perfectly settled text screen on the way —
+    // a BIOS line, a boot menu — and two of them were reported ready while
+    // still sitting in DOS.
+    const ends = spec.screen ?? (spec.console === 'gui' ? 'graphical' : 'text')
+    if (ends === 'graphical') return graphical()
+    // Two seconds without a mode change. A boot changes mode several times on
+    // the way; a machine that has arrived somewhere does not.
+    //
+    // "Arrived" used to mean "is drawing pixels", and that was wrong for most
+    // of the catalog: a great many of these machines never leave text mode —
+    // a bootsector game, MikeOS, 9legacy — and waited out their whole budget
+    // with a full screen in front of them, reported as never having started.
+    // What settles it is that the screen has stopped changing *and* has
+    // something on it, whichever kind of screen it is.
+    if (graphical()) return true
+    if (text.lines().some(line => line.trim() !== '')) return true
+    // A machine that writes straight to video memory — a bootsector game, most
+    // of the small ones — produces no `put-char` events at all, so the text
+    // mirror is empty while the screen is full. Asking the screen itself is the
+    // only way to tell that apart from a machine that never started, and it is
+    // asked once, here, after the display has already stopped changing.
+    return painted()
   }, timeoutMs ?? spec.timeoutMs)
 }
 

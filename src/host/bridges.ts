@@ -276,7 +276,8 @@ export interface GuestSummary {
   summary: string
   bundled: boolean
   transfer: number
-  boots: string
+  /** How long a cold start takes, when it has been measured; absent when it has not. */
+  boots?: string
   /**
    * The files it boots from, each with the v86 slot it fills.
    *
@@ -315,7 +316,7 @@ function summarise(spec: GuestSpec): GuestSummary {
     summary: spec.summary,
     bundled: spec.bundled,
     transfer: spec.transfer,
-    boots: spec.boots,
+    ...(spec.boots === undefined ? {} : { boots: spec.boots }),
     files: spec.images.map(image => ({ slot: image.slot, file: image.file })),
     ...(spec.filesystem === undefined ? {} : { filesystem: spec.filesystem }),
   }

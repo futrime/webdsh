@@ -38,6 +38,8 @@
  *    and it is the one `scripts/v86-e2e.ts` exercises for Windows 3.1.
  */
 
+import CATALOG from './v86-catalog.json'
+
 /**
  * Where a disk is fetched from when nothing else supplies it.
  *
@@ -112,7 +114,12 @@ export const BIOS_BASE = 'v86/'
 export type GuestConsole = 'serial' | 'dos' | 'gui'
 
 /** Which v86 option one image file fills. */
-export type ImageSlot = 'fda' | 'hda' | 'cdrom' | 'bzimage' | 'initial_state'
+export type ImageSlot =
+  | 'fda' | 'fdb'
+  | 'hda' | 'hdb'
+  | 'cdrom'
+  | 'bzimage' | 'initrd' | 'multiboot'
+  | 'initial_state'
 
 /** One file a guest needs. */
 export interface GuestImage {
@@ -122,9 +129,40 @@ export interface GuestImage {
   file: string
   /** Exact byte length, which a streamed disk cannot be read without. */
   size?: number
-  /** Read in 256 KiB pieces as the guest touches them, rather than fetched whole. */
+  /** Read in pieces as the guest touches them, rather than fetched whole. */
   streamed?: boolean
+  /**
+   * Where this file comes from, when it does not come from the image host.
+   *
+   * The image host is one place, and most of these machines are not there. A
+   * hobby OS whose floppy sits in its own public repository, a project that
+   * publishes its own ISO from a bucket that allows browsers — those are
+   * reachable today, with nothing to mirror and nobody's permission to ask, and
+   * a catalog that could only name files under one host could not say so.
+   *
+   * An absolute URL, and it must be one a *browser* can read: HTTPS, CORS
+   * allowed on the final response after redirects, and HTTP Range supported,
+   * because the emulator reads a disk in pieces. `scripts/v86-catalog.ts`
+   * checks all three.
+   */
+  source?: string
+
+  /**
+   * The size of one piece of a streamed image, in bytes.
+   *
+   * Load-bearing, and not a tuning knob: the emulator derives each piece's URL
+   * from this number — `disk/0-1048576.img`, `disk/1048576-2097152.img` — so a
+   * value that disagrees with how the image was actually split asks for files
+   * that do not exist, and the machine dies on a 404 with a correct host and a
+   * correct disk. v86's own catalog uses three different sizes: a megabyte for
+   * most, 256 KiB for the DOS-era disks, half a megabyte for the AROS ISOs.
+   * Copied per image from there rather than assumed.
+   */
+  chunkBytes?: number
 }
+
+/** What a streamed image is cut into when its catalog entry does not say. */
+const DEFAULT_CHUNK_BYTES = 256 * 1024
 
 /** One bootable machine. */
 export interface GuestSpec {
@@ -181,12 +219,43 @@ export interface GuestSpec {
    * as they scroll past, and a burst faster than the sampler outruns it.
    */
   serialConsole?: boolean
+  /**
+   * What this machine's screen ends up being, once it has finished booting.
+   *
+   * Not the same question as {@link GuestSpec.console}, which is about how a
+   * model drives it. This is about how to tell that it has arrived: a machine
+   * that ends in a graphical mode passes through a settled text screen on the
+   * way — a BIOS message, a boot menu — and calling that "up" reports Windows
+   * 3.1 as ready while it is still in DOS. A machine that ends in text mode has
+   * no such transition, and waiting for pixels that never come is the same
+   * mistake in the other direction.
+   *
+   * v86's own catalog marks each machine graphical or text and that is where
+   * this comes from; absent, it follows {@link GuestSpec.console}.
+   */
+  screen?: 'graphical' | 'text'
+
+  /**
+   * Whether the guest's own pointer must be left switched off at boot.
+   *
+   * v86's demo calls `mouse_set_enabled(false)` for the two machines whose
+   * guest driver mishandles a pointer it never asked for. It is not a
+   * constructor option, so it cannot ride in {@link GuestSpec.options} — it is
+   * a call made once the machine is up.
+   */
+  mouseDisabled?: boolean
+
   /** What a serial guest prints when its console is ready, as a regular expression. */
   banner?: string
   /** A login the serial console asks for before it gives a shell. */
   login?: { ask: string, send: string }
   /**
-   * How long a cold start takes, for the picker and the model to quote.
+   * How long a cold start takes, for the setting and the model to quote.
+   *
+   * Optional, and absent rather than estimated. Every value below was measured
+   * against this build in a real browser; a machine carried in from v86's
+   * catalog has not been, and a number invented for it would be indistinguishable
+   * from one that was. The setting shows nothing where there is nothing to show.
    *
    * Measured, every one of them, in a headless browser against this build: the
    * time from the page load that selects the guest to the moment
@@ -197,7 +266,7 @@ export interface GuestSpec {
    * graphical mode is a splash screen rather than a desktop, and the ones that
    * differ say both numbers rather than the flattering one.
    */
-  boots: string
+  boots?: string
 }
 
 /** One megabyte, spelled out. */
@@ -220,21 +289,13 @@ const DOS_PROMPTS = ['A:\\>', 'C:\\>', 'D:\\>']
  * The five that need no setup come first, then the rest oldest to newest. The
  * setting draws them in this order and does not sort.
  *
- * ## The two images on the default host that are not here
- *
- * `copy/images` serves eight files and this table uses five of them. The other
- * two are deliberate omissions rather than an oversight, and both would be
- * additions that could not do any work:
- *
- * - `os8.dsk` is a PDP-8 disk. v86 emulates x86 and nothing else, so there is
- *   no configuration of this table that boots it.
- * - `openbsd.img` is an install floppy. It reaches an installer question, not
- *   a shell, and it puts nothing on the serial port — so it would appear in
- *   the list as a machine whose console the agent cannot read and whose disk
- *   it cannot write. A machine that cannot be worked on is the thing this
- *   table exists to stop offering.
+ * Everything else v86 offers is carried in below from its own catalog. What
+ * makes the machines here different is not that they are better: it is that
+ * each one has been driven, so its console kind, readiness marker and boot time
+ * are measurements rather than inferences. A machine that graduates from the
+ * catalog to this table is one somebody has actually worked on.
  */
-export const GUESTS: GuestSpec[] = [
+const MEASURED: GuestSpec[] = [
   {
     id: 'linux',
     name: 'Linux',
@@ -495,6 +556,174 @@ export const GUESTS: GuestSpec[] = [
 ]
 
 /**
+ * Every machine v86 itself offers, carried in from its own catalog.
+ *
+ * The table above is sixteen machines this build has *driven*: each one's
+ * console kind, readiness marker and boot time was measured against a real
+ * browser. v86 offers a hundred and twenty-five, and for a long time the honest
+ * answer to "why so few" was that nobody had looked. Looking turns out to
+ * settle it: every one of those machines is this same emulator with a different
+ * disk, and what copy.sh has that this build does not is a CDN with the disks
+ * on it — `scripts/v86-catalog.ts` re-checks that claim against upstream and
+ * prints the difference.
+ *
+ * So the catalog comes in whole, from `v86-catalog.json`, which that script
+ * writes: v86's own ids, names, image slots, sizes, piece sizes and constructor
+ * options, plus the licence and one-line description from its demo page. Three
+ * fields are *not* carried, because they cannot be:
+ *
+ * - **`boots`** is omitted. Every value in the table above was timed; a number
+ *   invented for a machine nobody has started would read exactly like one that
+ *   was measured.
+ * - **`console`** is decided conservatively. Upstream marks each machine
+ *   graphical or text, and a graphical one is `gui`. A *text* one is only `dos`
+ *   when upstream calls it DOS — everything else is `gui` too, because `serial`
+ *   is a promise that a shell answers on the serial port, and offering a model
+ *   a shell that is not there is worse than offering it a screen.
+ * - **`bundled`** is false for all of them. The default image host serves five
+ *   files; these are not among them, and the setting says so rather than
+ *   offering a machine that can only fail.
+ *
+ * A machine here is therefore listed, correctly configured, and one disk away —
+ * which is the difference between "we support sixteen" and "we support what
+ * v86 supports, and here is what each one needs".
+ */
+
+/** One row of `v86-catalog.json`. */
+interface CatalogEntry {
+  id: string
+  name: string
+  images: { slot: string, file: string, size?: number, streamed: boolean, chunkBytes?: number }[]
+  licence?: string
+  family?: string
+  medium?: string
+  notes?: string
+  ui?: string
+  options?: Record<string, unknown>
+}
+
+/**
+ * How long to let a machine we have never timed take to come up.
+ *
+ * By medium, because that is what the wait is actually about: a floppy is one
+ * and a half megabytes read once, a hard disk is a filesystem being walked. The
+ * numbers are deliberately generous — this bounds "stuck", and a machine called
+ * stuck while it was still booting is a bug report nobody can reproduce.
+ * @param medium - how upstream says the machine boots.
+ * @returns the budget in milliseconds.
+ */
+function budgetFor(medium: string | undefined): number {
+  if (medium === 'Bootsector') return 60_000
+  if (medium === 'Floppy') return 120_000
+  if (medium === 'bzImage' || medium === 'Multiboot') return 150_000
+  if (medium === 'CD') return 240_000
+  return 300_000
+}
+
+/**
+ * Whether a slot name is one this build can fill.
+ *
+ * Checked *after* the catalog's `state` has been renamed to the emulator option
+ * it actually is, `initial_state` — checking before that silently dropped every
+ * machine that resumes from a saved one, which is nine of them and includes
+ * most of the interesting ones.
+ */
+function knownSlot(slot: string): slot is ImageSlot {
+  return ['fda', 'fdb', 'hda', 'hdb', 'cdrom', 'bzimage', 'initrd', 'multiboot', 'initial_state'].includes(slot)
+}
+
+/**
+ * Turn one catalog row into a machine this build can offer.
+ * @param entry - the upstream row.
+ * @returns the spec, or undefined for a row this build cannot express.
+ */
+function fromCatalog(entry: CatalogEntry): GuestSpec | undefined {
+  const images: GuestImage[] = []
+  let filesystem: string | undefined
+  for (const image of entry.images) {
+    // v86 calls the saved machine `state`; the emulator option is `initial_state`.
+    const slot = image.slot === 'state' ? 'initial_state' : image.slot
+    if (image.slot === 'filesystem') {
+      filesystem = image.file
+      continue
+    }
+    // A 9p root whose tree is seeded from a separate index is the one shape
+    // this build has no way to carry, and there is exactly one of them.
+    if (image.slot === 'basefs') return undefined
+    if (!knownSlot(slot)) return undefined
+    images.push({
+      slot,
+      file: image.file,
+      ...(image.size === undefined ? {} : { size: image.size }),
+      ...(image.streamed ? { streamed: true } : {}),
+      ...(image.chunkBytes === undefined ? {} : { chunkBytes: image.chunkBytes }),
+    })
+  }
+  if (images.length === 0) return undefined
+
+  // Two keys in v86's table are the demo page's own vocabulary rather than
+  // emulator options, and the emulator ignores what it does not recognise —
+  // silently, which is how a machine ends up with the wrong network card and
+  // nobody finds out. `net_device_type` is spelled `net_device: { type }`;
+  // `mouse_disabled_default` is not a constructor option at all but a call
+  // made after the machine starts, so it is carried as a field of its own.
+  const options: Record<string, unknown> = { ...entry.options }
+  const network = options.net_device_type
+  delete options.net_device_type
+  if (typeof network === 'string') options.net_device = { type: network }
+  const mouseOff = options.mouse_disabled_default === true
+  delete options.mouse_disabled_default
+
+  const description = entry.notes !== undefined && entry.notes !== '' ? entry.notes : `${entry.name}, from v86's catalog.`
+  return {
+    id: entry.id,
+    name: entry.name,
+    console: entry.ui === 'text' && entry.family === 'DOS' ? 'dos' : 'gui',
+    summary: `${description}.`.replace(/\.\.$/, '.'),
+    // Upstream's own one-line description is the only orientation there is for
+    // a machine nobody here has opened. Said as what it is, rather than dressed
+    // up as first-hand knowledge.
+    contains: `${description}. This machine is carried from v86's own catalog and has not been driven here, `
+      + 'so treat that description as all that is known about what is on it.',
+    bundled: false,
+    transfer: images.reduce((total, image) => total + (image.size ?? 0), 0),
+    images,
+    ...(filesystem === undefined ? {} : { filesystem }),
+    options,
+    // Always stated, never left to the default. The default reads `gui` as
+    // "ends graphical", which is right for a machine this build has driven and
+    // wrong for one carried in: sixteen catalog rows are not in v86's own
+    // metadata table at all, and treating those as graphical made every one of
+    // them wait out its whole budget with a full text screen in front of it.
+    // Unknown means the permissive rule, which a graphical machine also passes.
+    screen: entry.ui === 'graphical' ? 'graphical' : 'text',
+    ...(mouseOff ? { mouseDisabled: true } : {}),
+    timeoutMs: budgetFor(entry.medium),
+    // Deliberately no `prompts`. The three DOS machines above were watched
+    // reaching theirs; MS-DOS 4 writes `A>` where MS-DOS 7 writes `A:\>`, and
+    // a guessed list turns "I do not know this machine's prompt" into "this
+    // machine never started". Without one, readiness falls back to the screen
+    // having settled with something on it, which is true of both.
+  }
+}
+
+/**
+ * Every machine this build offers: the ones it has driven, then the rest of
+ * v86's catalog.
+ *
+ * Measured first, and by id: a machine named in both tables keeps the entry
+ * that was tested, because that is the one carrying a readiness marker and a
+ * boot time.
+ */
+export const GUESTS: GuestSpec[] = [
+  ...MEASURED,
+  ...(CATALOG as CatalogEntry[])
+    .filter(entry => !MEASURED.some(measured => measured.id === entry.id))
+    .map(fromCatalog)
+    .filter((spec): spec is GuestSpec => spec !== undefined),
+]
+
+/**
  * Find a machine by id.
  * @param id - the guest id.
  * @returns the spec, or undefined when nothing is registered under that id.
@@ -522,7 +751,11 @@ export function guest(id: string): GuestSpec | undefined {
  */
 export function unavailableImages(spec: GuestSpec, local: Partial<Record<ImageSlot, File>>): string[] {
   if (spec.bundled || imageHost() !== DEFAULT_IMAGE_HOST) return []
-  const missing = spec.images.filter(image => local[image.slot] === undefined).map(image => image.file)
+  const missing = spec.images
+    // A file that names its own source is not the host's to serve, so the host
+    // having nothing to say about it decides nothing.
+    .filter(image => image.source === undefined && local[image.slot] === undefined)
+    .map(image => image.file)
   // A 9p root is a directory of files the guest asks for one at a time. No
   // local file can be one, so a guest that needs a tree the host does not
   // serve cannot boot however many disks are opened for it.
@@ -563,10 +796,18 @@ export function imageOptions(spec: GuestSpec, local: Partial<Record<ImageSlot, F
 
 /** One remote file, in the shape v86 accepts. */
 function remoteImage(host: string, image: GuestImage): Record<string, unknown> {
-  const url = `${host}${image.file}`
+  // A file that names its own source is not the host's to serve, and pointing
+  // the host somewhere else must not move it.
+  const url = image.source ?? `${host}${image.file}`
   if (image.slot === 'initial_state') return { url }
   if (image.streamed === true) {
-    return { url, size: image.size, async: true, fixed_chunk_size: 256 * 1024, use_parts: true }
+    return {
+      url,
+      size: image.size,
+      async: true,
+      fixed_chunk_size: image.chunkBytes ?? DEFAULT_CHUNK_BYTES,
+      use_parts: true,
+    }
   }
   return { url, size: image.size, async: false }
 }

@@ -1,0 +1,2397 @@
+[
+ {
+  "id": "archlinux",
+  "name": "Arch Linux",
+  "images": [
+   {
+    "slot": "state",
+    "file": "arch_state-v3.bin.zst",
+    "streamed": false
+   },
+   {
+    "slot": "filesystem",
+    "file": "arch/",
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Linux",
+  "medium": "9pfs",
+  "notes": "Various packages, including Xorg, Firefox and more",
+  "ui": "text",
+  "options": {
+   "memory_size": 536870912,
+   "vga_memory_size": 8388608,
+   "net_device_type": "virtio"
+  }
+ },
+ {
+  "id": "skiffos",
+  "name": "SkiffOS",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "skiffos/.iso",
+    "size": 124672000,
+    "streamed": true,
+    "chunkBytes": 1048576
+   }
+  ],
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "serenity",
+  "name": "SerenityOS",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "serenity-v3/.img.zst",
+    "size": 734003200,
+    "streamed": true,
+    "chunkBytes": 1048576
+   },
+   {
+    "slot": "state",
+    "file": "serenity_state-v4.bin.zst",
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Unix-like",
+  "medium": "HD",
+  "notes": "Web browser, various games and demos",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912,
+   "mac_address_translation": true
+  }
+ },
+ {
+  "id": "redox",
+  "name": "Redox",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "redox_demo_i686_2024-09-07_1225_harddrive/.img",
+    "size": 671088640,
+    "streamed": true,
+    "chunkBytes": 1048576
+   },
+   {
+    "slot": "state",
+    "file": "redox_state-v2.bin.zst",
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Unix-like",
+  "medium": "HD",
+  "notes": "A Unix-like microkernel OS written in Rust",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 1073741824,
+   "acpi": true
+  }
+ },
+ {
+  "id": "helenos",
+  "name": "HelenOS",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "HelenOS-0.14.1-ia32.iso",
+    "size": 25792512,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "A microkernel-based multiserver OS",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 268435456
+  }
+ },
+ {
+  "id": "fiwix",
+  "name": "FiwixOS",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "FiwixOS-3.4-i386/.img",
+    "size": 1073741824,
+    "streamed": true,
+    "chunkBytes": 1048576
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Unix-like",
+  "medium": "HD",
+  "notes": "With Doom",
+  "ui": "text",
+  "options": {
+   "memory_size": 268435456
+  }
+ },
+ {
+  "id": "haiku",
+  "name": "Haiku",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "haiku-v5/.img",
+    "size": 1342177280,
+    "streamed": true,
+    "chunkBytes": 1048576
+   },
+   {
+    "slot": "state",
+    "file": "haiku_state-v5.bin.zst",
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "BeOS",
+  "medium": "HD",
+  "notes": "Networking (WebPositive), OCaml, 2048, NetHack",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912,
+   "acpi": true
+  }
+ },
+ {
+  "id": "beos",
+  "name": "BeOS 5",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "beos5/.img",
+    "size": 536870912,
+    "streamed": true,
+    "chunkBytes": 1048576
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "BeOS",
+  "medium": "HD",
+  "notes": "With Opera 3.62, NetPositive",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "msdos",
+  "name": "MS-DOS 6.22",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "msdos622/.img",
+    "size": 67108864,
+    "streamed": true,
+    "chunkBytes": 262144
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "DOS",
+  "medium": "HD",
+  "notes": "Doom, Sim City, OCaml 1.0, Turbo C and more",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "msdos4",
+  "name": "MS-DOS 4",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "msdos4.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "DOS",
+  "medium": "Floppy",
+  "notes": "Contains EDLIN",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "freedos",
+  "name": "FreeDOS",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "freedos722.img",
+    "size": 737280,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "DOS",
+  "medium": "Floppy",
+  "notes": "nasm, vim, debug.com, Rogue, various demos",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "doof",
+  "name": "DOOF",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "doof-1440.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "DOS",
+  "medium": "Floppy",
+  "notes": "Doom On One Floppy, a shareware that fits on one floppy disk",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "quantixos",
+  "name": "QuantixOS",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "quantixos.iso",
+    "size": 11784192,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Unix-like",
+  "medium": "CD",
+  "notes": "A UNIX-like OS written in x86 Intel Assembly and C",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "chip4504",
+  "name": "Chip4504",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "chip4504.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "CHIP-8 emulator operating system",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "forthos",
+  "name": "ForthOS",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "forthos20.img.zst",
+    "size": 95420416,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "HD",
+  "notes": "Complete standalone Forth-based operating system",
+  "ui": "text",
+  "options": {
+   "memory_size": 134217728
+  }
+ },
+ {
+  "id": "chimaeraos",
+  "name": "Chimaera OS",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "chimaeraos.img",
+    "size": 34120704,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "DOS",
+  "medium": "HD",
+  "notes": "MS-DOS compatible operating system for i8086 and newer",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "freegem",
+  "name": "Freedos with FreeGEM",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "freegem/.bin",
+    "size": 209715200,
+    "streamed": true,
+    "chunkBytes": 262144
+   }
+  ],
+  "licence": "Open-source",
+  "family": "DOS",
+  "medium": "HD",
+  "notes": "Graphical desktop for FreeDOS",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "xcom",
+  "name": "Freedos with Xcom",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "xcom144.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "DOS",
+  "medium": "Floppy",
+  "notes": "Graphical desktop for FreeDOS",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "psychdos",
+  "name": "PsychDOS",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "psychdos/.img",
+    "size": 549453824,
+    "streamed": true,
+    "chunkBytes": 262144
+   }
+  ],
+  "licence": "Open-source",
+  "family": "DOS",
+  "medium": "HD",
+  "notes": "ANSI-like graphical desktop for FreeDOS",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "86dos",
+  "name": "86-DOS",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "pc86dos.img",
+    "size": 163840,
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "DOS",
+  "medium": "Floppy",
+  "notes": "86-DOS version 1.0",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "oberon",
+  "name": "Oberon",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "oberon.img",
+    "size": 25165824,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "HD",
+  "notes": "Native Oberon 2.3.6",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "gentleos16",
+  "name": "GentleOS/16",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "gentleos16-fd1440.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "Hobby OS for vintage 16-bit PCs",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "gentleos32",
+  "name": "GentleOS/32",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "gentleos32-disk.img",
+    "size": 8388608,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "HD",
+  "notes": "Hobby OS for vintage 32-bit PCs",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "windows1",
+  "name": "Windows 1.01",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "windows101.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Windows",
+  "medium": "Floppy",
+  "notes": "The first release version of Windows",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "windows2",
+  "name": "Windows 2.03",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "windows2.img",
+    "size": 4177920,
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Windows",
+  "medium": "HD",
+  "notes": "Reversi, Paint",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "linux26",
+  "name": "Linux",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "linux.iso",
+    "size": 6547456,
+    "streamed": false
+   }
+  ],
+  "options": {}
+ },
+ {
+  "id": "linux3",
+  "name": "Linux",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "linux3.iso",
+    "size": 8638464,
+    "streamed": false
+   }
+  ],
+  "options": {}
+ },
+ {
+  "id": "linux4",
+  "name": "Linux",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "linux4.iso",
+    "size": 7731200,
+    "streamed": false
+   }
+  ],
+  "options": {}
+ },
+ {
+  "id": "buildroot",
+  "name": "Buildroot Linux",
+  "images": [
+   {
+    "slot": "bzimage",
+    "file": "buildroot-bzimage.bin",
+    "size": 5166352,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Linux",
+  "medium": "bzImage",
+  "notes": "Minimal Linux with Lua, ping, curl, telnet",
+  "ui": "text",
+  "options": {
+   "cmdline": "tsc=reliable mitigations=off random.trust_cpu=on",
+   "mouse_disabled_default": true
+  }
+ },
+ {
+  "id": "buildroot6",
+  "name": "Buildroot Linux 6.8",
+  "images": [
+   {
+    "slot": "bzimage",
+    "file": "buildroot-bzimage68.bin",
+    "size": 10068480,
+    "streamed": false
+   }
+  ],
+  "options": {
+   "cmdline": "tsc=reliable mitigations=off random.trust_cpu=on"
+  }
+ },
+ {
+  "id": "basiclinux",
+  "name": "BasicLinux",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "bl3-5.img",
+    "size": 104857600,
+    "streamed": false
+   }
+  ],
+  "options": {}
+ },
+ {
+  "id": "xpud",
+  "name": "xPUD",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "xpud-0.9.2.iso",
+    "size": 67108864,
+    "streamed": false
+   }
+  ],
+  "options": {
+   "memory_size": 268435456
+  }
+ },
+ {
+  "id": "elks",
+  "name": "ELKS",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "elks-hd32-fat.img",
+    "size": 32514048,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Linux-like",
+  "medium": "HD",
+  "notes": "Linux for 8086",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "nodeos",
+  "name": "NodeOS",
+  "images": [
+   {
+    "slot": "bzimage",
+    "file": "nodeos-kernel.bin",
+    "size": 14452000,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Linux",
+  "medium": "bzImage",
+  "notes": "Linux with nodejs as /bin/init",
+  "ui": "text",
+  "options": {
+   "cmdline": "tsc=reliable mitigations=off random.trust_cpu=on"
+  }
+ },
+ {
+  "id": "dsl",
+  "name": "Damn Small Linux",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "dsl-4.11.rc2.iso",
+    "size": 52824064,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Linux",
+  "medium": "CD",
+  "notes": "4.11.rc2 with Firefox 2.0",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 268435456
+  }
+ },
+ {
+  "id": "xwoaf",
+  "name": "xwoaf",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "xwoaf_rebuild4.iso",
+    "size": 2205696,
+    "streamed": false
+   }
+  ],
+  "options": {
+   "memory_size": 268435456
+  }
+ },
+ {
+  "id": "minix",
+  "name": "Minix",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "minix-3.3.0/.iso",
+    "size": 605581312,
+    "streamed": true,
+    "chunkBytes": 1048576
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Unix-like",
+  "medium": "CD",
+  "notes": "Minix 3.3",
+  "ui": "text",
+  "options": {
+   "memory_size": 268435456
+  }
+ },
+ {
+  "id": "unix-v7",
+  "name": "Unix V7",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "unix-v7x86-0.8a/.img",
+    "size": 152764416,
+    "streamed": true,
+    "chunkBytes": 262144
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Unix",
+  "medium": "HD",
+  "notes": "Unix V7 port for x86, including Amsterdam Compiler Kit",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "kolibrios",
+  "name": "KolibriOS",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "//builds.kolibrios.org/en_US/data/data/kolibri.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "Various apps, games and demos",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "kolibrios-fallback",
+  "name": "KolibriOS",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "kolibri.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "options": {}
+ },
+ {
+  "id": "mu",
+  "name": "Mu",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "mu-shell.img",
+    "size": 10321920,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "HD",
+  "notes": "Minimal-dependency hobbyist computing stack",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 268435456,
+   "mouse_disabled_default": true
+  }
+ },
+ {
+  "id": "openbsd",
+  "name": "OpenBSD",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "openbsd/.img",
+    "size": 1073741824,
+    "streamed": true,
+    "chunkBytes": 1048576
+   },
+   {
+    "slot": "state",
+    "file": "openbsd_state-v2.bin.zst",
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "BSD",
+  "medium": "HD",
+  "notes": "OpenBSD 6.6",
+  "ui": "text",
+  "options": {
+   "memory_size": 268435456
+  }
+ },
+ {
+  "id": "sortix",
+  "name": "Sortix",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "sortix-1.0-i686.iso",
+    "size": 71075840,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Unix-like",
+  "medium": "CD",
+  "notes": "A small self-hosting Unix-like operating system",
+  "ui": "text",
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "netbsd",
+  "name": "NetBSD",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "netbsd/.img",
+    "size": 511000064,
+    "streamed": true,
+    "chunkBytes": 1048576
+   }
+  ],
+  "licence": "Open-source",
+  "family": "BSD",
+  "medium": "HD",
+  "notes": "NetBSD 4.0 with Xorg",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 268435456
+  }
+ },
+ {
+  "id": "crazierl",
+  "name": "Crazierl",
+  "images": [
+   {
+    "slot": "initrd",
+    "file": "crazierl-initrd-2026.img",
+    "size": 20960021,
+    "streamed": false
+   },
+   {
+    "slot": "multiboot",
+    "file": "crazierl-elf-2026.img",
+    "size": 919492,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Multiboot",
+  "notes": "An Erlang Operating System",
+  "ui": "text",
+  "options": {
+   "memory_size": 134217728,
+   "acpi": true,
+   "cmdline": "kernel /libexec/ld-elf32.so.1",
+   "net_device_type": "virtio"
+  }
+ },
+ {
+  "id": "solos",
+  "name": "Sol OS",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "os8.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "Simple graphical OS",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "bootchess",
+  "name": "BootChess",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "bootchess.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "Chess in a bootsector",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "bootbasic",
+  "name": "bootBASIC",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "bootbasic.img",
+    "size": 512,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Bootsector",
+  "notes": "A BASIC in 512 bytes of x86 machine code",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "bootlogo",
+  "name": "bootLogo",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "bootlogo.img",
+    "size": 512,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Bootsector",
+  "notes": "Logo language in 508 bytes",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "pillman",
+  "name": "Pillman",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "pillman.img",
+    "size": 512,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Bootsector",
+  "notes": "A yellow thing eats pills and is chased by monsters",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "invaders",
+  "name": "Invaders",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "invaders.img",
+    "size": 512,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Bootsector",
+  "notes": "Invaders in a bootsector",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "bootos",
+  "name": "bootOS",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "bootos-all.img",
+    "size": 368640,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "Monolithic OS in 512 bytes of x86 machine code",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "sectorlisp",
+  "name": "SectorLISP",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "sectorlisp-friendly.bin",
+    "size": 512,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Bootsector",
+  "notes": "Bootstrapping LISP in a Boot Sector",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "sectorforth",
+  "name": "sectorforth",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "sectorforth.img",
+    "size": 512,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Bootsector",
+  "notes": "16-bit x86 Forth in a bootsector",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "floppybird",
+  "name": "Floppy Bird",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "floppybird.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "Flappy Bird game in a bootsector",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "stillalive",
+  "name": "Still Alive",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "stillalive-os.img",
+    "size": 368640,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "Bootable demo that plays \"Still Alive\" from Portal",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "hello-v86",
+  "name": "Hello v86",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "hello-v86.img",
+    "size": 512,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Bootsector",
+  "notes": "Small bootsector demo for v86",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "tetros",
+  "name": "TetrOS",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "tetros.img",
+    "size": 512,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Bootsector",
+  "notes": "Tetris that fits into the boot sector",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "dino",
+  "name": "dino",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "bootdino.img",
+    "size": 512,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Bootsector",
+  "notes": "Chrome's t-rex based bootsector game",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "bootrogue",
+  "name": "bootRogue",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "bootrogue.img",
+    "size": 512,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Bootsector",
+  "notes": "A roguelike game that fits in a boot sector",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "duskos",
+  "name": "Dusk OS",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "duskos.img",
+    "size": 8388608,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "HD",
+  "notes": "A 32-bit Forth",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "windows2000",
+  "name": "Windows 2000",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "windows2k-v2/.img",
+    "size": 2147483648,
+    "streamed": true,
+    "chunkBytes": 262144
+   },
+   {
+    "slot": "state",
+    "file": "windows2k_state-v4.bin.zst",
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Windows",
+  "medium": "HD",
+  "notes": "IE 6, K-Meleon, Winamp, Delphi, NetHack and more",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912,
+   "mac_address_translation": true
+  }
+ },
+ {
+  "id": "windows-me",
+  "name": "Windows ME",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "windowsme-v3/.img",
+    "size": 1073741824,
+    "streamed": true,
+    "chunkBytes": 262144
+   },
+   {
+    "slot": "state",
+    "file": "windows-me_state-v3.bin.zst",
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Windows",
+  "medium": "HD",
+  "notes": "Visual Basic, Office 97",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 268435456
+  }
+ },
+ {
+  "id": "windowsnt4",
+  "name": "Windows NT 4.0",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "winnt4_noacpi/.img",
+    "size": 523837440,
+    "streamed": true,
+    "chunkBytes": 262144
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Windows",
+  "medium": "HD",
+  "notes": "Windows NT 4.0 Service Pack 1",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912,
+   "cpuid_level": 2
+  }
+ },
+ {
+  "id": "windowsnt35",
+  "name": "Windows NT 3.51",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "windowsnt351-v2/.img",
+    "size": 163577856,
+    "streamed": true,
+    "chunkBytes": 262144
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Windows",
+  "medium": "HD",
+  "notes": "Internet Explorer 3 and Visual FoxPro 3.0",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 268435456
+  }
+ },
+ {
+  "id": "windowsnt3",
+  "name": "Windows NT 3.1",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "winnt31/.img",
+    "size": 91226112,
+    "streamed": true,
+    "chunkBytes": 262144
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Windows",
+  "medium": "HD",
+  "notes": "The first retail version of Windows NT",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 268435456
+  }
+ },
+ {
+  "id": "windows98",
+  "name": "Windows 98",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "windows98/.img",
+    "size": 314572800,
+    "streamed": true,
+    "chunkBytes": 262144
+   },
+   {
+    "slot": "state",
+    "file": "windows98_state-v2.bin.zst",
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Windows",
+  "medium": "HD",
+  "notes": "FreeCell, Hearts, sheep.exe, IE 5",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 134217728,
+   "mac_address_translation": true
+  }
+ },
+ {
+  "id": "windows95",
+  "name": "Windows 95",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "windows95-v3/.img",
+    "size": 471859200,
+    "streamed": true,
+    "chunkBytes": 262144
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Windows",
+  "medium": "HD",
+  "notes": "Age of Empires, FASM, POV-Ray, Hover!",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 67108864
+  }
+ },
+ {
+  "id": "windows30-old",
+  "name": "Windows 3.0",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "Win30.iso",
+    "size": 7774208,
+    "streamed": false
+   }
+  ],
+  "options": {
+   "memory_size": 67108864
+  }
+ },
+ {
+  "id": "windows30",
+  "name": "Windows 3.0",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "windows30.img",
+    "size": 25165824,
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Windows",
+  "medium": "HD",
+  "notes": "CorelDRAW! 2.0, Actor 2.0, Microsoft Entertainment Pack",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 134217728
+  }
+ },
+ {
+  "id": "windows31",
+  "name": "Windows 3.1",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "win31.img",
+    "size": 34463744,
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Windows",
+  "medium": "HD",
+  "notes": "QBasic, Minesweeper, Solitaire",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 67108864
+  }
+ },
+ {
+  "id": "tilck",
+  "name": "Tilck",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "tilck.img",
+    "size": 37748736,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Linux-like",
+  "medium": "HD",
+  "notes": "Tiny Linux-Compatible Kernel",
+  "ui": "text",
+  "options": {
+   "memory_size": 134217728
+  }
+ },
+ {
+  "id": "littlekernel",
+  "name": "Little Kernel",
+  "images": [
+   {
+    "slot": "multiboot",
+    "file": "littlekernel-multiboot.img",
+    "size": 969580,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Multiboot",
+  "notes": "An embedded kernel designed for small systems",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "sanos",
+  "name": "Sanos",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "sanos-flp.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "HD",
+  "notes": "Minimalistic 32-bit x86 OS",
+  "ui": "text",
+  "options": {
+   "memory_size": 134217728
+  }
+ },
+ {
+  "id": "386bsd",
+  "name": "386BSD",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "386bsd/.img",
+    "size": 536870912,
+    "streamed": true,
+    "chunkBytes": 1048576
+   }
+  ],
+  "licence": "Open-source",
+  "family": "BSD",
+  "medium": "HD",
+  "notes": "386BSD 0.1, an early free BSD for the i386",
+  "ui": "text",
+  "options": {
+   "memory_size": 67108864
+  }
+ },
+ {
+  "id": "freebsd",
+  "name": "FreeBSD",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "freebsd/.img",
+    "size": 2147483648,
+    "streamed": true,
+    "chunkBytes": 1048576
+   },
+   {
+    "slot": "state",
+    "file": "freebsd_state-v2.bin.zst",
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "BSD",
+  "medium": "HD",
+  "notes": "FreeBSD 12.0",
+  "ui": "text",
+  "options": {
+   "memory_size": 268435456
+  }
+ },
+ {
+  "id": "reactos",
+  "name": "ReactOS",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "reactos-v3/.img",
+    "size": 734003200,
+    "streamed": true,
+    "chunkBytes": 1048576
+   },
+   {
+    "slot": "state",
+    "file": "reactos_state-v3.bin.zst",
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Windows-like",
+  "medium": "HD",
+  "notes": "QtWeb, LBreakout2, OpenTTD, Bochs, TCC",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912,
+   "acpi": true,
+   "net_device_type": "virtio",
+   "mac_address_translation": true
+  }
+ },
+ {
+  "id": "skift",
+  "name": "Skift",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "skift-20200910.iso",
+    "size": 64452608,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "A hobby OS built from scratch using C/C++",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "snowdrop",
+  "name": "Snowdrop",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "snowdrop.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "16-bit hobby OS with GUI",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "openwrt",
+  "name": "OpenWrt",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "openwrt-18.06.1-x86-legacy-combined-squashfs.img",
+    "size": 19846474,
+    "streamed": false
+   }
+  ],
+  "options": {}
+ },
+ {
+  "id": "qnx",
+  "name": "QNX 4.05",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "qnx-demo-network-4.05.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "1999 demo disk",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "9front",
+  "name": "9front",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "9front-10931.386/.iso",
+    "size": 489453568,
+    "streamed": true,
+    "chunkBytes": 1048576
+   },
+   {
+    "slot": "state",
+    "file": "9front_state-v3.bin.zst",
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Plan 9",
+  "medium": "HD",
+  "notes": "An actively maintained fork of Plan 9",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 134217728,
+   "acpi": true
+  }
+ },
+ {
+  "id": "9legacy",
+  "name": "9legacy",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "9legacy.img",
+    "size": 16000000,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Plan 9",
+  "medium": "HD",
+  "notes": "A set of patches based on the latest release of Plan 9",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "mobius",
+  "name": "Mobius",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "mobius-fd-release5.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "POSIX and Win32 compatible OS",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "android",
+  "name": "Android",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "android-x86-1.6-r2/.iso",
+    "size": 54661120,
+    "streamed": true,
+    "chunkBytes": 1048576
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Linux",
+  "medium": "CD",
+  "notes": "Android x86 1.6-r2",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "android4",
+  "name": "Android 4",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "android_x86_nonsse3_4.4r1_20140904/.iso",
+    "size": 247463936,
+    "streamed": true,
+    "chunkBytes": 1048576
+   }
+  ],
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "tinycore",
+  "name": "Tinycore",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "TinyCore-11.0.iso",
+    "size": 19922944,
+    "streamed": false
+   }
+  ],
+  "options": {
+   "memory_size": 268435456
+  }
+ },
+ {
+  "id": "slitaz",
+  "name": "SliTaz",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "slitaz-rolling-2024.iso",
+    "size": 56573952,
+    "streamed": false
+   }
+  ],
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "freenos",
+  "name": "FreeNOS",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "FreeNOS-1.0.3.iso",
+    "size": 11014144,
+    "streamed": false
+   }
+  ],
+  "options": {
+   "memory_size": 268435456,
+   "acpi": true
+  }
+ },
+ {
+  "id": "syllable",
+  "name": "Syllable",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "syllable-destop-0.6.7/.img",
+    "size": 524288000,
+    "streamed": true,
+    "chunkBytes": 524288
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Unix-like",
+  "medium": "HD",
+  "notes": "A user friendly, POSIX compatible OS",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "toaruos",
+  "name": "ToaruOS",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "toaruos-1.6.1-core.iso",
+    "size": 67567616,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "A hobby OS written from scratch",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912,
+   "acpi": true
+  }
+ },
+ {
+  "id": "nopeos",
+  "name": "Nope OS",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "nopeos-0.1.iso",
+    "size": 532480,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "Simple OS with BASIC interpreter",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "soso",
+  "name": "Soso",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "soso.iso",
+    "size": 22546432,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Unix-like",
+  "medium": "CD",
+  "notes": "A Simple Unix-like operating system",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "pcmos",
+  "name": "PC-MOS/386",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "PCMOS386-9-user-patched.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "DOS",
+  "medium": "Floppy",
+  "notes": "Multi-user and multi-tasking OS",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "jx",
+  "name": "JX",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "jx-demo.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "Java-based operating system",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "house",
+  "name": "House",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "hOp-0.8.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "Haskell User's Operating System and Environment",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "bleskos",
+  "name": "BleskOS",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "bleskos_2024u32.iso",
+    "size": 1835008,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "Alternative OS for older PCs",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "boneos",
+  "name": "BoneOS",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "BoneOS.iso",
+    "size": 11429888,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "Simple hobby OS",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "mikeos",
+  "name": "MikeOS",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "mikeos.iso",
+    "size": 3311616,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "Contains a FORTH and BASIC interpreter and several games",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "bluejay",
+  "name": "Blue Jay",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "bj050.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "Based on MikeOS",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "t3xforth",
+  "name": "T3XFORTH",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "t3xforth.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "An old-school, plain vanilla FORTH system",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "nanoshell",
+  "name": "NanoShell",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "nanoshell.iso",
+    "size": 6785024,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "Multi-tasked 32-bit OS with Win9x-like GUI",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "catk",
+  "name": "CatK",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "catkernel.iso",
+    "size": 11968512,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "Simple Unix-like kernel",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "mcp",
+  "name": "M/CP",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "mcp2.img",
+    "size": 512,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Bootsector",
+  "notes": "The Minimal Control Program",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "ibm-exploring",
+  "name": "Exploring The IBM Personal Computer",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "ibm-exploring.img",
+    "size": 368640,
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "DOS",
+  "medium": "Floppy",
+  "notes": "Learning program on how to use a computer",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "leetos",
+  "name": "lEEt/OS",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "leetos.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "DOS",
+  "medium": "Floppy",
+  "notes": "Graphical desktop for ST-DOS",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "newos",
+  "name": "NewOS",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "newos-flp.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "Cross-platform portable OS",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "newos-notion",
+  "name": "NewOS Notion",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "newos-notion.img",
+    "size": 4128768,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "HD",
+  "notes": "Modified NewOS with fast TCP-based window manager and Doom",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 134217728
+  }
+ },
+ {
+  "id": "aros-broadway",
+  "name": "AROS Broadway",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "broadway10/.iso",
+    "size": 742051840,
+    "streamed": true,
+    "chunkBytes": 524288
+   }
+  ],
+  "licence": "Open-source",
+  "family": "AmigaOS",
+  "medium": "CD",
+  "notes": "AmigaOS-like graphical OS",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "icaros",
+  "name": "Icaros Desktop",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "icaros-pc-i386-2.3/.iso",
+    "size": 726511616,
+    "streamed": true,
+    "chunkBytes": 524288
+   }
+  ],
+  "licence": "Open-source",
+  "family": "AmigaOS",
+  "medium": "CD",
+  "notes": "AmigaOS-like graphical OS",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "tinyaros",
+  "name": "Tiny Aros",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "tinyaros-pc-i386/.iso",
+    "size": 111175680,
+    "streamed": true,
+    "chunkBytes": 524288
+   }
+  ],
+  "licence": "Open-source",
+  "family": "AmigaOS",
+  "medium": "CD",
+  "notes": "AmigaOS-like graphical OS",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "dancy",
+  "name": "Dancy",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "dancy.iso",
+    "size": 10485760,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "Dancy Operating System",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "curios",
+  "name": "CuriOS",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "curios.img",
+    "size": 83886080,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "HD",
+  "notes": "Simple GUI based OS inspired by AmigaOS",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "os64",
+  "name": "OS64",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "os64boot.iso",
+    "size": 5580800,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "Commodore 64 emulator OS for x86 (slow)",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "ipxe",
+  "name": "iPXE",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "ipxe.iso",
+    "size": 4194304,
+    "streamed": false
+   }
+  ],
+  "options": {}
+ },
+ {
+  "id": "netboot.xyz",
+  "name": "netboot.xyz",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "netboot.xyz.iso",
+    "size": 2398208,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "Netboot into various operating systems (slow)",
+  "ui": "text",
+  "options": {
+   "net_device_type": "virtio"
+  }
+ },
+ {
+  "id": "squeaknos",
+  "name": "SqueakNOS",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "SqueakNOS.iso",
+    "size": 61171712,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "Smalltalk as a Standalone OS",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "chokanji4",
+  "name": "Chokanji 4",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "chokanji4/.img.zst",
+    "size": 10737418240,
+    "streamed": true,
+    "chunkBytes": 262144
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "Custom",
+  "medium": "HD",
+  "notes": "A Japanese OS based on the TRON project",
+  "ui": "graphical",
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "archhurd",
+  "name": "Arch Hurd",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "archhurd-2018.09.28/.img.zst",
+    "size": 4294967296,
+    "streamed": true,
+    "chunkBytes": 1048576
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Hurd",
+  "medium": "HD",
+  "notes": "A port of Arch Linux to the GNU Hurd system",
+  "ui": "text",
+  "options": {
+   "memory_size": 536870912
+  }
+ },
+ {
+  "id": "prettyos",
+  "name": "PrettyOS",
+  "images": [
+   {
+    "slot": "fda",
+    "file": "prettyos.img",
+    "size": 1474560,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "Floppy",
+  "notes": "Simple OS for beginners",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "vanadium",
+  "name": "Vanadium OS",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "vanadiumos.iso",
+    "size": 8388608,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "A portable, multi-user Unix-like OS",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "xenus",
+  "name": "XENUS",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "xenushdd.img",
+    "size": 52428800,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "HD",
+  "notes": "The Vanadium OS predecessor",
+  "ui": "text",
+  "options": {}
+ },
+ {
+  "id": "mojo",
+  "name": "Mojo OS",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "mojo-0.2.2.iso",
+    "size": 4048896,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "A simple operating system for the x86 architecture",
+  "ui": "graphical",
+  "options": {}
+ },
+ {
+  "id": "bsdos",
+  "name": "BSD/OS",
+  "images": [
+   {
+    "slot": "hda",
+    "file": "bsdos43/.img.zst",
+    "size": 1073741824,
+    "streamed": true,
+    "chunkBytes": 1048576
+   },
+   {
+    "slot": "state",
+    "file": "bsdos43_state.bin",
+    "streamed": false
+   }
+  ],
+  "licence": "Proprietary",
+  "family": "BSD",
+  "medium": "HD",
+  "notes": "A proprietary Unix released in 1993. Includes gcc and perl5",
+  "ui": "text",
+  "options": {
+   "memory_size": 134217728
+  }
+ },
+ {
+  "id": "asuro",
+  "name": "Asuro",
+  "images": [
+   {
+    "slot": "cdrom",
+    "file": "asuro.iso",
+    "size": 5361664,
+    "streamed": false
+   }
+  ],
+  "licence": "Open-source",
+  "family": "Custom",
+  "medium": "CD",
+  "notes": "Asuro is a hobbyist operating system written in Pascal",
+  "ui": "graphical",
+  "options": {}
+ }
+]

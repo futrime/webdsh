@@ -46,7 +46,7 @@ interface Guest {
   summary: string
   bundled: boolean
   transfer: number
-  boots: string
+  boots?: string
   /** Every file it boots from, with the v86 slot each one fills. */
   files: { slot: string, file: string }[]
   /** A 9p tree it needs, when its root is one; no local file can be one. */
@@ -616,7 +616,7 @@ function MachineSettings(): JSX.Element {
           <MachineRow
             key={guest.id}
             title={guest.name}
-            detail={`${guest.summary} Boots in ${guest.boots}.`}
+            detail={guest.boots === undefined ? guest.summary : `${guest.summary} Boots in ${guest.boots}.`}
             tags={[
               consoleLabel(guest.console),
               opened.length === 0 ? size(guest.transfer) : `${size(bytes)} on this device`,
