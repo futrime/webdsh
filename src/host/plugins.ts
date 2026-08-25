@@ -15,6 +15,7 @@ import type {} from '@deepseek-ai/dsh-shell-env'
 import { SandboxProvider, type ConfinedArgv, type SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import * as TypertLoaderBrowser from './typert-loader-browser.ts'
 import * as machineToolsPlugin from './machine-tools.ts'
+import * as readImagePlugin from './read-image-tool.ts'
 import { isEmulated, selectedGuest } from '../runtime/selection.ts'
 
 // ---- browser:web-startup ----------------------------------------------------
@@ -202,6 +203,10 @@ export const BROWSER_PLUGINS: Record<string, unknown> = {
   // rewrites their `tool-bash` row to name it — because that is where the tool
   // it replaces is mounted. See `src/host/machine-tools.ts`.
   'browser:machine': machineToolsPlugin,
+  // `read_image`, for a preset that mounts no filesystem tool suite and would
+  // otherwise have no way to look at a picture at all. See
+  // `src/host/read-image-tool.ts`.
+  'browser:read-image': readImagePlugin,
 }
 
 /** Re-exported so `boot.ts` can register the client-module table under the same scheme. */

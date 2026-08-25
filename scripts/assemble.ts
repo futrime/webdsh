@@ -324,6 +324,13 @@ function emitSeed(): { files: [string, string][], specifiers: Set<string> } {
           if (!contents.includes(`name: '${forbidden}'`)) continue
           throw new Error(`assemble: ${path} still mounts ${forbidden}; the model would be offered a bash tool this deployment has no bash for`)
         }
+        // The same kind of guard for the same kind of reason: a preset that
+        // keeps its own filesystem points every file tool at a tree this page
+        // does not use, and the failure is silent — the tools are all there and
+        // none of them can find anything.
+        if (contents.includes("name: '@deepseek-ai/dsh-fs-local'")) {
+          throw new Error(`assemble: ${path} still shadows the filesystem with dsh-fs-local; its file tools would read an empty tree`)
+        }
         // Only composition files carry plugin rows; `preset.yml` carries display metadata.
         for (const name of specifiersIn(contents)) specifiers.add(name)
       }
@@ -374,6 +381,27 @@ const PERSISTENT_SHELL_GROUP = /(?:^#[^\n]*\n)*^- id: persistent-shell\n(?:.*\n)
 /** The same claim, made in prose at the top of that preset's composition. */
 const PERSISTENT_SHELL_PROSE = /persistent `bash` and `str_replace_editor`/
 
+/**
+ * The other thing `minimal` does that a browser cannot honour.
+ *
+ * It shadows the host's filesystem for its own sessions: a realm containing
+ * `dsh-fs-local` rooted at `process.cwd()`, with `str_replace_editor` inside it
+ * so the editor reads that tree instead of the harness's. On a machine that is
+ * the point — the preset is deliberately bare. Here `ctx.fs` is how *every*
+ * file tool reaches the workspace the Files panel shows and the user's
+ * attachments live in, and shadowing it does not produce a barer view of that
+ * workspace, it produces a different and empty one.
+ *
+ * What that cost, measured: `read_image` on a file in the workspace answers
+ * "unavailable" in this preset and reads the picture in every other one. So a
+ * user who switched to 极简模式 lost vision, and nothing said why.
+ *
+ * The realm goes; the editor stays, because it is half of what the preset
+ * advertises and it works perfectly well against the filesystem this
+ * deployment actually has.
+ */
+const LOCAL_FS_GROUP = /(?:^#[^\n]*\n)*^- id: filesystem\n(?:(?!^- id: )[\s\S])*/m
+
 /** Shell tools this deployment has no interpreter for, in preset row form. */
 const BASH_BACKED = [
   '@deepseek-ai/dsh-tool-bash',
@@ -400,6 +428,20 @@ function replaceBashTool(contents: string): string {
       + '# emulated runtime the same row mounts that machine\'s tools instead.\n'
       + '- id: tool-machine\n  name: \'browser:machine\'\n\n')
     .replace(PERSISTENT_SHELL_PROSE, '`jsh` and `str_replace_editor`')
+    .replace(LOCAL_FS_GROUP,
+      '# Rewritten by scripts/assemble.ts: this preset shadowed `fs` with a local\n'
+      + '# filesystem rooted at the process working directory, which in a browser is\n'
+      + '# not the workspace — it is a tree with nothing in it, and every file tool\n'
+      + '# including `read_image` read that instead. The editor keeps its place; the\n'
+      + '# realm around it does not.\n'
+      + '- id: str-replace-editor\n  name: \'@deepseek-ai/dsh-tool-str-replace-editor\'\n'
+      + '  config:\n    maxOutputChars: 16000\n'
+      + '\n'
+      + '# Added by scripts/assemble.ts: this preset composes no filesystem tool\n'
+      + '# suite, so it had no `read_image` and no way to look at a picture — in a\n'
+      + '# page people drop images into, that is a preset with its eyes shut. One\n'
+      + '# tool, not the four that normally come with it.\n'
+      + '- id: tool-read-image\n  name: \'browser:read-image\'\n')
 }
 
 /**
