@@ -32,7 +32,10 @@
  *   layout and v86 measures the box it draws into.
  */
 
-import { BIOS_BASE, guest, imageOptions, unavailableImages, type GuestSpec, type ImageSlot } from './guests.ts'
+import {
+  BIOS_BASE, DEPLOYMENT_IMAGE_HOST, deploymentServes, guest, imageHost, imageHostIsChosen, imageOptions,
+  unavailableImages, type GuestSpec, type ImageSlot,
+} from './guests.ts'
 import { legacyDisk, storedDisk } from './disks.ts'
 import { runtimeSelection } from './selection.ts'
 
@@ -582,6 +585,30 @@ async function openedImages(spec: GuestSpec): Promise<Partial<Record<ImageSlot, 
   return found
 }
 
+/** Whether every file this guest needs was opened from the user's computer. */
+function openedEverything(spec: GuestSpec, local: Partial<Record<ImageSlot, File>>): boolean {
+  return spec.images.every(image => local[image.slot] !== undefined)
+}
+
+/**
+ * Where this machine's remote files come from.
+ *
+ * A host the user named wins outright — that is what naming one means. With no
+ * choice made, this deployment is asked whether it carries the machine itself:
+ * serving its own images is faster, involves nobody else, and is the only
+ * arrangement that works with the network off. Nothing is asked when every file
+ * was opened from the user's computer, because then no host is used at all.
+ * @param spec - the guest.
+ * @param local - the files the user opened, by slot.
+ * @returns the base URL to resolve this guest's files against.
+ */
+async function hostFor(spec: GuestSpec, local: Partial<Record<ImageSlot, File>>): Promise<string> {
+  if (imageHostIsChosen() || openedEverything(spec, local)) return imageHost()
+  const first = spec.images[0]
+  if (first === undefined) return imageHost()
+  return await deploymentServes(first.file) ? DEPLOYMENT_IMAGE_HOST : imageHost()
+}
+
 /** Do the boot. */
 async function start(): Promise<Machine> {
   const mine = generation
@@ -594,13 +621,14 @@ async function start(): Promise<Machine> {
   const { V86 } = await import('v86') as unknown as { V86: new (options: Record<string, unknown>) => Emulator }
 
   const local = await openedImages(spec)
+  const host = await hostFor(spec, local)
   // Before anything is fetched or allocated. A guest whose disk this
   // deployment cannot get is not a slow boot, it is a boot that ends in a 404
   // several seconds in, from inside the emulator, naming a URL — and the
   // person reading it has to work out for themselves that the answer is to
   // open a file or point the image host somewhere else. So it is said here,
   // where it is still one sentence.
-  const missing = unavailableImages(spec, local)
+  const missing = unavailableImages(spec, local, host)
   if (missing.length > 0) {
     throw new Error(
       `${spec.name} needs ${missing.join(', ')}, which the default image host does not serve. `
@@ -619,7 +647,7 @@ async function start(): Promise<Machine> {
 
   const emulator = new V86({
     ...spec.options,
-    ...imageOptions(spec, local),
+    ...imageOptions(spec, local, host),
     // The wasm and the BIOS ship with this deployment; only the disk comes
     // from elsewhere. Resolved against the document rather than hard-coded, so
     // the build works under a GitHub Pages project path.

@@ -17,3 +17,9 @@ packages/*/lib/
 
 # Copied out of node_modules by scripts/build-v86.mjs; the BIOS beside them is vendored.
 public/v86/*.wasm
+
+# Disk images a deployer chose to serve themselves, put here by
+# `scripts/v86-fetch-images.ts`. Not committed: which operating systems a
+# deployment redistributes is its own decision, with its own licence
+# obligations, and it is not one this repository makes on anyone's behalf.
+public/v86/images/

@@ -60,6 +60,20 @@ export const DEFAULT_IMAGE_HOST = 'https://cdn.jsdelivr.net/gh/copy/images@maste
  */
 export const UPSTREAM_IMAGE_HOST = 'https://i.copy.sh/'
 
+/**
+ * The deployment's own image directory.
+ *
+ * v86 does the same thing and for the same reason: run its demo from a
+ * checkout and it reads `images/` beside the page instead of its CDN. A
+ * deployment that drops disk images into `public/v86/images/` therefore serves
+ * every machine it has bytes for from its own origin — no third party, no CORS
+ * question, no COEP question, and it keeps working with the network off.
+ *
+ * Relative, so it resolves against wherever the app is served from: a domain
+ * root, a project path, or a local directory.
+ */
+export const DEPLOYMENT_IMAGE_HOST = 'v86/images/'
+
 /** Where the setting is kept. */
 const HOST_KEY = 'dsh-web:v86-image-host'
 
@@ -72,6 +86,42 @@ export function imageHost(): string {
     // Storage denied; the default is still correct.
   }
   return DEFAULT_IMAGE_HOST
+}
+
+/** Whether the user has named a host, as opposed to taking whatever the build offers. */
+export function imageHostIsChosen(): boolean {
+  try {
+    const stored = localStorage.getItem(HOST_KEY)
+    return stored !== null && stored !== ''
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether this deployment is serving a file itself.
+ *
+ * One range request for the first hundred bytes, which a static host answers
+ * from cache and a host without the file answers 404. Asked once per boot,
+ * before anything large is fetched, so a deployment that carries its own images
+ * uses them and one that does not is no slower for having been asked.
+ * @param file - the file name, as the catalog spells it.
+ * @returns whether the deployment answered for it.
+ */
+export async function deploymentServes(file: string): Promise<boolean> {
+  if (typeof document === 'undefined') return false
+  const url = new URL(`${DEPLOYMENT_IMAGE_HOST}${file}`, document.baseURI).href
+  try {
+    const answer = await fetch(url, { headers: { range: 'bytes=0-99' } })
+    // A static host that has the file answers 200 or 206; one that does not
+    // answers 404 — or, on a single-page host, 200 with the index page, which
+    // is why the type is checked rather than only the status.
+    if (!answer.ok) return false
+    const type = answer.headers.get('content-type') ?? ''
+    return !type.startsWith('text/html')
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -747,10 +797,15 @@ export function guest(id: string): GuestSpec | undefined {
  * names a URL and not the thing the person has to do about it.
  * @param spec - the guest.
  * @param local - the files the user has opened, by slot.
+ * @param host - the host that will actually be used; the configured one by default.
  * @returns the missing file names, empty when every file has a source.
  */
-export function unavailableImages(spec: GuestSpec, local: Partial<Record<ImageSlot, File>>): string[] {
-  if (spec.bundled || imageHost() !== DEFAULT_IMAGE_HOST) return []
+export function unavailableImages(
+  spec: GuestSpec,
+  local: Partial<Record<ImageSlot, File>>,
+  host = imageHost(),
+): string[] {
+  if (spec.bundled || host !== DEFAULT_IMAGE_HOST) return []
   const missing = spec.images
     // A file that names its own source is not the host's to serve, so the host
     // having nothing to say about it decides nothing.
@@ -775,10 +830,14 @@ export function unavailableImages(spec: GuestSpec, local: Partial<Record<ImageSl
  * together.
  * @param spec - the guest.
  * @param local - the files the user opened, by slot.
+ * @param host - where remote files come from; the configured host by default.
  * @returns the image slots, ready to spread into the constructor.
  */
-export function imageOptions(spec: GuestSpec, local: Partial<Record<ImageSlot, File>> = {}): Record<string, unknown> {
-  const host = imageHost()
+export function imageOptions(
+  spec: GuestSpec,
+  local: Partial<Record<ImageSlot, File>> = {},
+  host = imageHost(),
+): Record<string, unknown> {
   const options: Record<string, unknown> = {}
   if (spec.filesystem !== undefined) options.filesystem = { baseurl: `${host}${spec.filesystem}` }
   const suppliedDisk = spec.images.some(image => image.slot !== 'initial_state' && local[image.slot] !== undefined)
