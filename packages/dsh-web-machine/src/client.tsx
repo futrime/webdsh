@@ -492,13 +492,15 @@ function MachinePanel({ open, onClose }: { open: boolean, onClose: () => void })
 
 /** One row in the machine list. */
 function MachineRow({
-  title, detail, tags, chosen, onChoose, children,
+  title, detail, tags, chosen, onChoose, action, children,
 }: {
   title: string
   detail: string
   tags: string[]
   chosen: boolean
   onChoose: () => void
+  /** What to do about this machine, shown inside the row it belongs to. */
+  action?: JSX.Element | false
   children?: JSX.Element | false
 }): JSX.Element {
   return (
@@ -508,6 +510,7 @@ function MachineRow({
         <span className="dsh-web-machine-tags">{tags.map(tag => <span key={tag}>{tag}</span>)}</span>
         <span className="dsh-web-machine-detail">{detail}</span>
       </button>
+      {action}
       {children}
     </div>
   )
@@ -575,6 +578,23 @@ function MachineSettings(): JSX.Element {
     </span>
   )
 
+  /**
+   * The one thing to do about the machine that is selected and not running.
+   *
+   * Rendered inside that machine's own row rather than at the top of the page.
+   * A button that lives above a list of twelve dozen rows is a button whose
+   * subject you have to remember scrolling past; one that appears in the row
+   * you just clicked says what it applies to by being there.
+   * @param chosenHere - whether this row is the selected one.
+   * @returns the action, or false when this row has nothing to offer.
+   */
+  const rowAction = (chosenHere: boolean): JSX.Element | false => chosenHere && !same && (
+    <div className="dsh-web-machine-apply">
+      <button type="button" onClick={apply}>Use this machine</button>
+      {saved && savedNote}
+    </div>
+  )
+
   return (
     <div className="dsh-web-machine-settings">
       <h3>Machine</h3>
@@ -585,19 +605,13 @@ function MachineSettings(): JSX.Element {
         <strong>{runningName(active, guests)}</strong>.
       </p>
 
-      {!same && (
-        <div className="dsh-web-machine-apply">
-          <button type="button" onClick={apply}>Use this machine</button>
-          {saved && savedNote}
-        </div>
-      )}
-
       <MachineRow
         title="Node container"
         detail="WebContainers: Node 22, npm, a real CPython with pip, and a POSIX filesystem shared with the assistant's file tools. The default."
         tags={['terminal', 'nothing to download']}
         chosen={chosen.kind === 'node'}
         onChoose={() => { choose({ kind: 'node' }) }}
+        action={rowAction(chosen.kind === 'node')}
       />
 
       {guests.map((guest) => {
@@ -624,6 +638,7 @@ function MachineSettings(): JSX.Element {
             ]}
             chosen={chosen.kind === 'v86' && chosen.image === guest.id}
             onChoose={() => { choose({ kind: 'v86', image: guest.id }) }}
+            action={rowAction(chosen.kind === 'v86' && chosen.image === guest.id)}
           >
             {(!guest.bundled || opened.length > 0) && (
               <div className="dsh-web-machine-disk">
@@ -833,8 +848,9 @@ const STYLE = `
 .dsh-web-machine-host{display:flex;gap:.5rem;align-items:center}
 .dsh-web-machine-host input{flex:1;font:inherit;padding:.3rem .5rem;border-radius:.35rem;background:transparent;
  color:inherit;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4))}
-.dsh-web-machine-apply{display:flex;align-items:center;gap:.7rem;margin:0 0 1.4rem}
-.dsh-web-machine-apply[data-end]{margin:1.4rem 0 0}
+.dsh-web-machine-apply{display:flex;align-items:center;flex-wrap:wrap;gap:.7rem;padding:.5rem .75rem;
+ border-top:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.18))}
+.dsh-web-machine-apply[data-end]{margin:1.4rem 0 0;padding:0;border-top:0}
 .dsh-web-machine-apply button,.dsh-web-machine-disk button,.dsh-web-machine-host button{font:inherit;cursor:pointer;
  border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4));background:transparent;color:inherit;
  border-radius:.35rem;padding:.3rem .7rem}
