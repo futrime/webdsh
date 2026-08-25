@@ -389,14 +389,21 @@ const scenarios: Scenario[] = [
       const lede = await page.locator('.dsh-web-machine-lede').first().innerText()
       expect(lede.includes('Node container'), `the setting reports "${lede}" while running the container`)
 
-      // The ones that need nothing say so; Windows 3.1 says what it needs.
+      // The ones that need nothing say so; the ones that need a disk say that.
+      // Windows 98 rather than Windows 3.1: 3.1 is one 33 MB file and reachable
+      // now, and 98's disk is three hundred megabytes of pieces that exist on
+      // one host in the world, which is the shape of every machine still on the
+      // wrong side of this line.
       const rows = await page.locator('.dsh-web-machine-row').allInnerTexts()
-      const windows31 = rows.find(row => row.startsWith('Windows 3.1'))
-      expect(windows31 !== undefined && windows31.includes('needs a disk'),
-        'Windows 3.1 does not tell the user its image is not on the default host')
+      const windows98 = rows.find(row => row.startsWith('Windows 98'))
+      expect(windows98 !== undefined && windows98.includes('needs a disk'),
+        'Windows 98 does not tell the user its image is not on the default host')
       const freedos = rows.find(row => row.startsWith('FreeDOS'))
       expect(freedos !== undefined && !freedos.includes('needs a disk'),
         'FreeDOS claims its image is missing, but the default host serves it')
+      const windows31 = rows.find(row => row.startsWith('Windows 3.1'))
+      expect(windows31 !== undefined && !windows31.includes('needs a disk'),
+        'Windows 3.1 claims its image is missing, but `v86-mirror.json` says where it is')
 
       await page.getByRole('button', { name: /^FreeDOS/ }).first().click()
       await page.getByRole('button', { name: 'Use this machine' }).click()
@@ -686,13 +693,16 @@ const scenarios: Scenario[] = [
       await page.goto(`${url}?runtime=node`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       await waitForShell(page)
       await openMachineSettings(page)
+      // Pick the machine, then give it a disk. That order because the disk
+      // controls live in the row you picked — a file input under every one of
+      // a hundred and twenty-eight rows would bury the list.
+      await page.getByRole('button', { name: /^Windows 3\.1/ }).first().click()
       await page.setInputFiles('input[aria-label="Disk image for Windows 3.1"]', image)
       await page.waitForFunction(
         () => document.body.innerText.includes('from this computer'),
         undefined,
         { timeout: 60_000 },
       )
-      await page.getByRole('button', { name: /^Windows 3\.1/ }).first().click()
       await page.getByRole('button', { name: 'Use this machine' }).click()
 
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 })

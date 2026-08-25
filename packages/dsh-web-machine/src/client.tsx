@@ -47,8 +47,11 @@ interface Guest {
   bundled: boolean
   transfer: number
   boots?: string
-  /** Every file it boots from, with the v86 slot each one fills. */
-  files: { slot: string, file: string }[]
+  /**
+   * Every file it boots from, with the v86 slot each one fills and whether
+   * this deployment already knows where to get it.
+   */
+  files: { slot: string, file: string, held: boolean }[]
   /** A 9p tree it needs, when its root is one; no local file can be one. */
   filesystem?: string
 }
@@ -725,7 +728,14 @@ function MachineSettings(): JSX.Element {
             onChoose={() => { choose({ kind: 'v86', image: guest.id }) }}
             action={rowAction(chosen.kind === 'v86' && chosen.image === guest.id)}
           >
-            {(!guest.bundled || opened.length > 0) && (
+            {/* The row you picked, the ones that cannot start without you, and
+                the ones you have already given a disk to. Not every row: a file
+                input under all hundred and twenty-eight would bury the list.
+                Not only the ones that need a disk either — opening your own is
+                a reasonable thing to want for a machine that boots perfectly
+                well on its own, a copy with your files on it or a different
+                build, and that was unreachable for the eighty-seven that do. */}
+            {(!guest.bundled || opened.length > 0 || (chosen.kind === 'v86' && chosen.image === guest.id)) && (
               <div className="dsh-web-machine-disk">
                 {guest.filesystem !== undefined && (
                   <span className="dsh-web-machine-tree">
@@ -747,8 +757,9 @@ function MachineSettings(): JSX.Element {
                         ? (
                             <>
                               <span>
-                                <code>{entry.file}</code> — not on the default image host. Point the image host
-                                below at one that has it, or open it from this computer:
+                                <code>{entry.file}</code> — {entry.held
+                                  ? 'fetched for you when this machine starts. Open your own copy instead:'
+                                  : 'not on the default image host. Point the image host below at one that has it, or open it from this computer:'}
                               </span>
                               <input
                                 type="file"

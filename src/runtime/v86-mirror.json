@@ -11,6 +11,10 @@
   "url": "https://zjzh.me/webdsh-images/FreeNOS-1.0.3.iso",
   "bytes": 11014144
  },
+ "PCMOS386-9-user-patched.img": {
+  "url": "https://raw.githubusercontent.com/Hologram-Technologies/hologram-apps/921dbc0fcd17d2ae68b2908b8f9a369de6a09297/apps/pcmos/images/PCMOS386-9-user-patched.img",
+  "bytes": 1474560
+ },
  "SqueakNOS.iso": {
   "url": "https://zjzh.me/webdsh-images/SqueakNOS.iso",
   "bytes": 61171712
@@ -30,6 +34,10 @@
  "bj050.img": {
   "url": "https://zjzh.me/webdsh-images/bj050.img",
   "bytes": 1474560
+ },
+ "bl3-5.img": {
+  "url": "https://raw.githubusercontent.com/Hologram-Technologies/hologram-apps/921dbc0fcd17d2ae68b2908b8f9a369de6a09297/apps/basiclinux/images/bl3-5.img",
+  "bytes": 104857600
  },
  "bleskos_2024u32.iso": {
   "url": "https://zjzh.me/webdsh-images/bleskos_2024u32.iso",
@@ -79,6 +87,10 @@
   "url": "https://zjzh.me/webdsh-images/chip4504.img",
   "bytes": 1474560
  },
+ "curios.img": {
+  "url": "https://raw.githubusercontent.com/Hologram-Technologies/hologram-apps/921dbc0fcd17d2ae68b2908b8f9a369de6a09297/apps/curios/images/curios.img",
+  "bytes": 83886080
+ },
  "dancy.iso": {
   "url": "https://zjzh.me/webdsh-images/dancy.iso",
   "bytes": 10485760
@@ -118,6 +130,10 @@
  "hello-v86.img": {
   "url": "https://zjzh.me/webdsh-images/hello-v86.img",
   "bytes": 512
+ },
+ "ibm-exploring.img": {
+  "url": "https://raw.githubusercontent.com/Hologram-Technologies/hologram-apps/921dbc0fcd17d2ae68b2908b8f9a369de6a09297/apps/ibm-exploring/images/ibm-exploring.img",
+  "bytes": 368640
  },
  "invaders.img": {
   "url": "https://zjzh.me/webdsh-images/invaders.img",
@@ -167,6 +183,10 @@
   "url": "https://zjzh.me/webdsh-images/mojo-0.2.2.iso",
   "bytes": 4048896
  },
+ "msdos4.img": {
+  "url": "https://raw.githubusercontent.com/Hologram-Technologies/hologram-apps/921dbc0fcd17d2ae68b2908b8f9a369de6a09297/apps/msdos4/images/msdos4.img",
+  "bytes": 1474560
+ },
  "mu-shell.img": {
   "url": "https://zjzh.me/webdsh-images/mu-shell.img",
   "bytes": 10321920
@@ -207,12 +227,24 @@
   "url": "https://zjzh.me/webdsh-images/os64boot.iso",
   "bytes": 5580800
  },
+ "os8.img": {
+  "url": "https://raw.githubusercontent.com/Hologram-Technologies/hologram-apps/921dbc0fcd17d2ae68b2908b8f9a369de6a09297/apps/solos/images/os8.img",
+  "bytes": 1474560
+ },
+ "pc86dos.img": {
+  "url": "https://raw.githubusercontent.com/Hologram-Technologies/hologram-apps/921dbc0fcd17d2ae68b2908b8f9a369de6a09297/apps/86dos/images/pc86dos.img",
+  "bytes": 163840
+ },
  "pillman.img": {
   "url": "https://zjzh.me/webdsh-images/pillman.img",
   "bytes": 512
  },
  "prettyos.img": {
   "url": "https://zjzh.me/webdsh-images/prettyos.img",
+  "bytes": 1474560
+ },
+ "qnx-demo-network-4.05.img": {
+  "url": "https://raw.githubusercontent.com/Hologram-Technologies/hologram-apps/921dbc0fcd17d2ae68b2908b8f9a369de6a09297/apps/qnx/images/qnx-demo-network-4.05.img",
   "bytes": 1474560
  },
  "quantixos.iso": {
@@ -243,6 +275,10 @@
   "url": "https://zjzh.me/webdsh-images/snowdrop.img",
   "bytes": 1474560
  },
+ "sortix-1.0-i686.iso": {
+  "url": "https://raw.githubusercontent.com/Hologram-Technologies/hologram-apps/921dbc0fcd17d2ae68b2908b8f9a369de6a09297/apps/sortix/images/sortix-1.0-i686.iso",
+  "bytes": 71075840
+ },
  "soso.iso": {
   "url": "https://zjzh.me/webdsh-images/soso.iso",
   "bytes": 22546432
@@ -263,9 +299,21 @@
   "url": "https://zjzh.me/webdsh-images/tilck.img",
   "bytes": 37748736
  },
+ "toaruos-1.6.1-core.iso": {
+  "url": "https://raw.githubusercontent.com/Hologram-Technologies/hologram-apps/921dbc0fcd17d2ae68b2908b8f9a369de6a09297/apps/toaruos/images/toaruos-1.6.1-core.iso",
+  "bytes": 67567616
+ },
  "vanadiumos.iso": {
   "url": "https://zjzh.me/webdsh-images/vanadiumos.iso",
   "bytes": 8388608
+ },
+ "win31.img": {
+  "url": "https://raw.githubusercontent.com/Hologram-Technologies/hologram-apps/921dbc0fcd17d2ae68b2908b8f9a369de6a09297/apps/windows31/images/win31.img",
+  "bytes": 34463744
+ },
+ "windows2.img": {
+  "url": "https://raw.githubusercontent.com/Hologram-Technologies/hologram-apps/921dbc0fcd17d2ae68b2908b8f9a369de6a09297/apps/windows2/images/windows2.img",
+  "bytes": 4177920
  },
  "xcom144.img": {
   "url": "https://zjzh.me/webdsh-images/xcom144.img",

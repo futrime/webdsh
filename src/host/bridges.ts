@@ -290,8 +290,13 @@ export interface GuestSummary {
    * Every one of them, not only the first: a guest can need a disk *and* a
    * saved machine, and a setting that offered one file input per guest could
    * only ever be given half of what such a guest needs.
+   *
+   * `held` is whether this deployment already knows where to get the file. It
+   * decides what the setting says beside the input, not whether there is one:
+   * opening your own disk is a thing to want for a machine that boots without
+   * you — a copy with your files on it — and eighty-seven of them now do.
    */
-  files: { slot: string, file: string }[]
+  files: { slot: string, file: string, held: boolean }[]
   /**
    * A 9p filesystem tree it needs, when its root is one.
    *
@@ -323,7 +328,11 @@ function summarise(spec: GuestSpec): GuestSummary {
     bundled: spec.bundled,
     transfer: spec.transfer,
     ...(spec.boots === undefined ? {} : { boots: spec.boots }),
-    files: spec.images.map(image => ({ slot: image.slot, file: image.file })),
+    files: spec.images.map(image => ({
+      slot: image.slot,
+      file: image.file,
+      held: image.source !== undefined || image.mirror !== undefined || spec.bundled,
+    })),
     ...(spec.filesystem === undefined ? {} : { filesystem: spec.filesystem }),
   }
 }

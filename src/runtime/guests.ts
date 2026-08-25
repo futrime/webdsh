@@ -37,9 +37,17 @@
  *    third party, no CORS question, and it still boots with the network off.
  * 4. **The default image host** — `copy/images` on GitHub, which is public,
  *    answers `access-control-allow-origin: *`, serves ranges, and has no
- *    referrer policy — supplemented by `v86-mirror.json`, this project's own
- *    copy of the open-source disks it does not carry. Together those two are
- *    what {@link GuestSpec.bundled} means: a machine that needs no setup.
+ *    referrer policy — supplemented by `v86-mirror.json`, which is where the
+ *    other eighty-two files come from. Together those are what
+ *    {@link GuestSpec.bundled} means: a machine that needs no setup.
+ *
+ * Eighty-seven of the hundred and twenty-eight machines are reachable that
+ * way. The forty-one that are not have one thing in common and it is not their
+ * licence: their disks come to about thirty-four gigabytes, they exist only as
+ * the pieces copy.sh cut them into, and copy.sh is the only host that has
+ * them. There is no arrangement of mirrors here that changes that — a GitHub
+ * Pages site may be one gigabyte — so those machines ask for a file, and say
+ * so before they start rather than failing mid-boot.
  */
 
 import CATALOG from './v86-catalog.json'
@@ -203,14 +211,22 @@ export interface GuestImage {
   source?: string
 
   /**
-   * The same file on this project's mirror, for when nothing better is set.
+   * Somewhere this file can be had, for when nothing better is set.
    *
    * Not the same thing as {@link GuestImage.source}. A `source` is upstream's
    * own statement of where the file lives, so no image-host setting may move
    * it; a `mirror` is only what to try when the deployment has not been told
    * anything — a host the user named, or a copy this deployment serves itself,
-   * both come first. The mirror exists because the default host has five files
-   * and the catalog has a hundred and twenty-eight machines.
+   * both come first. It exists because the default host has five files and the
+   * catalog has a hundred and twenty-eight machines.
+   *
+   * Two kinds of URL end up here, and the difference matters for what this
+   * project is responsible for. Most are `futrime/webdsh-images`, which *is*
+   * this project redistributing an image, and so holds only images whose
+   * licences allow it. The rest are links to a public repository that already
+   * holds the file — no copy made here, the same posture as the default host,
+   * which is likewise somebody else's repository and likewise has proprietary
+   * disks on it.
    */
   mirror?: string
 
@@ -776,12 +792,14 @@ function fromCatalog(entry: CatalogEntry): GuestSpec | undefined {
 }
 
 /**
- * Offer a machine the mirror's copy of any file the mirror carries.
+ * Offer a machine a copy of any file `v86-mirror.json` knows where to get.
  *
- * `futrime/webdsh-images` is that mirror: the machines whose licences let
+ * `futrime/webdsh-images` is most of that map: the machines whose licences let
  * anyone serve them, published over GitHub Pages, which answers range requests
  * with `accept-ranges: bytes` and `access-control-allow-origin: *` — the two
- * things an emulator reading a disk in pieces needs.
+ * things an emulator reading a disk in pieces needs. The rest are links into a
+ * public repository that already holds the file, which costs no bandwidth here
+ * and copies nothing.
  *
  * *Offer*, not impose. It is recorded as {@link GuestImage.mirror} rather than
  * {@link GuestImage.source}, so it stands in for the default host and nothing
