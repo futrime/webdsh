@@ -407,6 +407,68 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    /**
+     * The container's own network, which used to be the one place the page's
+     * CORS policy could not reach.
+     *
+     * Its requests leave from StackBlitz's worker, so a patched window.fetch
+     * never sees them — measured, and the reason src/container/net-shim.ts
+     * exists: the policy is preloaded into every Node process the container
+     * starts instead. What is checked here is the difference that makes, on a
+     * host that refuses browsers outright.
+     *
+     * Whether the *shell* points Node at that preload is checked in
+     * scripts/runtime-e2e.ts, where a terminal is already open.
+     */
+    name: 'container-network',
+    async run(page) {
+      await waitForShell(page)
+      // Handed over as source rather than as a function: this file is
+      // transpiled before it runs, and the transpiler decorates functions with
+      // a __name helper that exists in its output and not in the page, so a
+      // serialised callback dies with "__name is not defined".
+      const run = async (source: string): Promise<string> => await page.evaluate(`(async () => {
+        const container = await globalThis.__DSH_WEB_RUNTIME__.boot()
+        const policy = globalThis.__DSH_WEB_NETWORK__.config()
+        const env = {
+          NODE_OPTIONS: '--require=/home/dsh/.dsh/net.cjs',
+          DSH_CORS_PROXY: policy.enabled ? policy.template : '',
+        }
+        const started = await container.spawn('node', ['-e', ${JSON.stringify(source)}], { env })
+        let output = ''
+        void started.output.pipeTo(new WritableStream({ write(chunk) { output += chunk } }))
+        await started.exit
+        // Node colours a number in console.log and the escape lands in the
+        // middle of what an assertion wants to match.
+        return output.replace(/\u001b\[[0-9;]*m/g, '')
+      })()`) as string
+
+      // The preload is on the container's disk, written at boot beside the shell.
+      const installed = await page.evaluate(`(async () => {
+        const container = await globalThis.__DSH_WEB_RUNTIME__.boot()
+        return (await container.fs.readFile('.dsh/net.cjs', 'utf-8')).length
+      })()`) as number
+      expect(installed > 500, `the network policy was not installed into the container (${String(installed)} bytes)`)
+
+      // example.com sends no CORS headers at all. Before this shim the answer
+      // in here was "fetch failed", while the emulated machine could reach it.
+      const fetched = await run(
+        'fetch("http://example.com").then(r => r.text()).then(t => console.log("BODY", t.length))'
+        + '.catch(e => console.log("FAILED", e.message))',
+      )
+      expect(/BODY \d{3,}/.test(fetched),
+        `the container could not reach a host that refuses browsers: ${fetched.trim()}`)
+
+      // And the rule the policy is built on: a host that answers a browser is
+      // never handed to a third party.
+      const direct = await run(
+        'fetch("https://registry.npmjs.org/is-odd").then(r => console.log("STATUS", r.status))'
+        + '.catch(e => console.log("FAILED", e.message))',
+      )
+      expect(/STATUS 200/.test(direct), `the npm registry did not answer the container: ${direct.trim()}`)
+    },
+  },
+  {
     // This case gates a deploy, so it is careful about what it blames. Two of
     // its three assertions are about this repository's own logic and always
     // hold; the third needs a third party to be up, and a third party being

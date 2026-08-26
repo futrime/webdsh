@@ -74,10 +74,16 @@ const COMMANDS = [
  * patched `window.fetch` nor `public/sw.js` ever sees — both were measured,
  * and both see nothing.
  *
- * So here, and only here, the fallback is something the model is told rather
- * than something the app does — and it is told the configured proxy, not a
- * constant. Turning the proxy off in Settings removes the advice instead of
- * leaving the model retrying through a host the user declined.
+ * That is no longer true, and this paragraph is the record of when it stopped
+ * being true: `src/container/net-shim.ts` is preloaded into every Node process
+ * the container starts, so the retry happens inside the container, to the same
+ * proxy, under the same rule. What is left to say here is not "do this
+ * yourself" but "this happens to you" — because an automatic proxy is still a
+ * third party reading the request, and a model that does not know that will
+ * eventually send it a key.
+ *
+ * It is told the configured proxy, not a constant. Turning the proxy off in
+ * Settings removes both the retry and the advice.
  * @returns the paragraph, as description lines.
  */
 function corsAdvice(): string[] {
@@ -95,14 +101,17 @@ function corsAdvice(): string[] {
       'way, stop and say the host refuses browser requests.',
     ]
   }
-  // The model needs a URL it can paste, so a template is resolved against a
-  // placeholder it will replace rather than handed over with braces in it.
+  // The retry is the app's job now, not the model's — `src/container/net-shim.ts`
+  // is preloaded into every Node process here and does it. What the model still
+  // has to know is that it happens, because a request that quietly goes through
+  // a third party is a request that must not carry a credential.
   const example = proxiedUrl('<url>', template) ?? `${template}<url>`
   return [
     ...common,
-    `When that happens and the URL is public, retry it once as ${example}; if that also fails, stop`,
-    'and say so. Never send a request carrying a credential — an API key, a token, a cookie —',
-    'through the proxy: it is a third party and it sees the whole request.',
+    'When that happens, this session retries the request once through a proxy on its own — inside',
+    'the container, for `fetch` in any Node process — so most public sites do answer without you',
+    'doing anything. Never send a credential — an API key, a token, a cookie — to a host that needs',
+    `that retry: the proxy (${example}) is a third party and sees the whole request.`,
   ]
 }
 
@@ -168,6 +177,10 @@ function jshDescription(background: boolean): string {
     'command — they are faster here and they do not go through jsh at all.',
     '',
     ...corsAdvice(),
+    'For anything that is not HTTP, this session can give you a real TCP socket when Settings → Network',
+    'names a relay: `globalThis.dshConnect(host, port)` in any `node -e` returns a socket-shaped duplex',
+    '— `connect`, `data`, `write`, `end` — carrying bytes to that host. TLS on top of it does not work',
+    'here, measured, so use `fetch` for anything `https://`.',
     'Use `node -e "fetch(...)"` rather than `curl`: the `curl` here is a stub that takes a URL and',
     'little else.',
     '',

@@ -559,7 +559,12 @@ const MEASURED: GuestSpec[] = [
     name: 'Windows 3.1',
     console: 'gui',
     summary: 'The one most people mean by "Windows 3". Boots MS-DOS, then runs WIN.',
-    contains: 'QBasic, Minesweeper, Solitaire, Write, Paintbrush — and the DOS prompt underneath it.',
+    contains: 'QBasic, Minesweeper, Solitaire, Write, Paintbrush — and the DOS prompt underneath it. '
+      + 'One thing on this machine does not work and it is worth knowing before you try it: a DOS session '
+      + 'started from *inside* Windows — File → Run → `command.com` — comes up as a blank screen that '
+      + 'ignores the keyboard. Measured, and measured against v86\'s own defaults with the same disk, which '
+      + 'fail identically: it is the emulator, not this build. Exiting Windows instead (Alt+F4, then Enter) '
+      + 'gives a DOS prompt that renders and types normally, and Windows 98\'s DOS prompt works as well.',
     bundled: false,
     transfer: 34_463_744,
     images: [{ slot: 'hda', file: 'win31.img', size: 34_463_744 }],

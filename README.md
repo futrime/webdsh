@@ -15,6 +15,7 @@ the page, and the agent's commands run in [WebContainers](https://webcontainers.
 Node itself, in the tab.
 
 - ⚡ **Nothing to run.** No server, no install, no local Node — the harness boots in the page.
+- 🌍 **The container is online too.** The page's CORS policy is preloaded into every Node process it starts, so `fetch` inside the container retries a refused host through the proxy on its own — `http://example.com` answers there now, and it did not before.
 - 🖥️ **Real Node, real Python.** `npm install` and `pip install` both work, and the terminal and the agent share one container.
 - 💾 **Or a whole PC.** Settings → Machine swaps the container for [v86](https://github.com/copy/v86) and offers **128 machines** — the whole of v86's catalog, from a 512-byte bootsector game to Windows 2000, **127 of them booting with nothing to set up** — emulated x86, on its own screen, with the tool set that machine actually has.
 - 🌐 **The PC is online.** A WISP relay by default, so the guest gets real TCP — `https://`, package managers, `ssh` — and without one the page itself is the router: it answers the guest's DHCP, DNS and pings and carries HTTP as browser `fetch`, through the same CORS policy the rest of the app uses. `wget http://example.com` works on an emulated Buildroot either way; the same URL from the container answers `fetch failed`.
@@ -130,6 +131,24 @@ when a machine starts is dropped for that bridge rather than left as a network
 that silently does nothing. Whether a particular guest has a driver for the card is a fact about its
 disk: it is measured per machine — three of them so far — and a machine nobody
 has measured is described as exactly that rather than promised a network.
+
+**The container's network.** A WebContainer's requests leave from StackBlitz's
+own worker, where neither the page's patched `fetch` nor `public/sw.js` can see
+them — so the CORS retry that the rest of the app applies could never reach it,
+and the shell tool's advice was to prefix a proxy by hand. It is carried in
+instead: `src/container/net-shim.ts` is written beside the shell at boot and
+preloaded into every Node process through `NODE_OPTIONS`, so a refused request
+is retried once through the configured proxy, automatically, wherever it came
+from. Measured: `fetch('http://example.com')` answers `fetch failed` without it
+and returns the page with it.
+
+With a relay configured, `globalThis.dshConnect(host, port)` gives the container
+a real TCP socket as well — the emulated machine's relay, serving both runtimes
+from one setting. It is offered rather than installed over `net.connect`,
+because Node's own `fetch` is built on that function and taking it over hangs
+every request in the process. TLS on top of that socket does not work here:
+this runtime's `tls` reaches for internals a plain stream does not have, so
+`https` stays `fetch`'s job.
 
 **Plugins.** `/plugin add <package>` in the composer, or Settings → Plugins.
 Takes an npm name, a tarball URL, `owner/repo#ref`, or a path. The composition

@@ -25,6 +25,9 @@ import type { WebContainer, WebContainerProcess } from '@webcontainer/api'
 import { persistWorkspace, restoreWorkspace, type RuntimePersistence } from './persist.ts'
 import { installPython, persistPython, pythonBin, restorePython, type PythonPersistence } from './python.ts'
 import { CONTAINER_SHELL } from '../generated/container-shell.ts'
+import { CONTAINER_NET } from '../generated/container-net.ts'
+import { proxyConfig } from '../net/cors-proxy.ts'
+import { machineNetworkConfig } from '../net/machine-network.ts'
 import { isEmulated, selectedGuest } from './selection.ts'
 
 /**
@@ -87,7 +90,43 @@ function environment(
     if (value !== undefined) env[name] = value
   }
   env.PATH = `${WORKDIR}/${pythonBin()}:${env.PATH}`
-  return env
+  return { ...env, ...networkEnvironment() }
+}
+
+/** Where the network policy lives, as the container itself addresses it. */
+const NET_PATH = `${WORKDIR}/${PRIVATE_DIR}/net.cjs`
+
+/**
+ * The two variables that give a command the page's CORS policy.
+ *
+ * `NODE_OPTIONS` is how a policy reaches a process nobody wrote: the container
+ * runs a real Node, Node honours `--require` from the environment — measured,
+ * not assumed — and every process it starts inherits it, so `node -e`, a script
+ * the agent writes, and anything they spawn all get the same retry without
+ * knowing about it.
+ *
+ * It is appended to whatever the caller asked for rather than replacing it, and
+ * both variables are dropped entirely when the proxy is off: a session with no
+ * proxy configured should not carry a preload that would do nothing, and a user
+ * who turned it off in Settings has said what they want.
+ * @returns the variables to add, or nothing when there is no policy to carry.
+ */
+function networkEnvironment(): Record<string, string> {
+  const { enabled, template } = proxyConfig()
+  const proxy = enabled && template.trim() !== '' ? template : undefined
+  // The same relay the emulated machine uses, because "which third party
+  // carries this session's traffic" deserves one answer rather than two. It is
+  // what turns the container's `net` from a stub that connects and says nothing
+  // into a socket, and with Node's own `tls` on top of it, into `https` to a
+  // host that never allowed browsers.
+  const machine = machineNetworkConfig()
+  const relay = machine.enabled && machine.relay !== '' ? machine.relay : undefined
+  if (proxy === undefined && relay === undefined) return {}
+  return {
+    ...(proxy === undefined ? {} : { DSH_CORS_PROXY: proxy }),
+    ...(relay === undefined ? {} : { DSH_RELAY: relay }),
+    NODE_OPTIONS: `--require=${NET_PATH}`,
+  }
 }
 
 /** Where the shell program lives, as the container itself addresses it. */
@@ -148,6 +187,10 @@ export function setShellMode(next: ShellMode): void {
 async function installPrograms(runtime: WebContainer): Promise<void> {
   await ensureStaging(runtime)
   await runtime.fs.writeFile(`${PRIVATE_DIR}/sh.cjs`, CONTAINER_SHELL)
+  // Beside the shell, and for the same reason it is written rather than
+  // fetched: a preload that fails to arrive is every command in the session
+  // failing to start, because `--require` names it in the environment.
+  await runtime.fs.writeFile(`${PRIVATE_DIR}/net.cjs`, CONTAINER_NET)
   await installPython(runtime)
 }
 

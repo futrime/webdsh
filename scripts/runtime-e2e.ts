@@ -121,6 +121,15 @@ interface Workload {
 const WORKLOADS: Workload[] = [
   { name: 'identity', script: 'node -p "[process.version, process.arch, process.platform].join(\' \')"', expect: /v\d+\.\d+.* x64 linux/ },
   { name: 'the shell is jsh', script: 'bash --version', expect: /jsh \d/ },
+  {
+    // The shell is where the network policy is wired in: every command it
+    // starts inherits NODE_OPTIONS pointing at the preload that carries the
+    // page's CORS retry into the container. What the policy *does* is checked
+    // in scripts/e2e.ts; this is the wire.
+    name: 'commands inherit the network policy',
+    script: 'node -e "console.log(process.env.NODE_OPTIONS || \'unset\')"',
+    expect: /net\.cjs/,
+  },
   { name: 'shell', script: 'pwd; echo shell-ok', expect: /shell-ok/ },
   { name: 'files', script: 'mkdir -p sub && echo written > sub/f.txt && cat sub/f.txt', expect: /written/ },
   {
