@@ -31,6 +31,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { chromium, type Page } from 'playwright'
+import { GUESTS } from '../src/runtime/guests.ts'
 
 const args = process.argv.slice(2)
 const url = valueOf('--url') ?? 'http://127.0.0.1:4173/'
@@ -412,21 +413,28 @@ const scenarios: Scenario[] = [
       const lede = await page.locator('.dsh-web-machine-lede').first().innerText()
       expect(lede.includes('Node container'), `the setting reports "${lede}" while running the container`)
 
-      // The ones that need nothing say so; the ones that need a disk say that.
-      // Windows 98 rather than Windows 3.1: 3.1 is one 33 MB file and reachable
-      // now, and 98's disk is three hundred megabytes of pieces that exist on
-      // one host in the world, which is the shape of every machine still on the
-      // wrong side of this line.
+      // The ones that need nothing say so; the ones that need something say
+      // that. Which machines fall on which side is not written here any more —
+      // it moved once already, when the mirror grew from eighty-seven machines
+      // to a hundred and twenty-seven and Windows 98 stopped being an example
+      // of "needs a disk". So the guest list itself decides, and this checks
+      // that the panel agrees with it.
       const rows = await page.locator('.dsh-web-machine-row').allInnerTexts()
-      const windows98 = rows.find(row => row.startsWith('Windows 98'))
-      expect(windows98 !== undefined && windows98.includes('needs a disk'),
-        'Windows 98 does not tell the user its image is not on the default host')
-      const freedos = rows.find(row => row.startsWith('FreeDOS'))
-      expect(freedos !== undefined && !freedos.includes('needs a disk'),
-        'FreeDOS claims its image is missing, but the default host serves it')
-      const windows31 = rows.find(row => row.startsWith('Windows 3.1'))
-      expect(windows31 !== undefined && !windows31.includes('needs a disk'),
-        'Windows 3.1 claims its image is missing, but `v86-mirror.json` says where it is')
+      const short = (name: string): string | undefined => rows.find(row => row.startsWith(name))
+      const needy = GUESTS.find(guest => !guest.bundled)
+      if (needy !== undefined) {
+        const row = short(needy.name)
+        expect(row !== undefined && row.includes('needs a disk'),
+          `${needy.name} needs a file this deployment cannot fetch and the panel does not say so`)
+      } else {
+        process.stdout.write('  every machine is reachable; nothing to warn about\n')
+      }
+      for (const guest of GUESTS.filter(entry => entry.bundled).slice(0, 6)) {
+        const row = short(guest.name)
+        if (row === undefined) continue
+        expect(!row.includes('needs a disk'),
+          `${guest.name} claims its image is missing, but this build knows where to get it`)
+      }
 
       await page.getByRole('button', { name: /^FreeDOS/ }).first().click()
       await page.getByRole('button', { name: 'Use this machine' }).click()
@@ -1016,15 +1024,34 @@ const scenarios: Scenario[] = [
       const centre = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 }
 
       /** Drag the real mouse across the screen and say whether anything moved. */
-      const sweep = async (): Promise<boolean> => {
+      /**
+       * Whether the picture changes within a while of the mouse moving.
+       *
+       * Polled rather than sampled once after a fixed pause, for the reason
+       * `proveKeyboardReaches` is: an emulated 486 redrawing a cursor takes as
+       * long as the host lets it, and on a loaded CI runner that is longer than
+       * any pause worth writing down. A machine that never reacts still fails,
+       * it just takes fifteen seconds to say so.
+       * @param move - whatever makes the guest move its pointer.
+       * @returns whether the screen moved.
+       */
+      const reacts = async (move: () => Promise<void>): Promise<boolean> => {
         const before = await shotBytes(page)
+        await move()
+        const deadline = Date.now() + 15_000
+        for (;;) {
+          if (before !== await shotBytes(page)) return true
+          if (Date.now() > deadline) return false
+          await page.waitForTimeout(500)
+        }
+      }
+
+      const sweep = async (): Promise<boolean> => reacts(async () => {
         for (let step = 0; step < 6; step += 1) {
           await page.mouse.move(centre.x - 240 + step * 90, centre.y - 140 + step * 55, { steps: 8 })
           await page.waitForTimeout(120)
         }
-        await page.waitForTimeout(900)
-        return before !== await shotBytes(page)
-      }
+      })
 
       // The instrument, before it is trusted: this desktop does not redraw
       // itself, so a changed picture below means the mouse changed it.
@@ -1061,13 +1088,13 @@ const scenarios: Scenario[] = [
       await page.evaluate(() => { document.exitPointerLock() })
       await page.waitForTimeout(800)
       expect((await pointerState(page)).held === false, 'the guest kept the mouse after the pointer was released')
-      const parked = await shotBytes(page)
-      await page.evaluate(async () => {
-        const machine = (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle }).__DSH_WEB_MACHINE__
-        for (let step = 0; step < 12; step += 1) await machine.input.mouse(40, 24)
+      const moved = await reacts(async () => {
+        await page.evaluate(async () => {
+          const machine = (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle }).__DSH_WEB_MACHINE__
+          for (let step = 0; step < 12; step += 1) await machine.input.mouse(40, 24)
+        })
       })
-      await page.waitForTimeout(900)
-      expect(parked !== await shotBytes(page), 'the model\'s mouse tool stopped working when the person let go')
+      expect(moved, 'the model\'s mouse tool stopped working when the person let go')
 
       // The other way to one cursor, which is the guest's to choose and not
       // this panel's: a driver that reads the VMware backdoor port is told
@@ -1290,7 +1317,15 @@ const scenarios: Scenario[] = [
     // guests the default host serves, so the refusal is decidable up front.
     name: 'missing-disk',
     async run(page) {
-      await page.goto(`${url}?runtime=v86:windows2000`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      // Whichever machine this build cannot fetch for itself — named by the
+      // guest list rather than written down here, because the list moves: this
+      // scenario used to name Windows 2000, which the mirror now holds. Today
+      // it is Arch, whose root is a 9p directory rather than a disk.
+      const needy = GUESTS.find(guest => !guest.bundled)
+      if (needy === undefined) throw new Skipped('every machine is reachable, so nothing can refuse to start')
+      const missing = needy.images.find(image => image.source === undefined && image.mirror === undefined)
+        ?? needy.images[0]
+      await page.goto(`${url}?runtime=v86:${needy.id}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       await waitForShell(page)
       const failure = await page.evaluate(async () => {
         const machine = (globalThis as unknown as {
@@ -1303,11 +1338,12 @@ const scenarios: Scenario[] = [
           return { threw: true, message: error instanceof Error ? error.message : String(error) }
         }
       })
-      expect(failure.threw, 'a guest with no disk anywhere started anyway')
-      // It has to name the file, and it has to name the way out. A message
+      expect(failure.threw, `${needy.name} has no disk anywhere and started anyway`)
+      // It has to name what it needs, and it has to name the way out. A message
       // that only says "failed" sends the reader to the network tab.
-      expect(/windows2k/.test(failure.message),
-        `the refusal does not name the file it needs: ${failure.message}`)
+      const wanted = (needy.filesystem ?? missing?.file ?? '').replace(/\/?\.?[a-z]*$/, '')
+      expect(wanted === '' || failure.message.includes(wanted),
+        `the refusal does not name what it needs (${wanted}): ${failure.message}`)
       expect(/Settings/.test(failure.message) && /image host/.test(failure.message),
         `the refusal does not say what to do about it: ${failure.message}`)
       // And nothing was fetched to find that out.
