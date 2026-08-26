@@ -16,7 +16,7 @@ Node itself, in the tab.
 
 - ⚡ **Nothing to run.** No server, no install, no local Node — the harness boots in the page.
 - 🖥️ **Real Node, real Python.** `npm install` and `pip install` both work, and the terminal and the agent share one container.
-- 💾 **Or a whole PC.** Settings → Machine swaps the container for [v86](https://github.com/copy/v86) and offers **128 machines** — the whole of v86's catalog, from a 512-byte bootsector game to Windows 2000, **113 of them booting with nothing to set up** — emulated x86, on its own screen, with the tool set that machine actually has.
+- 💾 **Or a whole PC.** Settings → Machine swaps the container for [v86](https://github.com/copy/v86) and offers **128 machines** — the whole of v86's catalog, from a 512-byte bootsector game to Windows 2000, **127 of them booting with nothing to set up** — emulated x86, on its own screen, with the tool set that machine actually has.
 - 🌐 **The PC is online.** A WISP relay by default, so the guest gets real TCP — `https://`, package managers, `ssh` — and without one the page itself is the router: it answers the guest's DHCP, DNS and pings and carries HTTP as browser `fetch`, through the same CORS policy the rest of the app uses. `wget http://example.com` works on an emulated Buildroot either way; the same URL from the container answers `fetch failed`.
 - 👁️ **It can see.** Attach an image and the model reads it: oriented, capped and re-encoded to the route's budget by the browser's own decoder, with the source's EXIF and colour profile stripped on the way.
 - 🧩 **Real plugins.** Install from npm, a tarball, GitHub, or a path — from the browser.
@@ -83,17 +83,17 @@ Both panels dock beside the conversation on a wide window and along the bottom
 on a narrow one, and take width from it rather than covering it.
 
 **Machines.** Settings → Machine offers **128** — the whole of [v86's
-catalog](https://copy.sh/v86/) — and **113 boot with nothing to set up**. The
+catalog](https://copy.sh/v86/) — and **127 boot with nothing to set up**. The
 choice applies on the next load, because it decides which tools the assistant
 gets: `jsh`, Node and Python in the container; `sh` or `dos` plus
 `vm_screenshot`, `vm_key`, `vm_type`, `vm_mouse` and friends on a guest, whose
 disk shares nothing with your workspace. A guest is offered the tools that
 currently work on it and not the ones that would come back empty — no
 `vm_screen` on a desktop with no text, no `vm_mouse` at a prompt that never
-turned a mouse on. The other 15 want a disk image —
+turned a mouse on. The one that is left, Arch, wants a host for its 9p tree —
 open one from your computer and it stays in your browser, or point the setting
 at a host that serves them. `npm run v86:catalog` prints the difference against
-upstream; `npm run v86:boot -- --bundled --as-shipped` re-boots all 113. The
+upstream; `npm run v86:boot -- --bundled --as-shipped` re-boots all 127. The
 disks come from v86's own `copy/images` and the hosts
 `src/runtime/v86-mirror.json` names, mostly
 [AndyZijianZhang/webdsh-images](https://huggingface.co/datasets/AndyZijianZhang/webdsh-images),

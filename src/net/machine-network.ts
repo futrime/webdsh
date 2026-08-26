@@ -286,6 +286,50 @@ export function machineTraffic(): { requests: MachineRequest[], refusedPorts: nu
   return { requests: [...history], refusedPorts: [...refused].sort((a, b) => a - b) }
 }
 
+/**
+ * What the guest's own card has done, whether or not it reached anything.
+ *
+ * The traffic list above only sees a request that became a `fetch`, which is
+ * the last step of a long chain: the guest needs a driver, the driver needs to
+ * find the card, the stack needs an address, and only then is there an HTTP
+ * request to carry. When nothing arrives, all of those look identical from
+ * outside — and the question a person actually has is "does this machine have a
+ * network at all", which is answered much earlier, by whether anything was ever
+ * put on the wire.
+ *
+ * So the frames are counted. One frame means a driver bound to the card. A DHCP
+ * request means the guest is configuring itself. Neither is inferred from a
+ * disk image or from upstream's metadata: it is what this machine did.
+ */
+const link = { frames: 0, dhcp: 0, firstAt: 0 }
+
+/** Ethernet header length, and the offsets this only-just-parses. */
+const ETH_IPV4 = 0x0800
+
+/**
+ * Count one frame the guest sent, and notice a DHCP request among them.
+ * @param frame - the ethernet frame, as the card emitted it.
+ */
+function sawFrame(frame: Uint8Array): void {
+  link.frames++
+  if (link.firstAt === 0) link.firstAt = Date.now()
+  // Just far enough to tell DHCP from everything else: IPv4, UDP, port 67.
+  if (frame.length < 46) return
+  if (((frame[12] << 8) | frame[13]) !== ETH_IPV4) return
+  if (frame[23] !== 17) return
+  const ihl = (frame[14] & 0x0f) * 4
+  const dport = (frame[14 + ihl + 2] << 8) | frame[14 + ihl + 3]
+  if (dport === 67) link.dhcp++
+}
+
+/**
+ * What the guest's card has been doing.
+ * @returns how many frames it sent, how many were DHCP, and when it started.
+ */
+export function machineLink(): { frames: number, dhcp: number, firstAt: number } {
+  return { ...link }
+}
+
 /** Remember one request. */
 function record(entry: MachineRequest): void {
   history.push(entry)
@@ -902,6 +946,10 @@ export function attachMachineNetwork(emulator: NetworkedEmulator): void {
   const config = machineNetworkConfig()
   if (!config.enabled) return
   const chosen = effectiveRelay().relay
+
+  // Counted whatever carries the traffic, because this is about the guest's own
+  // card: a machine with no driver sends nothing through a relay either.
+  emulator.add_listener('net0-send', ((frame: Uint8Array) => { sawFrame(frame) }) as (argument: never) => void)
 
   // Only the in-page bridge has ports this page answers for. A relay owns real
   // sockets, and a listener here would steal connections it can carry properly.

@@ -41,7 +41,7 @@ import {
   type ProxyConfig,
 } from '../net/cors-proxy.ts'
 import {
-  machineNetworkConfig, machineTraffic, RELAY_PRESETS, setMachineNetworkConfig, testRelay,
+  machineLink, machineNetworkConfig, machineTraffic, RELAY_PRESETS, setMachineNetworkConfig, testRelay,
   type MachineNetworkConfig,
 } from '../net/machine-network.ts'
 
@@ -379,6 +379,9 @@ export function publishNetworkBridge(): void {
       test: (relay: string) => testRelay(relay),
       relays: RELAY_PRESETS,
       traffic: () => machineTraffic(),
+      // What the guest's card did, which is the earlier and more basic
+      // question: a machine with no driver never gets as far as a request.
+      link: () => machineLink(),
     },
   }
 }

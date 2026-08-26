@@ -186,6 +186,12 @@ async function fetchPieces(
       const url = `${prefix}${String(at)}-${String(at + chunk)}${extension}`
       batch.push((async () => {
         const response = await fetch(url)
+        // A piece that is not there is a piece that is all zeros. Large images
+        // are published sparsely — measured on ChoKanji 4, where the piece at
+        // 5 MB is absent while the one at 100 MB is present — and the emulator
+        // reads a missing piece as a hole rather than as an error, so a mirror
+        // that refused one would be refusing a disk that works.
+        if (response.status === 404) return new Uint8Array(chunk)
         if (!response.ok) throw new Error(`${url} answered ${String(response.status)}`)
         const piece = new Uint8Array(await response.arrayBuffer())
         // A `.zst` image is compressed one piece at a time — measured on
