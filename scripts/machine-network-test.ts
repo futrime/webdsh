@@ -22,7 +22,7 @@
  * Usage: `npx tsx scripts/machine-network-test.ts`
  */
 
-import { attachMachineNetwork, type NetworkedEmulator } from '../src/net/machine-network.ts'
+import { attachMachineNetwork, setMachineNetworkConfig, type NetworkedEmulator } from '../src/net/machine-network.ts'
 
 /** Fail with a focused assertion message. */
 function expect(condition: boolean, message: string): asserts condition {
@@ -102,6 +102,11 @@ async function main(): Promise<void> {
   // `network_adapter` is left absent: the polling that would wrap its `fetch`
   // gives up on its own, and the port-80 path it belongs to is v86's, not this
   // file's.
+  // The in-page bridge, explicitly. A relay is the shipped default and it takes
+  // this code out of the picture entirely — the guest's TCP goes to a WebSocket
+  // instead — so a test of the bridge has to say which of the two it means.
+  setMachineNetworkConfig({ enabled: true, relay: '' })
+
   const emulator: NetworkedEmulator = {
     add_listener(event, fn) {
       if (event === 'tcp-connection') listener = fn as unknown as (conn: FakeConnection) => void
@@ -144,14 +149,41 @@ async function main(): Promise<void> {
     expect(said.startsWith('HTTP/1.1 502 '), `an absolute-URI request was answered ${JSON.stringify(said.slice(0, 40))}`)
   }
 
-  console.log('▶ this page\'s own network is refused with a reason')
+  console.log('▶ the page hosting the machine is refused with a reason')
   {
-    const conn = connect(8080)
-    conn.send('GET / HTTP/1.1\r\nHost: 192.168.1.1\r\n\r\n')
+    // There is no `location` in Node, and the rule is about the page's own
+    // origin, so the page is stated rather than imagined.
+    // Shaped like a local run — `http://127.0.0.1:4173` — because that is the
+    // case the bridge actually sees: on a deployed HTTPS page the guest's
+    // port-80 request goes through v86's own handler instead, and reaches the
+    // same check from there.
+    ;(globalThis as { location?: unknown }).location = { origin: 'http://127.0.0.1:4173', host: '127.0.0.1:4173' }
+    // The scheme is deliberately not part of the rule: this request goes out as
+    // `http://`, and the retry ladder would otherwise reach the same server as
+    // `https://` on the next rung.
+    const conn = connect(4173)
+    conn.send('GET /api/ HTTP/1.1\r\nHost: 127.0.0.1:4173\r\n\r\n')
     await settle(120)
     const said = conn.said()
-    expect(said.startsWith('HTTP/1.1 502 '), `a private address was answered ${JSON.stringify(said.slice(0, 40))}`)
-    expect(said.includes('not on the internet'), `the refusal does not explain itself: ${JSON.stringify(said.slice(-200))}`)
+    expect(said.startsWith('HTTP/1.1 502 '), `the page's own origin was answered ${JSON.stringify(said.slice(0, 40))}`)
+    expect(said.includes('is the page hosting this machine'),
+      `the refusal does not explain itself: ${JSON.stringify(said.slice(-200))}`)
+  }
+
+  console.log('▶ the computer\'s own network is left reachable')
+  {
+    // The opposite rule, and the reason it is worth a test: an earlier version
+    // of this refused loopback and the LAN too, which took away the
+    // `<port>.external` mapping v86 documents. Port 1 answers nothing, so what
+    // is being checked is that the attempt was *made* — a policy refusal names
+    // itself, a connection failure does not.
+    const conn = connect(8080)
+    conn.send('GET / HTTP/1.1\r\nHost: 127.0.0.1:1\r\n\r\n')
+    await settle(200)
+    const said = conn.said()
+    expect(said.startsWith('HTTP/1.1 502 '), `loopback was answered ${JSON.stringify(said.slice(0, 40))}`)
+    expect(!said.includes('is the page hosting this machine') && !said.includes('not on the internet'),
+      `loopback was refused by policy rather than attempted: ${JSON.stringify(said.slice(-200))}`)
   }
 
   console.log('▶ a body larger than the bridge will hold is refused before it arrives')

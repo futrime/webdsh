@@ -33,9 +33,9 @@ interface NetworkBridge {
 
 /** What the page offers the emulated machine, and what the machine did with it. */
 interface MachineBridge {
-  config(): { enabled: boolean, relay: string, allowPrivate: boolean }
-  setConfig(next: { enabled?: boolean, relay?: string, allowPrivate?: boolean }): {
-    enabled: boolean, relay: string, allowPrivate: boolean
+  config(): { enabled: boolean, relay: string, allowSelf: boolean }
+  setConfig(next: { enabled?: boolean, relay?: string, allowSelf?: boolean }): {
+    enabled: boolean, relay: string, allowSelf: boolean
   }
   test(relay: string): Promise<{ ok: boolean, detail: string }>
   relays: { url: string, label: string, detail: string }[]
@@ -93,7 +93,7 @@ function MachineNetwork(): JSX.Element | null {
   const bridge = network()?.machine
   const [enabled, setEnabled] = useState(() => bridge?.config().enabled ?? false)
   const [relay, setRelay] = useState(() => bridge?.config().relay ?? '')
-  const [allowPrivate, setAllowPrivate] = useState(() => bridge?.config().allowPrivate ?? false)
+  const [allowSelf, setAllowSelf] = useState(() => bridge?.config().allowSelf ?? false)
   const [status, setStatus] = useState<{ text: string, error?: boolean } | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [traffic, setTraffic] = useState(() => bridge?.traffic() ?? { requests: [], refusedPorts: [] })
@@ -108,12 +108,12 @@ function MachineNetwork(): JSX.Element | null {
     return () => { clearInterval(timer) }
   }, [])
 
-  const save = useCallback((next: { enabled?: boolean, relay?: string, allowPrivate?: boolean }) => {
+  const save = useCallback((next: { enabled?: boolean, relay?: string, allowSelf?: boolean }) => {
     const api = network()?.machine
     if (api === undefined) return
     const applied = api.setConfig(next)
     setEnabled(applied.enabled)
-    setAllowPrivate(applied.allowPrivate)
+    setAllowSelf(applied.allowSelf)
     if (next.relay !== undefined) setRelay(applied.relay)
     setStatus({
       text: !applied.enabled
@@ -181,18 +181,17 @@ function MachineNetwork(): JSX.Element | null {
       <label className="dsh-web-network-toggle">
         <input
           type="checkbox"
-          checked={allowPrivate}
-          onChange={event => { save({ allowPrivate: event.target.checked }) }}
+          checked={allowSelf}
+          onChange={event => { save({ allowSelf: event.target.checked }) }}
         />
         <span>
-          Also let it reach this page&apos;s own address and private networks
+          Also let it reach this page&apos;s own address
           <br />
-          Off by default, and it is the one setting here that is about safety rather than reach. The page
-          fetches whatever address the guest asks for, so without this rule a machine — driven by a model —
-          could aim at <code>192.168.x.x</code>, at the browser&apos;s own <code>localhost</code>, or at this
-          page&apos;s origin, where a same-origin request needs no CORS at all and would reach the
-          harness&apos;s own <code>/api</code>. Turn it on only if you meant to, for instance to reach a
-          development server through v86&apos;s <code>&lt;port&gt;.external</code> names.
+          Off by default, and the one setting here that is about safety rather than reach. The page fetches
+          whatever address the guest asks for, and a same-origin request needs no CORS at all — so without
+          this rule a machine, driven by a model, could read this app&apos;s own <code>/api</code>. Your
+          computer&apos;s network is <em>not</em> blocked: <code>localhost</code>, the LAN and v86&apos;s
+          <code> &lt;port&gt;.external</code> names all work, which is what the emulator documents.
         </span>
       </label>
 
@@ -213,12 +212,13 @@ function MachineNetwork(): JSX.Element | null {
           <button type="button" disabled={busy} onClick={() => { save({ relay: '' }) }}>Clear</button>
         </div>
         <p>
-          A relay is a WebSocket server that owns real sockets and forwards the guest&apos;s bytes to
-          them. With one, the guest has real TCP rather than HTTP-shaped TCP — <code>https://</code> can
-          work, and so can anything else it has a client for — and real DNS instead of the single address
-          this page invents. What was measured from here is one thing: a raw connection to port 443
-          completing through the first preset below. Without a relay, nothing leaves this tab except
-          through <code>fetch</code>.
+          A relay is a WebSocket server that owns real sockets and forwards the guest&apos;s bytes to them.
+          With one the guest has real TCP rather than HTTP-shaped TCP — <code>https://</code> can work, and
+          so can anything else it has a client for — and real DNS instead of the single address this page
+          invents. <strong>This build ships with one configured</strong>, because a machine that cannot
+          speak TLS is a machine most of the modern internet refuses; clear the field to fall back to the
+          in-page bridge, which needs nobody. If the relay does not answer when a machine starts, the page
+          falls back on its own rather than leaving the guest on a network that silently does nothing.
         </p>
         <ul className="dsh-web-network-list">
           {bridge.relays.map(preset => (
@@ -233,10 +233,11 @@ function MachineNetwork(): JSX.Element | null {
       </div>
 
       <div className="dsh-web-network-warn">
-        A relay sees every byte the guest sends, to every host it talks to, including the ones inside a
-        TLS session it is only forwarding — it is the machine&apos;s entire internet connection, not a
-        fallback for one refused request. The two above are public servers run by other people. Run
-        your own (<code>wisp-js</code>, <code>wsnic</code>) or leave this empty.
+        A relay sees every byte the guest sends, to every host it talks to, including the ones inside a TLS
+        session it is only forwarding — it is the machine&apos;s entire internet connection, not a fallback
+        for one refused request. The one configured by default is a public server run by other people. If
+        that is not a trade you want, clear the field: the machine keeps working, over HTTP, with nobody
+        else in the path. Running your own (<code>wisp-js</code>, <code>wsnic</code>) gets both.
       </div>
 
       {traffic.requests.length > 0 && (

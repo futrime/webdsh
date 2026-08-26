@@ -38,7 +38,9 @@ import {
 } from './guests.ts'
 import { legacyDisk, storedDisk } from './disks.ts'
 import { runtimeSelection } from './selection.ts'
-import { attachMachineNetwork, machineNetworkConfig, netDevice, type NetworkedEmulator } from '../net/machine-network.ts'
+import {
+  attachMachineNetwork, machineNetworkConfig, netDevice, resolveRelay, type NetworkedEmulator,
+} from '../net/machine-network.ts'
 
 /** As much of v86's surface as this module uses. */
 interface Emulator {
@@ -710,6 +712,14 @@ async function start(): Promise<Machine> {
       + 'Open the image from your computer in Settings → Machine, or point the image host there at one that has it.',
     )
   }
+
+  // Before the emulator exists, because which backend it is constructed with is
+  // decided here: a relay that is not answering is swapped for the page's own
+  // bridge rather than handed to a guest as a network that silently does
+  // nothing. Bounded, cached for the page, and skipped entirely when no relay
+  // is configured.
+  const route = await resolveRelay()
+  if (route.fellBack) report('The configured relay did not answer; using the page\'s own network')
 
   const screen = createScreen()
   const text = new TextScreen()

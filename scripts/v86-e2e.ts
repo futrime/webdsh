@@ -689,6 +689,14 @@ const scenarios: Scenario[] = [
      */
     name: 'network',
     async run(page) {
+      // The in-page bridge, explicitly. A WISP relay is the shipped default and
+      // it replaces every part of this: the guest's TCP goes to a WebSocket
+      // instead of through the page, so none of the assertions below would be
+      // about the code they are checking. The relay's own scenario is next.
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      await page.evaluate(() => {
+        localStorage.setItem('dsh-web:machine-network', JSON.stringify({ enabled: true, relay: '', allowSelf: false }))
+      })
       await page.goto(`${url}?runtime=v86:buildroot`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       await waitForShell(page)
       expect(await ready(page, 240_000), 'the Buildroot guest did not reach a shell')
@@ -722,15 +730,6 @@ const scenarios: Scenario[] = [
       expect(/refused/i.test(tls.output),
         `port 443 did not refuse promptly: ${JSON.stringify(tls.output.slice(0, 200))}`)
 
-      // The rule that says the machine was given the internet rather than the
-      // network of the person running the browser. Hermetic: nothing is
-      // contacted, and the refusal is what is being measured — before it
-      // existed this request left the tab and hung for the full header budget.
-      const started = Date.now()
-      await run(page, 'wget -O - http://192.168.1.1/ 2>&1 | head -c 200', 60_000)
-      const spent = Date.now() - started
-      expect(spent < 20_000, `a refused private address took ${String(Math.round(spent / 1000))}s, which means it was tried`)
-
       // And the page's own account of all of it, which the settings page shows.
       const traffic = await page.evaluate(() => (globalThis as unknown as {
         __DSH_WEB_NETWORK__: {
@@ -743,9 +742,72 @@ const scenarios: Scenario[] = [
         `the page did not record the guest's request: ${JSON.stringify(traffic.requests.slice(-4))}`)
       expect(traffic.refusedPorts.includes(443),
         `the page did not record the refused TLS port: ${JSON.stringify(traffic.refusedPorts)}`)
-      expect(traffic.requests.some(entry => entry.url.includes('192.168.1.1') && /not on the internet/.test(entry.error ?? '')),
-        `the private address was not refused by the page: ${JSON.stringify(traffic.requests.slice(-4))}`)
+      // The other half of the rule, and the half a browser can actually
+      // express: the computer's own network is *not* blocked. `<port>.external`
+      // is v86's mapping to localhost, and what is being checked is that the
+      // page attempted it rather than refusing it — a policy refusal names
+      // itself in the record, a connection failure does not. (The exact rule,
+      // that the page's own origin *is* refused, is a unit test: from inside a
+      // guest there is no way to write this page's own host, because the
+      // machine's own loopback answers first.)
+      await run(page, 'wget -O - http://1.external/ 2>&1 | head -c 120', 60_000)
+      const after = await page.evaluate(() => (globalThis as unknown as {
+        __DSH_WEB_NETWORK__: {
+          machine: {
+            traffic(): { requests: { url: string, status?: number, error?: string }[], refusedPorts: number[] }
+          }
+        }
+      }).__DSH_WEB_NETWORK__.machine.traffic())
+      const local = after.requests.find(entry => entry.url.includes('localhost:1'))
+      expect(local !== undefined, `the localhost mapping was not attempted at all: ${JSON.stringify(after.requests.slice(-3))}`)
+      expect(!/is the page hosting this machine/.test(local?.error ?? ''),
+        `the computer's own network was refused by policy: ${JSON.stringify(local)}`)
+
       process.stdout.write(`  the machine made ${String(traffic.requests.length)} requests through the page\n`)
+    },
+  },
+
+  {
+    /**
+     * The machine as it actually ships: a WISP relay carrying real TCP.
+     *
+     * Two claims, and the second is the reason the relay is the default. That
+     * the guest reaches the internet at all is true in either mode. That it can
+     * open a raw connection to port 443 — the thing a tab cannot do and every
+     * modern host requires — is true only through a relay.
+     *
+     * The relay is somebody else's public server, so this tolerates it being
+     * down: the boot probe falls back to the page's own bridge, which the page
+     * records, and this reports that rather than failing for weather.
+     */
+    name: 'network-relay',
+    async run(page) {
+      await page.goto(`${url}?runtime=v86:buildroot`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      await waitForShell(page)
+      expect(await ready(page, 240_000), 'the Buildroot guest did not reach a shell')
+
+      const configured = await page.evaluate(() => (globalThis as unknown as {
+        __DSH_WEB_NETWORK__: { machine: { config(): { relay: string } } }
+      }).__DSH_WEB_NETWORK__.machine.config())
+      expect(configured.relay !== '', 'this build no longer ships with a relay configured')
+
+      const fetched = await run(page, 'wget -q -O - http://example.com', 120_000)
+      expect(fetched.output.includes('Example Domain'),
+        `the machine could not reach the internet as shipped: ${JSON.stringify(fetched.output.slice(0, 200))}`)
+
+      const traffic = await page.evaluate(() => (globalThis as unknown as {
+        __DSH_WEB_NETWORK__: { machine: { traffic(): { requests: { url: string, error?: string }[] } } }
+      }).__DSH_WEB_NETWORK__.machine.traffic())
+      const fellBack = traffic.requests.some(entry => /the relay did not answer/.test(entry.error ?? ''))
+      if (fellBack) {
+        process.stdout.write('  the relay was not answering; the page carried it instead, which is the fallback working\n')
+        return
+      }
+      // Through the relay, so this is a socket rather than a fetch.
+      const tls = await run(page, 'printf "" | telnet example.com 443 2>&1 | head -2', 60_000)
+      expect(/Connected/i.test(tls.output),
+        `port 443 did not connect through the relay: ${JSON.stringify(tls.output.slice(0, 200))}`)
+      process.stdout.write('  raw TCP to port 443 connected through the relay\n')
     },
   },
 

@@ -162,7 +162,9 @@ function networkAdvice(spec: GuestSpec): string[] {
       'what it actually says.',
       'The relay is somebody else\'s server and it sees every byte the machine sends, including inside a',
       'TLS session it is only forwarding. Do not send a credential through it that you would not hand to',
-      'its operator.',
+      'its operator. If it was not answering when this machine started, the page carried HTTP itself',
+      'instead and Settings → Network says so — in that case `https://` will not work and plain `http://`',
+      'will.',
       ...spec.network?.bring === 'dhcp'
         ? []
         : ['If nothing reaches the network, the interface may need bringing up — try `udhcpc` or `dhcpcd`.'],
@@ -188,8 +190,9 @@ function networkAdvice(spec: GuestSpec): string[] {
     '  Cookies do not survive the trip in either direction, and a cross-origin response arrives with only',
     '  the headers CORS exposes — no `location`, no `set-cookie`, no `www-authenticate` — so anything that',
     '  depends on logging in will not work.',
-    '  This page\'s own address, `localhost`, and private network ranges are refused rather than fetched:',
-    '  the machine was given a route to the internet, not to the computer running the browser.',
+    '  This page\'s own address is refused rather than fetched — a request there would reach the harness',
+    '  hosting you, with nothing in front of it. `localhost` and the local network are not blocked, and',
+    '  v86\'s `<port>.external` names reach a server on the computer running this browser.',
     '  A failure before the response starts comes back as an HTTP 502 whose body says what went wrong;',
     '  read it rather than retrying blind.',
     '  Anything that is not HTTP — `ssh`, a database client, a raw socket — needs a relay, which is',
@@ -444,9 +447,11 @@ function networkParagraph(spec: GuestSpec): string {
     ? 'The page is its router: it answers the guest\'s DHCP, DNS and pings itself and carries HTTP by '
       + 'turning the guest\'s requests into this browser\'s own, so an `http://` address works — including '
       + 'from a web browser on the machine itself — and an `https://` one cannot, because TLS would have to '
-      + 'terminate in this tab. This page\'s own address and private network ranges are refused.'
+      + 'terminate in this tab. This page\'s own address is refused; the local network is not.'
     : `Its traffic goes through the relay configured in Settings → Network (${relay}), which carries real `
-      + 'TCP, so `https://` can work too. That relay is a third party and sees everything the machine sends.'
+      + 'TCP, so `https://` can work too — unless the relay was not answering at boot, in which case the '
+      + 'page carried HTTP itself and only `http://` works. That relay is a third party and sees '
+      + 'everything the machine sends.'
   const known = spec.network?.bring === undefined
     ? ' Whether this particular machine has a driver for the emulated card was never measured here — most '
       + 'of the catalog has not been — so treat its network as unproven until something on it actually '

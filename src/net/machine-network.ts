@@ -52,33 +52,34 @@
  *
  * And one thing it takes away, which matters more than any of them. The bridge
  * fetches whatever the guest wrote in its `Host` header, and *this tab* makes
- * the request — so the guest inherits the tab's position on the network unless
- * something says otherwise. Measured on the deployed site before this rule
- * existed: a guest asking for the page's own address got the app's HTML back,
- * and `/api` reached the harness running beside it, because a same-origin
- * request needs no CORS at all. {@link MachineNetworkConfig.allowPrivate} is
- * that rule — the page's own origin, loopback, link-local and the RFC1918
- * ranges are refused with an answer that says why, and a deployment that wants
- * them says so deliberately.
+ * the request — so a same-origin address needs no CORS at all. Measured on the
+ * deployed site before this rule existed: a guest asking for the page's own
+ * address got the app's HTML back, and `/api` reached the harness running
+ * beside it. That one target is refused now; the computer's own network is
+ * not, because reaching a development server through v86's `<port>.external`
+ * names is a documented thing to want.
  *
- * ## The relay, and why it is not the default
+ * ## The relay, and why it is the default
  *
  * HTTP is the ceiling of what a tab can carry on its own. TLS cannot be: the
  * guest would have to complete a handshake with the far end, and the page has
  * no socket to carry one. So `https://` *from inside the guest* — `pacman`,
  * `apk`, `git clone`, `ssh` — needs a relay: a WebSocket server that owns real
  * sockets and forwards bytes. v86 speaks two such protocols, WISP and
- * websockproxy, and a public server for each is offered in Settings → Network.
- * With one configured the guest gets unrestricted TCP: `telnet example.com 443`
- * connects, and DNS becomes real DNS over DoH rather than one made-up address.
+ * websockproxy.
  *
- * It is off by default, and the reason is the reason a proxy is a fallback
- * rather than a route in `cors-proxy.ts`: a relay carries *everything* the
- * guest sends, in the clear as far as the relay is concerned, to a third party
- * nobody in this session has audited. The in-page bridge involves no such
- * party — and where it does fall back to the CORS proxy, that is one request at
- * a time, to a proxy the user chose. So the default is the honest one and the
- * relay is a switch beside a plain statement of what it costs.
+ * This build ships with one configured, and that is a deliberate trade rather
+ * than an oversight. A relay carries *everything* the guest sends, to a third
+ * party nobody in this session has audited — but the alternative is a machine
+ * that cannot speak TLS at all, and "the emulated PC has the internet" is worth
+ * more than the difference between one third party and the CORS proxy that was
+ * already there. The settings page says exactly what it costs, one click turns
+ * it off, and turning it off leaves the in-page bridge below fully working.
+ *
+ * What it must never do is fail closed. A public relay that is down would
+ * otherwise leave the machine with no network at all, so the boot probes it
+ * once and falls back to the in-page bridge when it does not answer — see
+ * {@link resolveRelay}.
  */
 
 import { proxiedUrl, proxyConfig } from './cors-proxy.ts'
@@ -97,26 +98,21 @@ export interface MachineNetworkConfig {
    */
   relay: string
   /**
-   * Whether the guest may aim at this machine rather than at the internet.
+   * Whether the guest may aim at the page hosting it.
    *
-   * Off, and this is the one setting here that exists for safety rather than
-   * for reach. The bridge fetches whatever the guest put in its `Host` header,
-   * and the fetch is made *by this tab* — so without a rule, a guest could ask
-   * for `http://192.168.1.1/`, for the browser's own loopback, for a cloud
-   * instance's metadata service, or for this page's own origin, where
-   * `src/net/virtual-network.ts` routes `/api` to the harness running beside
-   * it. Measured on the deployed site before this rule existed: a guest
-   * fetching the page's own address got the app's HTML back, and `/api`
-   * reached the in-page server.
+   * Off, and it is the one rule here that is about safety rather than reach.
+   * The bridge fetches whatever the guest put in its `Host` header and *this
+   * tab* makes the request, so a same-origin address needs no CORS at all —
+   * measured on the deployed site before this rule existed, a guest asking for
+   * the page's own address got the app's HTML back and `/api` reached the
+   * harness running beside it.
    *
-   * None of that is the network. The machine was given a route to the
-   * *internet*, and a model driving a guest has no business inside the tab that
-   * is hosting it or on the network of the person running it, so those targets
-   * are refused with an answer that says why. A deployment that genuinely wants
-   * it — v86 documents `<port>.external` for reaching a development server on
-   * localhost — turns this on and knows what it turned on.
+   * Only that. The computer's own network — `localhost`, the LAN, v86's
+   * `<port>.external` names — is left reachable, because reaching a
+   * development server is a thing v86 documents and a thing a person running
+   * this locally may well want. What is refused is the tab itself.
    */
-  allowPrivate: boolean
+  allowSelf: boolean
 }
 
 /**
@@ -127,6 +123,16 @@ export interface MachineNetworkConfig {
  * who wants unrestricted TCP has somewhere to start, and every one of them is
  * described as what it is.
  */
+/**
+ * The relay a fresh install uses.
+ *
+ * Mercury Workshop's public WISP server, which was reached from this page and
+ * carried a raw connection to port 443. It is somebody else's machine and the
+ * settings page says so in as many words; what it buys is a guest that can
+ * speak TLS, which nothing running only in this tab can offer.
+ */
+export const DEFAULT_RELAY = 'wisps://wisp.mercurywork.shop/'
+
 export const RELAY_PRESETS: { url: string, label: string, detail: string }[] = [
   {
     url: 'wisps://wisp.mercurywork.shop/',
@@ -147,7 +153,7 @@ export const RELAY_PRESETS: { url: string, label: string, detail: string }[] = [
 const STORAGE_KEY = 'dsh-web:machine-network'
 
 /** The shipped default: connected, and answered by this page rather than by a server. */
-const DEFAULTS: MachineNetworkConfig = { enabled: true, relay: '', allowPrivate: false }
+const DEFAULTS: MachineNetworkConfig = { enabled: true, relay: DEFAULT_RELAY, allowSelf: false }
 
 /** The configuration in force, read once and kept. */
 let current: MachineNetworkConfig | undefined
@@ -166,7 +172,7 @@ export function machineNetworkConfig(): MachineNetworkConfig {
       current = {
         enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : DEFAULTS.enabled,
         relay: typeof parsed.relay === 'string' ? parsed.relay.trim() : DEFAULTS.relay,
-        allowPrivate: typeof parsed.allowPrivate === 'boolean' ? parsed.allowPrivate : DEFAULTS.allowPrivate,
+        allowSelf: typeof parsed.allowSelf === 'boolean' ? parsed.allowSelf : DEFAULTS.allowSelf,
       }
     }
   } catch {
@@ -189,7 +195,7 @@ export function setMachineNetworkConfig(next: Partial<MachineNetworkConfig>): Ma
   const merged: MachineNetworkConfig = {
     enabled: next.enabled ?? machineNetworkConfig().enabled,
     relay: (next.relay ?? machineNetworkConfig().relay).trim(),
-    allowPrivate: next.allowPrivate ?? machineNetworkConfig().allowPrivate,
+    allowSelf: next.allowSelf ?? machineNetworkConfig().allowSelf,
   }
   current = merged
   try {
@@ -231,7 +237,10 @@ export function netDevice(options: Record<string, unknown>): Record<string, unkn
   // still enumerates its hardware exactly as it did before this feature
   // existed, which is what keeps a saved machine's driver state valid.
   if (!config.enabled) return { ...declared, type }
-  const relay = config.relay === '' ? 'fetch' : config.relay
+  // The relay the boot actually settled on, which is the configured one unless
+  // it failed to answer — see {@link resolveRelay}.
+  const chosen = effectiveRelay().relay
+  const relay = chosen === '' ? 'fetch' : chosen
   return {
     ...declared,
     type,
@@ -327,48 +336,22 @@ function otherScheme(url: string): string | undefined {
 const HEADERS_MS = 30_000
 
 /**
- * Hostnames and addresses that are not "the internet".
- *
- * Matched on the hostname as the guest wrote it, before any DNS happens,
- * because there is no DNS to consult: `fetch` resolves the name inside the
- * browser and never tells the page what it resolved to. That is a real limit
- * and it is worth stating rather than papering over — a name that resolves to a
- * private address gets through this, and only the far end's own CORS policy
- * stops it. What this does stop is the direct, obvious and measured cases: the
- * loopback, the link-local metadata address, the RFC1918 ranges a home network
- * lives on, and the names v86 maps to a developer's own machine.
- */
-const PRIVATE_HOST = new RegExp([
-  '^localhost$',
-  '^127\\.',
-  '^0\\.0\\.0\\.0$',
-  '^10\\.',
-  '^192\\.168\\.',
-  '^172\\.(?:1[6-9]|2\\d|3[01])\\.',
-  '^169\\.254\\.',
-  '^\\[?::1\\]?$',
-  '^\\[?f[cde][0-9a-f]{2}:',
-  '\\.local$',
-  '\\.internal$',
-  '^\\d+\\.external$',
-].join('|'), 'i')
-
-/**
  * Whether the page will fetch this on the guest's behalf.
  *
- * Three refusals, and the third is the one that is easy to miss. A scheme that
- * is not HTTP cannot be a `fetch`. A private or loopback host is the machine
- * the page is running on, or the network it is running on, neither of which is
- * what "give the guest the internet" meant. And this page's own origin is the
- * harness itself: a same-origin request needs no CORS at all, so without this
- * the guest would have an unauthenticated line into `/api` and into every route
- * a plugin serves — measured on the deployed site, where a guest asking for the
- * page's own address got the app's HTML back.
+ * Two refusals. A scheme that is not HTTP cannot be a `fetch`. And this page's
+ * own origin is the harness itself: a same-origin request needs no CORS, so
+ * without this the guest would have an unauthenticated line into `/api` and
+ * into every route a plugin serves — measured on the deployed site, where a
+ * guest asking for the page's own address got the app's HTML back.
+ *
+ * Deliberately nothing else. The computer's own network is left alone: v86
+ * documents `<port>.external` for reaching a development server on localhost,
+ * and a machine that can be pointed at a LAN address is a machine behaving the
+ * way the emulator says it does. That is reach this build does not take away.
  * @param url - the target the guest asked for.
  * @returns why it is refused, or undefined when it may go.
  */
 function refuseTarget(url: string): string | undefined {
-  if (machineNetworkConfig().allowPrivate) return undefined
   let parsed: URL
   try {
     parsed = new URL(url)
@@ -378,14 +361,17 @@ function refuseTarget(url: string): string | undefined {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return `${parsed.protocol} is not something a browser tab can carry; only http and https are.`
   }
+  if (machineNetworkConfig().allowSelf) return undefined
+  // Host and port, deliberately ignoring the scheme. `virtual-network.ts`
+  // routes to the in-page harness on `url.origin === location.origin`, but a
+  // rule written that way is one the retry ladder walks straight through: a
+  // refused `http://…` is retried as `https://…`, which is the origin that
+  // reaches it. Same hostname on a *different* port is a different server and
+  // is left alone.
   if (typeof location !== 'undefined' && parsed.host === location.host) {
     return `${parsed.host} is the page hosting this machine, not the internet. `
       + 'A request there would reach the harness\'s own API with no authentication in front of it, so the '
       + 'machine is not given that route. Settings → Network can allow it if a deployment actually wants it.'
-  }
-  if (PRIVATE_HOST.test(parsed.hostname)) {
-    return `${parsed.hostname} is on the network of the computer running this browser, not on the internet. `
-      + 'The machine is given a route out, not a route in. Settings → Network can allow it.'
   }
   return undefined
 }
@@ -443,22 +429,27 @@ function advice(url: string, error: unknown): string {
  * @returns the response, for v86 to write back down the connection.
  */
 async function guestFetch(url: string, init: RequestInit): Promise<Response> {
-  // Before anything leaves. A refusal is recorded like any other outcome, so
-  // the settings page shows what the machine tried rather than only what it
-  // managed — a model probing an address it will never be given should be
-  // visible to the person whose browser it is probing from.
-  const refusal = refuseTarget(url)
-  if (refusal !== undefined) {
-    record({ url, error: refusal })
-    const refused = new Error(refusal)
-    refused.stack = refused.message
-    throw refused
-  }
   const attempts = [url]
   const alternate = otherScheme(url)
   if (alternate !== undefined) attempts.push(alternate)
   let last: unknown
+  let refusedReason: string | undefined
   for (const attempt of attempts) {
+    // Checked per rung rather than once for the URL the guest wrote. On an
+    // HTTPS page a guest's `http://` request is retried as `https://`, and it
+    // is that second rung which would land on the page's own origin — checking
+    // only the first would refuse the address the guest typed and then fetch
+    // the one it meant.
+    //
+    // A refusal is recorded like any other outcome, so the settings page shows
+    // what the machine tried rather than only what it managed.
+    const refusal = refuseTarget(attempt)
+    if (refusal !== undefined) {
+      record({ url: attempt, error: refusal })
+      refusedReason ??= refusal
+      last = new Error(refusal)
+      continue
+    }
     // Aborted only while the headers are outstanding: the timer is cleared the
     // moment a response exists, so a slow body streams for as long as it takes.
     const controller = new AbortController()
@@ -485,7 +476,11 @@ async function guestFetch(url: string, init: RequestInit): Promise<Response> {
       if (error instanceof DOMException && error.name === 'TimeoutError') break
     }
   }
-  const failure = new Error(advice(url, last))
+  // A refusal is already the whole explanation; wrapping it in advice about
+  // CORS proxies would bury the sentence that says what happened.
+  // A refusal is the whole explanation; wrapping it in advice about CORS
+  // proxies would bury the sentence that says what actually happened.
+  const failure = new Error(refusedReason ?? advice(url, last))
   // v86 writes `e.stack` into the 502 it hands the guest when there is one, and
   // a JavaScript stack trace in a guest's terminal buries the sentence that
   // says what to do. The message is the whole of what belongs there.
@@ -849,6 +844,49 @@ function serve(conn: GuestConnection): void {
   conn.accept()
 }
 
+/** How long the boot waits for the relay to answer before giving up on it. */
+const RELAY_PROBE_MS = 4_000
+
+/** What the last probe concluded, so a second machine in one page load does not re-ask. */
+let resolved: { relay: string, fellBack: boolean } | undefined
+
+/**
+ * Decide which backend this boot actually gets.
+ *
+ * A relay is a third party, and a third party is a thing that is sometimes
+ * down. Constructed against a dead one, v86's WISP client opens a socket that
+ * never connects and retries every ten seconds, and the guest's experience of
+ * that is not an error — it is a network that does nothing, forever. So the
+ * boot asks first, once, with a short deadline, and takes the in-page bridge
+ * when the answer is no.
+ *
+ * Cached for the life of the page, because the alternative is four seconds
+ * added to every restart of a machine on a connection that has already been
+ * measured.
+ * @returns the relay to construct with, and whether it is the one configured.
+ */
+export async function resolveRelay(): Promise<{ relay: string, fellBack: boolean }> {
+  const config = machineNetworkConfig()
+  if (!config.enabled || config.relay === '') return { relay: '', fellBack: false }
+  if (resolved !== undefined) return resolved
+  const answer = await testRelay(config.relay)
+  resolved = answer.ok ? { relay: config.relay, fellBack: false } : { relay: '', fellBack: true }
+  if (!resolved.fellBack) return resolved
+  // Recorded where the settings page and the model both read it: a machine
+  // quietly on a different network than the one configured is exactly the kind
+  // of thing that gets debugged in the wrong place.
+  record({
+    url: config.relay,
+    error: 'the relay did not answer, so this machine is on the page\'s own HTTP bridge instead',
+  })
+  return resolved
+}
+
+/** Which backend the last boot settled on, for callers that cannot await. */
+export function effectiveRelay(): { relay: string, fellBack: boolean } {
+  return resolved ?? { relay: machineNetworkConfig().enabled ? machineNetworkConfig().relay : '', fellBack: false }
+}
+
 /**
  * Wire a freshly constructed emulator to the page's network.
  *
@@ -863,10 +901,11 @@ function serve(conn: GuestConnection): void {
 export function attachMachineNetwork(emulator: NetworkedEmulator): void {
   const config = machineNetworkConfig()
   if (!config.enabled) return
+  const chosen = effectiveRelay().relay
 
   // Only the in-page bridge has ports this page answers for. A relay owns real
   // sockets, and a listener here would steal connections it can carry properly.
-  if (config.relay === '') {
+  if (chosen === '') {
     emulator.add_listener('tcp-connection', ((conn: GuestConnection) => {
       // Port 80 is v86's own, and it is left there: it is the well-trodden path
       // and it already does the mixed-content rewrite this page needs.
@@ -882,7 +921,7 @@ export function attachMachineNetwork(emulator: NetworkedEmulator): void {
   // Only the in-page bridge has a request to wrap. A relay's adapter never
   // fetches anything — it owns a socket — so polling for a property it does not
   // have would be thirty seconds of timers proving nothing.
-  if (config.relay !== '') return
+  if (chosen !== '') return
 
   let tries = 0
   const install = (): void => {

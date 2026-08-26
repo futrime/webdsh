@@ -17,7 +17,7 @@ Node itself, in the tab.
 - ⚡ **Nothing to run.** No server, no install, no local Node — the harness boots in the page.
 - 🖥️ **Real Node, real Python.** `npm install` and `pip install` both work, and the terminal and the agent share one container.
 - 💾 **Or a whole PC.** Settings → Machine swaps the container for [v86](https://github.com/copy/v86) and offers **128 machines** — the whole of v86's catalog, from a 512-byte bootsector game to Windows 2000, **87 of them booting with nothing to set up** — emulated x86, on its own screen, with the tool set that machine actually has.
-- 🌐 **The PC is online.** The page is its router: it answers the guest's DHCP, DNS and pings and carries its HTTP as browser `fetch`, through the same CORS policy the rest of the app uses — so `wget http://example.com` works on an emulated Buildroot, and the same URL from the container answers `fetch failed` unless the model routes it through the proxy by hand.
+- 🌐 **The PC is online.** A WISP relay by default, so the guest gets real TCP — `https://`, package managers, `ssh` — and without one the page itself is the router: it answers the guest's DHCP, DNS and pings and carries HTTP as browser `fetch`, through the same CORS policy the rest of the app uses. `wget http://example.com` works on an emulated Buildroot either way; the same URL from the container answers `fetch failed`.
 - 👁️ **It can see.** Attach an image and the model reads it: oriented, capped and re-encoded to the route's budget by the browser's own decoder, with the source's EXIF and colour profile stripped on the way.
 - 🧩 **Real plugins.** Install from npm, a tarball, GitHub, or a path — from the browser.
 - 📦 **Real dsh.** The published `@deepseek-ai/*` packages, unmodified: 120 of 135 rows compose exactly as `dsh web` composes them.
@@ -115,13 +115,19 @@ the host wants that. It is outbound HTTP and nothing else — no inbound route t
 a server running in the guest, no UDP beyond the DHCP and DNS the page fakes,
 and no cookies or CORS-hidden response headers, so anything that needs a login
 will not work. `ping` and DNS are answered by the page, not by the host named.
-The guest is refused this page's own origin and private address ranges, because
-the fetch is made by the tab and a same-origin request needs no CORS at all;
-Settings → Network can allow them for a deployment that means to.
+The guest is refused this page's own origin, because the fetch is made by the
+tab and a same-origin request needs no CORS at all — it would be a line into the
+harness's own `/api`. Your computer's network is not blocked: `localhost`, the
+LAN and v86's `<port>.external` names all work.
 
-Settings → Network can also name a WISP or websockproxy relay for a session that
-needs real TCP, and says plainly what routing every byte through a third party
-costs. Whether a particular guest has a driver for the card is a fact about its
+That is the floor. **A WISP relay is configured by default**, and with one the
+guest has real TCP instead of HTTP-shaped TCP: `https://` works end to end,
+package managers and `ssh` become possible, and DNS is real. The cost is that a
+third party carries every byte the machine sends, including inside a TLS session
+it is only forwarding — Settings → Network says so plainly, one click clears it,
+and clearing it leaves the in-page bridge working. A relay that does not answer
+when a machine starts is dropped for that bridge rather than left as a network
+that silently does nothing. Whether a particular guest has a driver for the card is a fact about its
 disk: it is measured per machine — three of them so far — and a machine nobody
 has measured is described as exactly that rather than promised a network.
 
