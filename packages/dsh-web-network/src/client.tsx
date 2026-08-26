@@ -139,35 +139,9 @@ function MachineNetwork(): JSX.Element | null {
 
   if (bridge === undefined) return null
 
-  const failures = traffic.requests.filter(entry => entry.error !== undefined).length
-
   return (
     <>
-      <div className="dsh-web-network-field">
-        <h3>The emulated machine</h3>
-        <p>
-          Settings → Machine can run this session on an emulated PC instead of the container. That PC
-          has an ethernet card, and this page is what is on the other end of it: it answers the
-          guest&apos;s ARP, hands it a DHCP lease, answers its DNS and pings, and turns the HTTP
-          requests inside its TCP into <code>fetch</code> calls — which then go through the CORS
-          policy above, direct first and proxied only when a host refuses. That is why an emulated
-          Buildroot can <code>wget http://example.com</code> and the container cannot: the
-          container&apos;s requests never pass through this tab.
-        </p>
-        <p>
-          What it cannot carry is TLS. A guest asking for <code>https://</code> would have to complete
-          a handshake with the far end, and a tab has no socket to carry one, so those connections are
-          refused rather than hung. Plain <code>http://</code> URLs are the way out — served over HTTPS,
-          this page sends them as HTTPS on the wire wherever the host wants that.
-        </p>
-        <p>
-          It is outbound HTTP and nothing else. There is no inbound route, so a server started inside the
-          guest is not reachable from here; cookies are dropped in both directions and a cross-origin
-          response arrives with only the headers CORS exposes, so anything that depends on logging in will
-          not work; and <code>ping</code> and DNS are answered by this page rather than by the host named,
-          so a reply proves the emulated card works and nothing more.
-        </p>
-      </div>
+      <h3>Emulated machine</h3>
 
       <label className="dsh-web-network-toggle">
         <input
@@ -175,7 +149,7 @@ function MachineNetwork(): JSX.Element | null {
           checked={enabled}
           onChange={event => { save({ enabled: event.target.checked }) }}
         />
-        <span>Give the emulated machine a route out of the page</span>
+        <span>Give it a network. Outbound only.</span>
       </label>
 
       <label className="dsh-web-network-toggle">
@@ -184,26 +158,18 @@ function MachineNetwork(): JSX.Element | null {
           checked={allowSelf}
           onChange={event => { save({ allowSelf: event.target.checked }) }}
         />
-        <span>
-          Also let it reach this page&apos;s own address
-          <br />
-          Off by default, and the one setting here that is about safety rather than reach. The page fetches
-          whatever address the guest asks for, and a same-origin request needs no CORS at all — so without
-          this rule a machine, driven by a model, could read this app&apos;s own <code>/api</code>. Your
-          computer&apos;s network is <em>not</em> blocked: <code>localhost</code>, the LAN and v86&apos;s
-          <code> &lt;port&gt;.external</code> names all work, which is what the emulator documents.
-        </span>
+        <span>Let it reach this page&apos;s own address</span>
       </label>
 
       <div className="dsh-web-network-field">
-        <label htmlFor="dsh-web-network-relay">Relay (optional)</label>
+        <label htmlFor="dsh-web-network-relay">Relay</label>
         <div className="dsh-web-network-row">
           <input
             id="dsh-web-network-relay"
             type="text"
             value={relay}
             spellCheck={false}
-            placeholder="empty — this page answers the machine itself"
+            placeholder="empty — HTTP through this page"
             onChange={event => { setRelay(event.target.value) }}
             onKeyDown={event => { if (event.key === 'Enter') save({ relay: relay.trim() }) }}
           />
@@ -211,44 +177,24 @@ function MachineNetwork(): JSX.Element | null {
           <button type="button" disabled={busy} onClick={() => { void probe() }}>Test</button>
           <button type="button" disabled={busy} onClick={() => { save({ relay: '' }) }}>Clear</button>
         </div>
-        <p>
-          A relay is a WebSocket server that owns real sockets and forwards the guest&apos;s bytes to them.
-          With one the guest has real TCP rather than HTTP-shaped TCP — <code>https://</code> can work, and
-          so can anything else it has a client for — and real DNS instead of the single address this page
-          invents. <strong>This build ships with one configured</strong>, because a machine that cannot
-          speak TLS is a machine most of the modern internet refuses; clear the field to fall back to the
-          in-page bridge, which needs nobody. If the relay does not answer when a machine starts, the page
-          falls back on its own rather than leaving the guest on a network that silently does nothing.
-        </p>
+        <p>A WISP or websockproxy server, which carries every byte. Empty: HTTP through this page, no TLS.</p>
         <ul className="dsh-web-network-list">
           {bridge.relays.map(preset => (
             <li key={preset.url}>
               <button type="button" onClick={() => { setRelay(preset.url); save({ relay: preset.url }) }}>
                 {preset.label}
               </button>{' '}
-              <code>{preset.url}</code> — {preset.detail}
+              <code>{preset.url}</code>
             </li>
           ))}
         </ul>
       </div>
 
-      <div className="dsh-web-network-warn">
-        A relay sees every byte the guest sends, to every host it talks to, including the ones inside a TLS
-        session it is only forwarding — it is the machine&apos;s entire internet connection, not a fallback
-        for one refused request. The one configured by default is a public server run by other people. If
-        that is not a trade you want, clear the field: the machine keeps working, over HTTP, with nobody
-        else in the path. Running your own (<code>wisp-js</code>, <code>wsnic</code>) gets both.
-      </div>
-
       {traffic.requests.length > 0 && (
         <div className="dsh-web-network-field">
           <h3>The machine asked for</h3>
-          <p>
-            The last {traffic.requests.length} requests the guest made through this page
-            {failures > 0 ? `, ${failures} of which failed` : ''}.
-          </p>
           <ul className="dsh-web-network-list">
-            {traffic.requests.slice(-12).reverse().map((entry, index) => (
+            {traffic.requests.slice(-8).reverse().map((entry, index) => (
               <li key={`${entry.url}-${String(index)}`}>
                 {entry.status === undefined ? '✗' : entry.status} {entry.url}
                 {entry.error === undefined ? '' : ` — ${entry.error}`}
@@ -260,9 +206,7 @@ function MachineNetwork(): JSX.Element | null {
 
       {traffic.refusedPorts.length > 0 && (
         <div className="dsh-web-network-warn">
-          The guest opened connections this page could not carry, on port{' '}
-          {traffic.refusedPorts.join(', ')}. Those are not HTTP — a TLS or plain-socket protocol — and
-          only a relay can carry them.
+          Port {traffic.refusedPorts.join(', ')} could not be carried without a relay.
         </div>
       )}
 
@@ -330,25 +274,7 @@ function NetworkSection(): JSX.Element {
 
   return (
     <div className="dsh-web-network">
-      <div className="dsh-web-network-field">
-        <h3>CORS proxy</h3>
-        <p>
-          This page runs entirely in your browser, so it reaches a host only if that host sends CORS
-          headers. Most do — the npm registry, DeepSeek, Anthropic, Google, OpenRouter. Some do not:
-          OpenAI, NVIDIA, Cerebras and <code>codeload.github.com</code> all refuse a browser outright,
-          and a request to them fails with <code>Failed to fetch</code> however it is written.
-        </p>
-        <p>
-          When that happens, the request can be retried once through a proxy. The direct attempt is
-          always made first, so a host that answers a browser never goes through one.
-        </p>
-        <p>
-          One thing this does not reach: commands the agent runs. Those leave from the runtime's own
-          worker, which the page cannot intercept, so the shell tool is instead <em>told</em> what is
-          configured here — and it is told at page load, so a change below reaches the model on the
-          next reload.
-        </p>
-      </div>
+      <h3>CORS proxy</h3>
 
       <label className="dsh-web-network-toggle">
         <input
@@ -356,15 +282,11 @@ function NetworkSection(): JSX.Element {
           checked={enabled}
           onChange={event => { apply({ enabled: event.target.checked }) }}
         />
-        <span>Retry a blocked request through the proxy below</span>
+        <span>Retry requests a host refuses. Direct is always tried first.</span>
       </label>
 
       {!enabled && (
-        <div className="dsh-web-network-warn">
-          The default model is off with it. <code>opencode.ai/zen</code> — which serves the free tier
-          this page starts on — refuses browsers like the rest, so with no proxy it cannot be reached.
-          Pick a provider that answers a browser in Settings → Models, or turn the retry back on.
-        </div>
+        <div className="dsh-web-network-warn">The default free model needs this on.</div>
       )}
 
       <div className="dsh-web-network-field">
@@ -389,35 +311,12 @@ function NetworkSection(): JSX.Element {
             Reset
           </button>
         </div>
-        <p>
-          <code>{'{url}'}</code> is replaced with the target address and <code>{'{encoded}'}</code> with
-          its percent-encoded form, so both a prefix proxy
-          (<code>https://host/{'{url}'}</code>) and one taking a query parameter
-          (<code>https://host/?url={'{encoded}'}</code>) work. The default is{' '}
-          <code>{bridge.defaults.template}</code>; <code>{bridge.defaults.alternative}</code> was
-          measured to work the same way.
-        </p>
-        <p>
-          Both of those public proxies buffer: a proxied reply arrives whole when the model finishes
-          rather than a word at a time. The answer is the same, the wait just looks like nothing is
-          happening. A proxy that streams fixes it, which is the reason to run your own — a
-          Cloudflare Worker forwarding the request and returning <code>response.body</code> unread is
-          enough, and it is also the only way this traffic stops passing through a stranger.
-        </p>
-      </div>
-
-      <div className="dsh-web-network-warn">
-        A proxy sees the whole request — the URL, the headers, and the body. That includes the API key
-        on a model request routed through it. Only a host that refuses browsers is ever proxied, and
-        no cookies are sent, but if you would not hand this traffic to the operator of{' '}
-        <code>{template.trim() === '' ? bridge.defaults.template : template.trim()}</code>, turn the
-        retry off above or point it at a proxy you run.
+        <p><code>{'{url}'}</code> marks the target. The proxy sees the whole request.</p>
       </div>
 
       {used.length > 0 && (
         <div className="dsh-web-network-field">
           <h3>Proxied this session</h3>
-          <p>Hosts that refused this browser directly and were reached through the proxy instead.</p>
           <ul className="dsh-web-network-list">
             {used.map(origin => <li key={origin}>{origin}</li>)}
           </ul>

@@ -778,15 +778,12 @@ function MachineSettings(): JSX.Element {
     <div className="dsh-web-machine-settings">
       <h3>Machine</h3>
       <p className="dsh-web-machine-lede">
-        One session runs on one machine, and which one decides what tools the assistant is given and what
-        the Machine panel shows — a terminal for the container, a screen for an emulated PC. A change
-        applies the next time this page loads. This session is on{' '}
-        <strong>{runningName(active, guests)}</strong>.
+        Applies on the next load. Now running <strong>{runningName(active, guests)}</strong>.
       </p>
 
       <MachineRow
         title="Node container"
-        detail="WebContainers: Node 22, npm, a real CPython with pip, and a POSIX filesystem shared with the assistant's file tools. The default."
+        detail="Node 22, npm, CPython with pip, and the assistant's own filesystem."
         tags={['terminal', 'nothing to download']}
         chosen={chosen.kind === 'node'}
         onChoose={() => { choose({ kind: 'node' }) }}
@@ -886,10 +883,7 @@ function MachineSettings(): JSX.Element {
 
       <h3>Image host</h3>
       <p className="dsh-web-machine-lede">
-        Where disk images are fetched from. The default is the v86 project&apos;s public image repository,
-        which serves the machines above that need no setup. v86&apos;s own demo serves the rest from{' '}
-        <code>{machine?.hosts.upstream}</code>, which refuses requests from anywhere but <code>copy.sh</code>{' '}
-        — so pointing at it only works if that is where you are. A mirror of your own works too.
+        Where disk images come from. Blank uses the default mirror.
       </p>
       <div className="dsh-web-machine-host">
         <input
