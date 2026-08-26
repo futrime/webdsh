@@ -384,11 +384,17 @@ export interface GuestNetwork {
    *   nobody switched on.
    * - `auto` — the guest brings its own up, which is what every Windows here
    *   does with a DHCP server on the wire.
+   * - `link` — it puts frames on the wire and never asks for an address. A
+   *   driver is bound; a static configuration inside the guest is what it
+   *   wants.
    * - `none` — measured, and the answer was no: the card is in the machine and
    *   the guest has no driver that finds it, so `/sys/class/net` holds nothing
    *   but `lo` and no amount of configuration will change it.
+   *
+   * Absent means nobody has looked, which is most of the catalog — see
+   * {@link CATALOG_NETWORK} for why silence is not recorded as `none`.
    */
-  bring: 'dhcp' | 'auto' | 'none'
+  bring: 'dhcp' | 'auto' | 'link' | 'none'
   /** For `dhcp`, the command that asks for a lease. */
   up?: string
   /** What the network is like on this guest, in the model's terms. */
@@ -496,6 +502,9 @@ const MEASURED: GuestSpec[] = [
     id: 'kolibrios',
     name: 'KolibriOS',
     console: 'gui',
+    // Measured: it sends a DHCP discover of its own accord within seconds of
+    // reaching the desktop, which is more than almost anything else here does.
+    network: { bring: 'auto' },
     summary: 'A graphical operating system written entirely in assembly, on one floppy.',
     contains: 'A desktop, a text editor, an assembler, a browser, and a pile of games and demos.',
     bundled: true,
@@ -781,6 +790,40 @@ function knownSlot(slot: string): slot is ImageSlot {
 }
 
 /**
+ * What a machine's network turned out to be, where anybody has looked.
+ *
+ * Produced by `npx tsx scripts/v86-network-probe.ts --all`, which boots each
+ * machine and watches v86's own bus for frames leaving the guest's card. Only
+ * positive findings are recorded here: a machine that asked for an address, or
+ * put something on the wire, did so and that is a fact. A machine that stayed
+ * quiet is *not* recorded as having no driver, because from outside "no driver"
+ * and "a driver nobody configured" and "restored from a state that did its
+ * networking before the snapshot" are the same silence — and most of this
+ * catalog has no shell to ask. Of a hundred and thirteen machines swept, eleven
+ * came back positive. That is the honest yield, and it is worth knowing before
+ * expecting a network on a machine nobody has driven.
+ *
+ * {@link MEASURED} carries its own values inline; this is for the machines that
+ * come in from the catalog.
+ */
+const CATALOG_NETWORK: Record<string, GuestNetwork> = {
+  // Asked for an address on their own, before anything was typed at them.
+  'kolibrios-fallback': { bring: 'auto' },
+  serenity: { bring: 'auto' },
+  basiclinux: { bring: 'auto' },
+  xwoaf: { bring: 'auto' },
+  helenos: { bring: 'auto' },
+  dsl: { bring: 'auto' },
+  // Network bootloaders: reaching the network is the entire program.
+  ipxe: { bring: 'auto' },
+  'netboot.xyz': { bring: 'auto' },
+  // Frames on the wire, no DHCP: a driver is bound and nothing asked for an
+  // address, so a static configuration inside the guest is what it wants.
+  sanos: { bring: 'link' },
+  syllable: { bring: 'link' },
+}
+
+/**
  * Turn one catalog row into a machine this build can offer.
  * @param entry - the upstream row.
  * @returns the spec, or undefined for a row this build cannot express.
@@ -827,6 +870,7 @@ function fromCatalog(entry: CatalogEntry): GuestSpec | undefined {
   return {
     id: entry.id,
     name: entry.name,
+    ...(CATALOG_NETWORK[entry.id] === undefined ? {} : { network: CATALOG_NETWORK[entry.id] }),
     console: entry.ui === 'text' && entry.family === 'DOS' ? 'dos' : 'gui',
     summary: `${description}.`.replace(/\.\.$/, '.'),
     // Upstream's own one-line description is the only orientation there is for

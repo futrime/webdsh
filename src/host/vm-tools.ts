@@ -201,11 +201,14 @@ function networkAdvice(spec: GuestSpec): string[] {
       ? ['  The interface is already up: this console takes a DHCP lease before your first command.']
       : spec.network?.bring === 'auto'
         ? ['  The guest brings its own interface up.']
-        : [
+        : spec.network?.bring === 'link'
+          ? ['  Measured: this guest binds a driver to the card and never asks for an address, so give it',
+            '  one — the page answers as 192.168.86.1 and hands out 192.168.86.100.']
+          : [
             '  Whether this guest has a driver for the card was never measured. If `ip link` or `ifconfig -a`',
             '  shows no interface but `lo`, it has none and nothing will change that; if it shows one that has',
             '  no address, ask for a lease (`udhcpc -i eth0`, `dhcpcd`, or whatever this system uses).',
-          ],
+            ],
   ]
 }
 
