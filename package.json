@@ -21,6 +21,7 @@
     "test:ios": "tsx scripts/ios-e2e.ts",
     "test:http": "tsx scripts/http-shim-test.ts",
     "test:machine-network": "tsx scripts/machine-network-test.ts",
+    "v86:network": "tsx scripts/v86-network-probe.ts",
     "test:shell": "node scripts/shell-diff.mjs",
     "test:python": "tsx scripts/python-e2e.ts",
     "test:files": "tsx scripts/files-e2e.ts",
