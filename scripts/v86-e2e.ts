@@ -296,23 +296,32 @@ async function proveKeyboardReaches(page: Page, key: string): Promise<void> {
   // byte-identical — the same 20675 both times — on a guest that was measured
   // answering the same keystroke locally. Waiting *for the change* rather than
   // for the clock makes a slow host slow instead of red.
+  // Watched for *any* movement, and the keystroke repeated while watching.
+  //
+  // Two things make a single final comparison wrong here. The redraw is slow —
+  // measured warm, Windows 98 opens its Start menu 830ms after Ctrl+Escape;
+  // measured on CI, where the same guest streams a three-hundred-megabyte disk
+  // from upstream while it tries to draw, it has missed thirty seconds and then
+  // ninety. And the gesture toggles: a menu that opened and closed again ends
+  // byte-identical to where it started, so the evidence is the movement, not
+  // the final frame. Repeating the keystroke is safe for the same reason.
   let after = await shot()
-  // Ninety seconds, and the number comes from what the slow case actually is.
-  // Measured here, warm: Windows 98 opens its Start menu 830ms after the
-  // keystroke, with the machine's network on or off alike. On CI the same guest
-  // is streaming a three-hundred-megabyte disk from upstream for the first time
-  // while it tries to redraw, and it has repeatedly missed thirty. A machine
-  // that never answers still fails; it now takes a minute and a half to say so
-  // rather than reporting a starved guest as a broken keyboard.
+  let moved = after < low - margin || after > high + margin
   const deadline = Date.now() + 90_000
-  while (Date.now() < deadline && after >= low - margin && after <= high + margin) {
+  for (let attempt = 0; !moved && Date.now() < deadline; attempt++) {
+    if (attempt > 0 && attempt % 15 === 0) {
+      await page.evaluate(async (pressed: string) => {
+        await (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle }).__DSH_WEB_MACHINE__.input.press(pressed)
+      }, key)
+    }
     await page.waitForTimeout(1000)
     after = await shot()
+    moved = after < low - margin || after > high + margin
   }
   if (machineAborted() !== undefined) {
     throw new Skipped(`the emulator aborted mid-scenario (${String(machineAborted())}); the keyboard could not be judged`)
   }
-  expect(after < low - margin || after > high + margin,
+  expect(moved,
     `${key} moved the screen from ${String(low)}-${String(high)} bytes to ${String(after)}, `
     + `which is inside the ${String(margin)}-byte margin it drifts by on its own — the keyboard is not reaching the guest`)
 }
