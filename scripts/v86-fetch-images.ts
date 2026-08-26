@@ -27,7 +27,8 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { zstdDecompressSync } from 'node:zlib'
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { GUESTS } from '../src/runtime/guests.ts'
@@ -55,7 +56,11 @@ interface Wanted {
   guest: string
   file: string
   url: string
+  /** The host it comes from, kept for an image that is fetched in pieces. */
+  base: string
   bytes?: number
+  /** The piece size, when the host serves this image only in pieces. */
+  chunk?: number
 }
 
 /** Bytes as a size a person reads. */
@@ -78,11 +83,141 @@ function list(): void {
 }
 
 /**
- * Fetch one file, whole, and record where it came from.
+ * How many pieces of a chunked image are in flight at once.
  *
- * Whole rather than in pieces: a streamed image is only read in pieces by the
- * *emulator*, from a host that supports ranges — and this deployment's own
- * static files support ranges, so what has to be here is the image itself.
+ * Four, and the number is manners rather than tuning. The hosts that have these
+ * images are somebody's own server — a machine read in a thousand pieces is a
+ * thousand requests, and asking for them all at once is the difference between
+ * a mirror and a hammer. Four keeps a link busy without ever looking like one.
+ */
+const PIECES_AT_ONCE = 4
+
+/** The digest of a file already on disk, without holding it in memory. */
+async function digestOf(path: string): Promise<string> {
+  const hash = createHash('sha256')
+  await new Promise<void>((resolve, reject) => {
+    createReadStream(path)
+      .on('data', chunk => hash.update(chunk))
+      .on('end', resolve)
+      .on('error', reject)
+  })
+  return hash.digest('hex')
+}
+
+/**
+ * Fetch one whole file, streamed to disk.
+ *
+ * Streamed rather than buffered: these run to two gigabytes, and
+ * `await response.arrayBuffer()` on one of those is a heap the process does not
+ * have.
+ * @param url - where it comes from.
+ * @param destination - where it goes.
+ * @returns how many bytes were written.
+ */
+async function fetchWhole(url: string, destination: string): Promise<number> {
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`${url} answered ${String(response.status)}`)
+  const body = response.body
+  if (body === null) throw new Error(`${url} answered with no body`)
+  const staging = `${destination}.part`
+  const out = createWriteStream(staging)
+  let written = 0
+  for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
+    written += chunk.length
+    if (!out.write(chunk)) await new Promise(resolve => out.once('drain', resolve))
+  }
+  await new Promise<void>((resolve, reject) => { out.end(() => { resolve() }); out.on('error', reject) })
+  return written
+}
+
+/**
+ * Fetch one image that its host only serves in pieces, and put it back together.
+ *
+ * This is the shape v86 reads a large disk in: a name like `haiku-v5/.img` is
+ * not a file, it is a directory of `<offset>-<offset+chunk>.img` pieces, and
+ * the emulator asks for the ones it needs as the guest touches them. A mirror
+ * does not want that — a thousand small objects per machine is a slow upload
+ * and a slower fetch — and it does not need it either, because a host that
+ * answers range requests lets the emulator read a single file exactly the same
+ * way. So the pieces are fetched once, here, and written end to end.
+ *
+ * Resumable, because these are large and somebody's connection will drop: a
+ * `.part` file of a whole number of pieces is picked up where it stopped.
+ * @param base - the host serving the pieces.
+ * @param file - the catalog's name for the image, `<dir>/<ext>` style.
+ * @param bytes - the size the catalog states, which is also how many pieces there are.
+ * @param chunk - the piece size the catalog states.
+ * @param destination - where the reassembled file goes.
+ * @returns how many bytes were written.
+ */
+async function fetchPieces(
+  base: string,
+  file: string,
+  bytes: number,
+  chunk: number,
+  destination: string,
+): Promise<number> {
+  const cut = file.lastIndexOf('/')
+  const prefix = `${base}${file.slice(0, cut + 1)}`
+  const extension = file.slice(cut + 1)
+  const staging = `${destination}.part`
+
+  let written = existsSync(staging) ? statSync(staging).size : 0
+  // Only a whole number of pieces can be trusted: a partial one was interrupted
+  // mid-write and re-fetching it is cheaper than proving it is intact.
+  written -= written % chunk
+  if (written > 0) {
+    process.stdout.write(`  … ${file} resuming at ${size(written)}\n`)
+    const rest = createReadStream(staging, { start: 0, end: written - 1 })
+    const trimmed = createWriteStream(`${staging}.trim`)
+    await new Promise<void>((resolve, reject) => {
+      rest.pipe(trimmed).on('finish', () => { resolve() }).on('error', reject)
+    })
+    renameSync(`${staging}.trim`, staging)
+  }
+
+  const out = createWriteStream(staging, { flags: 'a' })
+  let announced = written
+  for (let offset = written; offset < bytes; offset += chunk * PIECES_AT_ONCE) {
+    const batch: Promise<Uint8Array>[] = []
+    for (let n = 0; n < PIECES_AT_ONCE; n++) {
+      const at = offset + n * chunk
+      if (at >= bytes) break
+      const url = `${prefix}${String(at)}-${String(at + chunk)}${extension}`
+      batch.push((async () => {
+        const response = await fetch(url)
+        if (!response.ok) throw new Error(`${url} answered ${String(response.status)}`)
+        const piece = new Uint8Array(await response.arrayBuffer())
+        // A `.zst` image is compressed one piece at a time — measured on
+        // SerenityOS, whose first two megabyte-pieces arrive as 58,996 and
+        // 7,127 bytes. The emulator decompresses each as it reads it, which
+        // only works while the pieces are pieces; a mirror serving one file has
+        // to hold the disk itself, so it is decompressed here.
+        return extension.endsWith('.zst') ? new Uint8Array(zstdDecompressSync(piece)) : piece
+      })())
+    }
+    for (const piece of await Promise.all(batch)) {
+      // The last piece is padded to a whole chunk by the host — measured: Unix
+      // V7 is 152,764,416 bytes and its final 256 KiB piece arrives full, 64 KiB
+      // past the end of the disk. The image is what the catalog says it is, so
+      // the tail is trimmed rather than trusted.
+      const room = bytes - written
+      const keep = piece.length <= room ? piece : piece.subarray(0, room)
+      written += keep.length
+      if (!out.write(keep)) await new Promise(resolve => out.once('drain', resolve))
+      if (written >= bytes) break
+    }
+    if (written - announced >= 64 * 1024 * 1024) {
+      announced = written
+      process.stdout.write(`    ${file}: ${size(written)} of ${size(bytes)}\n`)
+    }
+  }
+  await new Promise<void>((resolve, reject) => { out.end(() => { resolve() }); out.on('error', reject) })
+  return written
+}
+
+/**
+ * Fetch one file and record where it came from.
  * @param wanted - the file and its source.
  * @returns what was written, for the notice.
  */
@@ -90,26 +225,25 @@ async function fetchOne(wanted: Wanted): Promise<{ bytes: number, sha256: string
   const destination = join(target, wanted.file)
   mkdirSync(dirname(destination), { recursive: true })
   if (existsSync(destination)) {
-    const held = readFileSync(destination)
-    process.stdout.write(`  = ${wanted.file} (${size(held.length)}, already here)\n`)
-    return { bytes: held.length, sha256: createHash('sha256').update(held).digest('hex') }
+    const held = statSync(destination).size
+    process.stdout.write(`  = ${wanted.file} (${size(held)}, already here)\n`)
+    return { bytes: held, sha256: await digestOf(destination) }
   }
-  const response = await fetch(wanted.url)
-  if (!response.ok) throw new Error(`${wanted.url} answered ${String(response.status)}`)
-  const body = new Uint8Array(await response.arrayBuffer())
-  if (wanted.bytes !== undefined && body.length !== wanted.bytes) {
+  const written = wanted.chunk === undefined || wanted.bytes === undefined
+    ? await fetchWhole(wanted.url, destination)
+    : await fetchPieces(wanted.base, wanted.file, wanted.bytes, wanted.chunk, destination)
+  if (wanted.bytes !== undefined && written !== wanted.bytes) {
     // A size the catalog states and the file does not match is the one error
     // that produces a machine which boots and then behaves strangely, so it is
     // a refusal rather than a warning.
+    unlinkSync(`${destination}.part`)
     throw new Error(
-      `${wanted.file}: the catalog says ${String(wanted.bytes)} bytes and this source served ${String(body.length)}`,
+      `${wanted.file}: the catalog says ${String(wanted.bytes)} bytes and this source served ${String(written)}`,
     )
   }
-  const staging = `${destination}.part`
-  writeFileSync(staging, body)
-  renameSync(staging, destination)
-  process.stdout.write(`  + ${wanted.file} (${size(body.length)})\n`)
-  return { bytes: body.length, sha256: createHash('sha256').update(body).digest('hex') }
+  renameSync(`${destination}.part`, destination)
+  process.stdout.write(`  + ${wanted.file} (${size(written)})\n`)
+  return { bytes: written, sha256: await digestOf(destination) }
 }
 
 /** Everything one machine needs that is not already sourced or present. */
@@ -118,12 +252,19 @@ function wantedFor(id: string, base: string): Wanted[] {
   if (guest === undefined) throw new Error(`no machine called ${id}`)
   return guest.images
     .filter(image => image.source === undefined)
-    .map(image => ({
-      guest: id,
-      file: image.file,
-      url: `${base.endsWith('/') ? base : `${base}/`}${image.file}`,
-      ...(image.size === undefined ? {} : { bytes: image.size }),
-    }))
+    .map((image) => {
+      const host = base.endsWith('/') ? base : `${base}/`
+      return {
+        guest: id,
+        file: image.file,
+        url: `${host}${image.file}`,
+        base: host,
+        ...(image.size === undefined ? {} : { bytes: image.size }),
+        // A streamed image is one the host publishes only as pieces; it is
+        // reassembled here so the mirror can serve it as one file.
+        ...(image.streamed === true ? { chunk: image.chunkBytes ?? 256 * 1024 } : {}),
+      }
+    })
 }
 
 if (args.includes('--list') || args.length === 0) {

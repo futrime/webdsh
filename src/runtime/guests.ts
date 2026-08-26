@@ -41,12 +41,21 @@
  *    other eighty-two files come from. Together those are what
  *    {@link GuestSpec.bundled} means: a machine that needs no setup.
  *
- * Eighty-seven of the hundred and twenty-eight machines are reachable that
- * way. The forty-one that are not have one thing in common and it is not their
- * licence: their disks exist only as the pieces copy.sh cut them into, and
- * copy.sh is the only host that has them — deliberately, and it is their
- * bandwidth to protect. So those machines ask for a file, and say so before
- * they start rather than failing mid-boot.
+ * A hundred and thirteen of the hundred and twenty-eight machines are reachable
+ * that way. That number used to be eighty-seven, and what changed is that the
+ * pieces are no longer an obstacle: `scripts/v86-fetch-images.ts` reassembles a
+ * disk that upstream publishes only as `<offset>-<end>.img` fragments — and
+ * decompresses the ones whose fragments are individually zstd'd — so the mirror
+ * can hold one file and the emulator can read it by range, which is the same
+ * laziness one request shape apart.
+ *
+ * The fifteen that remain are not a technical problem. Fourteen are somebody
+ * else's operating system to license — Windows, MS-DOS 6.22, BeOS, Unix V7,
+ * ChoKanji, BSD/OS — and which of those a deployment redistributes is its own
+ * decision with its own obligations, not one this repository makes on anyone's
+ * behalf. The last is Arch, whose root is not a disk at all but a directory the
+ * guest reads over 9p. Those machines ask for a file, and say so before they
+ * start rather than failing mid-boot.
  */
 
 import CATALOG from './v86-catalog.json'
@@ -1001,16 +1010,27 @@ function remoteImage(host: string, image: GuestImage): Record<string, unknown> {
   // the host somewhere else must not move it. The mirror is the opposite kind
   // of answer — it stands in for the default host, and anything the deployment
   // has actually been pointed at wins over it.
+  const mirrored = image.source === undefined && host === DEFAULT_IMAGE_HOST && image.mirror !== undefined
   const url = image.source
     ?? (host === DEFAULT_IMAGE_HOST ? image.mirror ?? `${host}${image.file}` : `${host}${image.file}`)
   if (image.slot === 'initial_state') return { url }
   if (image.streamed === true) {
+    // Two ways to read a disk without downloading it, and which one applies is
+    // a fact about the host rather than about the machine.
+    //
+    // copy.sh publishes a large image as a directory of `<offset>-<end>.img`
+    // pieces, and `use_parts` is v86 asking for them one at a time. The mirror
+    // holds the same disk as *one file* — the pieces are put back together when
+    // it is built, because a thousand small objects is a slow upload and a
+    // slower boot — and reads it by range instead, which the Hugging Face Hub
+    // answers with `accept-ranges: bytes` and CORS headers a browser accepts.
+    // Same emulator, same laziness, one request shape apart.
     return {
       url,
       size: image.size,
       async: true,
       fixed_chunk_size: image.chunkBytes ?? DEFAULT_CHUNK_BYTES,
-      use_parts: true,
+      ...(mirrored ? {} : { use_parts: true }),
     }
   }
   return { url, size: image.size, async: false }
