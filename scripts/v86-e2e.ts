@@ -55,6 +55,25 @@ function valueOf(flag: string): string | undefined {
   return index === -1 ? undefined : args[index + 1]
 }
 
+/**
+ * Whether the emulator itself has died during this scenario.
+ *
+ * v86 is WebAssembly, and when it aborts it does so as an `unreachable` trap
+ * that surfaces as a page error. Everything driven through it then stops
+ * responding — the keyboard, the mouse, the screen — and every assertion after
+ * that reports the symptom instead of the cause. This has been reproduced here
+ * intermittently, roughly one run in three, in `pointer-and-dock`, and it
+ * reproduces with the machine's network switched off, so it is not this build's
+ * networking. Until it is understood, a scenario that finds the machine dead
+ * says so rather than blaming what it happened to be testing.
+ */
+let aborted: string | undefined
+
+/** The trap, if the emulator has hit one. */
+function machineAborted(): string | undefined {
+  return aborted
+}
+
 /** Assert a condition, failing the scenario with a readable message. */
 function expect(condition: boolean, message: string): void {
   if (!condition) throw new Error(`assertion failed: ${message}`)
@@ -282,6 +301,9 @@ async function proveKeyboardReaches(page: Page, key: string): Promise<void> {
   while (Date.now() < deadline && after >= low - margin && after <= high + margin) {
     await page.waitForTimeout(1000)
     after = await shot()
+  }
+  if (machineAborted() !== undefined) {
+    throw new Skipped(`the emulator aborted mid-scenario (${String(machineAborted())}); the keyboard could not be judged`)
   }
   expect(after < low - margin || after > high + margin,
     `${key} moved the screen from ${String(low)}-${String(high)} bytes to ${String(after)}, `
@@ -1094,6 +1116,9 @@ const scenarios: Scenario[] = [
           for (let step = 0; step < 12; step += 1) await machine.input.mouse(40, 24)
         })
       })
+      if (!moved && machineAborted() !== undefined) {
+        throw new Skipped(`the emulator aborted mid-scenario (${String(machineAborted())}); the mouse could not be judged`)
+      }
       expect(moved, 'the model\'s mouse tool stopped working when the person let go')
 
       // The other way to one cursor, which is the guest's to choose and not
@@ -1407,7 +1432,12 @@ for (const scenario of scenarios) {
     }
   `)
   const errors: string[] = []
-  page.on('pageerror', error => errors.push(`pageerror: ${error.message}`))
+  aborted = undefined
+  page.on('pageerror', (error) => {
+    errors.push(`pageerror: ${error.message}`)
+    // A WebAssembly trap is the emulator dying, not the page misbehaving.
+    if (/unreachable|RuntimeError|out of bounds/i.test(error.message)) aborted ??= error.message
+  })
   process.stdout.write(`▶ ${scenario.name}\n`)
   ran++
   const started = Date.now()
