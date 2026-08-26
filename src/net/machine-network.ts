@@ -50,6 +50,17 @@
  *   where the proxy that retries those is configured" is worth more there than
  *   a stack trace.
  *
+ * And one thing it takes away, which matters more than any of them. The bridge
+ * fetches whatever the guest wrote in its `Host` header, and *this tab* makes
+ * the request — so the guest inherits the tab's position on the network unless
+ * something says otherwise. Measured on the deployed site before this rule
+ * existed: a guest asking for the page's own address got the app's HTML back,
+ * and `/api` reached the harness running beside it, because a same-origin
+ * request needs no CORS at all. {@link MachineNetworkConfig.allowPrivate} is
+ * that rule — the page's own origin, loopback, link-local and the RFC1918
+ * ranges are refused with an answer that says why, and a deployment that wants
+ * them says so deliberately.
+ *
  * ## The relay, and why it is not the default
  *
  * HTTP is the ceiling of what a tab can carry on its own. TLS cannot be: the
@@ -70,7 +81,7 @@
  * relay is a switch beside a plain statement of what it costs.
  */
 
-import { proxyConfig } from './cors-proxy.ts'
+import { proxiedUrl, proxyConfig } from './cors-proxy.ts'
 
 /** How the machine is wired to the world. */
 export interface MachineNetworkConfig {
@@ -85,6 +96,27 @@ export interface MachineNetworkConfig {
    * answers the guest itself.
    */
   relay: string
+  /**
+   * Whether the guest may aim at this machine rather than at the internet.
+   *
+   * Off, and this is the one setting here that exists for safety rather than
+   * for reach. The bridge fetches whatever the guest put in its `Host` header,
+   * and the fetch is made *by this tab* — so without a rule, a guest could ask
+   * for `http://192.168.1.1/`, for the browser's own loopback, for a cloud
+   * instance's metadata service, or for this page's own origin, where
+   * `src/net/virtual-network.ts` routes `/api` to the harness running beside
+   * it. Measured on the deployed site before this rule existed: a guest
+   * fetching the page's own address got the app's HTML back, and `/api`
+   * reached the in-page server.
+   *
+   * None of that is the network. The machine was given a route to the
+   * *internet*, and a model driving a guest has no business inside the tab that
+   * is hosting it or on the network of the person running it, so those targets
+   * are refused with an answer that says why. A deployment that genuinely wants
+   * it — v86 documents `<port>.external` for reaching a development server on
+   * localhost — turns this on and knows what it turned on.
+   */
+  allowPrivate: boolean
 }
 
 /**
@@ -115,7 +147,7 @@ export const RELAY_PRESETS: { url: string, label: string, detail: string }[] = [
 const STORAGE_KEY = 'dsh-web:machine-network'
 
 /** The shipped default: connected, and answered by this page rather than by a server. */
-const DEFAULTS: MachineNetworkConfig = { enabled: true, relay: '' }
+const DEFAULTS: MachineNetworkConfig = { enabled: true, relay: '', allowPrivate: false }
 
 /** The configuration in force, read once and kept. */
 let current: MachineNetworkConfig | undefined
@@ -134,6 +166,7 @@ export function machineNetworkConfig(): MachineNetworkConfig {
       current = {
         enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : DEFAULTS.enabled,
         relay: typeof parsed.relay === 'string' ? parsed.relay.trim() : DEFAULTS.relay,
+        allowPrivate: typeof parsed.allowPrivate === 'boolean' ? parsed.allowPrivate : DEFAULTS.allowPrivate,
       }
     }
   } catch {
@@ -156,6 +189,7 @@ export function setMachineNetworkConfig(next: Partial<MachineNetworkConfig>): Ma
   const merged: MachineNetworkConfig = {
     enabled: next.enabled ?? machineNetworkConfig().enabled,
     relay: (next.relay ?? machineNetworkConfig().relay).trim(),
+    allowPrivate: next.allowPrivate ?? machineNetworkConfig().allowPrivate,
   }
   current = merged
   try {
@@ -292,6 +326,70 @@ function otherScheme(url: string): string | undefined {
  */
 const HEADERS_MS = 30_000
 
+/**
+ * Hostnames and addresses that are not "the internet".
+ *
+ * Matched on the hostname as the guest wrote it, before any DNS happens,
+ * because there is no DNS to consult: `fetch` resolves the name inside the
+ * browser and never tells the page what it resolved to. That is a real limit
+ * and it is worth stating rather than papering over — a name that resolves to a
+ * private address gets through this, and only the far end's own CORS policy
+ * stops it. What this does stop is the direct, obvious and measured cases: the
+ * loopback, the link-local metadata address, the RFC1918 ranges a home network
+ * lives on, and the names v86 maps to a developer's own machine.
+ */
+const PRIVATE_HOST = new RegExp([
+  '^localhost$',
+  '^127\\.',
+  '^0\\.0\\.0\\.0$',
+  '^10\\.',
+  '^192\\.168\\.',
+  '^172\\.(?:1[6-9]|2\\d|3[01])\\.',
+  '^169\\.254\\.',
+  '^\\[?::1\\]?$',
+  '^\\[?f[cde][0-9a-f]{2}:',
+  '\\.local$',
+  '\\.internal$',
+  '^\\d+\\.external$',
+].join('|'), 'i')
+
+/**
+ * Whether the page will fetch this on the guest's behalf.
+ *
+ * Three refusals, and the third is the one that is easy to miss. A scheme that
+ * is not HTTP cannot be a `fetch`. A private or loopback host is the machine
+ * the page is running on, or the network it is running on, neither of which is
+ * what "give the guest the internet" meant. And this page's own origin is the
+ * harness itself: a same-origin request needs no CORS at all, so without this
+ * the guest would have an unauthenticated line into `/api` and into every route
+ * a plugin serves — measured on the deployed site, where a guest asking for the
+ * page's own address got the app's HTML back.
+ * @param url - the target the guest asked for.
+ * @returns why it is refused, or undefined when it may go.
+ */
+function refuseTarget(url: string): string | undefined {
+  if (machineNetworkConfig().allowPrivate) return undefined
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return `${url} is not a URL this page can fetch.`
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return `${parsed.protocol} is not something a browser tab can carry; only http and https are.`
+  }
+  if (typeof location !== 'undefined' && parsed.host === location.host) {
+    return `${parsed.host} is the page hosting this machine, not the internet. `
+      + 'A request there would reach the harness\'s own API with no authentication in front of it, so the '
+      + 'machine is not given that route. Settings → Network can allow it if a deployment actually wants it.'
+  }
+  if (PRIVATE_HOST.test(parsed.hostname)) {
+    return `${parsed.hostname} is on the network of the computer running this browser, not on the internet. `
+      + 'The machine is given a route out, not a route in. Settings → Network can allow it.'
+  }
+  return undefined
+}
+
 /** A rejection, in one line, for a terminal. */
 function describe(error: unknown): string {
   if (error instanceof Error) return error.message
@@ -312,11 +410,24 @@ function describe(error: unknown): string {
 function advice(url: string, error: unknown): string {
   const { enabled, template } = proxyConfig()
   const reason = describe(error)
-  const tail = enabled
-    ? `The page retried it through ${template}, which also failed. A host that refuses both is `
-      + 'unreachable from a browser; try another, or point Settings → Network at a proxy of your own.'
-    : 'This session has no CORS proxy configured, so a refused request is not retried. '
-      + 'Settings → Network is where one is turned on.'
+  const timedOut = error instanceof DOMException && error.name === 'TimeoutError'
+  const tail = timedOut
+    // A timeout is not a CORS refusal and must not be dressed as one: the page
+    // never got far enough to be refused, and no proxy retry was made, so
+    // advice about proxies would send the reader somewhere there is nothing to
+    // find.
+    ? 'Nothing answered, which is what an address that is not listening looks like from here — '
+      + 'not a policy this page can change.'
+    : enabled
+      // Resolved rather than printed with its braces in: this text is read at a
+      // terminal, and `{url}` in the middle of a URL is the kind of detail a
+      // reader spends a minute on. `src/host/jsh-tool.ts` resolves it the same
+      // way and for the same reason.
+      ? `A refused request is retried once through ${proxiedUrl(url, template) ?? template}; that failed too. `
+        + 'A host that refuses both is unreachable from a browser — try another, or point Settings → Network '
+        + 'at a proxy of your own.'
+      : 'This session has no CORS proxy configured, so a refused request is not retried. '
+        + 'Settings → Network is where one is turned on.'
   return `${url} could not be fetched from this browser (${reason}). `
     + `The machine's network is this tab's network, so a host answers only if it sends CORS headers. ${tail}`
 }
@@ -332,6 +443,17 @@ function advice(url: string, error: unknown): string {
  * @returns the response, for v86 to write back down the connection.
  */
 async function guestFetch(url: string, init: RequestInit): Promise<Response> {
+  // Before anything leaves. A refusal is recorded like any other outcome, so
+  // the settings page shows what the machine tried rather than only what it
+  // managed — a model probing an address it will never be given should be
+  // visible to the person whose browser it is probing from.
+  const refusal = refuseTarget(url)
+  if (refusal !== undefined) {
+    record({ url, error: refusal })
+    const refused = new Error(refusal)
+    refused.stack = refused.message
+    throw refused
+  }
   const attempts = [url]
   const alternate = otherScheme(url)
   if (alternate !== undefined) attempts.push(alternate)
@@ -409,11 +531,22 @@ export interface NetworkedEmulator {
  */
 const NEVER_HTTP = new Set([20, 21, 22, 23, 25, 110, 143, 443, 465, 587, 636, 989, 990, 993, 995, 6697])
 
-/** How long a connection may stay silent before it is dropped. */
+/** How long a connection may stay silent — with nothing arriving — before it is dropped. */
 const IDLE_MS = 30_000
 
 /** The most a request head may be before it is refused, so a stuck guest cannot grow the heap. */
 const MAX_HEAD = 64 * 1024
+
+/**
+ * The most of a request body this bridge will hold.
+ *
+ * `fetch` needs the whole body before it can send it, so an upload is buffered
+ * in the page — which makes an unbounded `Content-Length` an unbounded
+ * allocation asked for by whatever is running on the guest. Thirty-two
+ * megabytes is far beyond anything these machines upload and far below what a
+ * tab should be asked to hold.
+ */
+const MAX_BODY = 32 * 1024 * 1024
 
 /** A request line, as HTTP defines it and as a sniff can recognise it. */
 const REQUEST_LINE = /^[A-Z]{3,10} \S+ HTTP\/1\.[01]$/
@@ -435,18 +568,18 @@ function headEnd(buffer: Uint8Array): number {
   return -1
 }
 
-/** Join two chunks. */
-function concat(left: Uint8Array, right: Uint8Array): Uint8Array {
-  const joined = new Uint8Array(left.length + right.length)
-  joined.set(left)
-  joined.set(right, left.length)
-  return joined
-}
-
-/** Frame a status line and headers as HTTP/1.1 expects them. */
-function responseHead(status: number, statusText: string, headers: Headers): Uint8Array {
+/**
+ * Frame a status line and headers as HTTP/1.1 expects them.
+ * @param status - the status code.
+ * @param statusText - its reason phrase.
+ * @param headers - the headers, joined the way `Headers` joins them.
+ * @param extra - lines that must not go through `Headers`, already formatted.
+ * @returns the encoded head.
+ */
+function responseHead(status: number, statusText: string, headers: Headers, extra: string[] = []): Uint8Array {
   const lines = [`HTTP/1.1 ${String(status)} ${statusText}`]
   headers.forEach((value, name) => { lines.push(`${name}: ${value}`) })
+  lines.push(...extra)
   return new TextEncoder().encode(`${lines.join('\r\n')}\r\n\r\n`)
 }
 
@@ -473,7 +606,7 @@ function answerText(conn: GuestConnection, status: number, statusText: string, b
  * @param conn - the guest's connection.
  * @param response - what the network answered.
  */
-async function relayResponse(conn: GuestConnection, response: Response): Promise<void> {
+async function relayResponse(conn: GuestConnection, response: Response, started: () => void): Promise<void> {
   const headers = new Headers()
   response.headers.forEach((value, name) => {
     if (!STRIPPED.has(name.toLowerCase())) headers.append(name, value)
@@ -482,7 +615,15 @@ async function relayResponse(conn: GuestConnection, response: Response): Promise
   // the body ended: `content-length` cannot be forwarded, because the browser
   // has already decompressed whatever the header counted.
   headers.set('connection', 'close')
-  conn.write(responseHead(response.status, response.statusText, headers))
+  // `Headers.forEach` joins repeated fields with a comma, which is right for
+  // every header except the one that must never be joined: two `set-cookie`
+  // lines folded into one are two cookies the guest cannot read. `getSetCookie`
+  // is the accessor that keeps them apart, where the browser has it and where
+  // the response exposes them at all — a cross-origin response usually does not.
+  const cookies = response.headers.getSetCookie?.() ?? []
+  const lines = [...cookies.map(value => `set-cookie: ${value}`)]
+  conn.write(responseHead(response.status, response.statusText, headers, lines))
+  started()
   const body = response.body
   if (body === null) {
     conn.close()
@@ -510,34 +651,73 @@ async function relayResponse(conn: GuestConnection, response: Response): Promise
  * @param conn - the connection.
  */
 function serve(conn: GuestConnection): void {
-  let buffer: Uint8Array = new Uint8Array(0)
+  // Accumulated as chunks and joined once. Re-concatenating the whole buffer per
+  // segment is quadratic, and the guests that upload anything do it through an
+  // emulated card that delivers a great many small segments.
+  let chunks: Uint8Array[] = []
+  let size = 0
   let pending: { need: number, deliver: (body: Uint8Array) => void } | undefined
   let done = false
+  // Once the head of a response has gone out, the connection is committed: a
+  // failure after that cannot be turned into a 502, because the guest is
+  // already reading a 200.
+  let answered = false
 
+  let timer: ReturnType<typeof setTimeout>
   const finish = (): void => {
     done = true
     clearTimeout(timer)
   }
-  const timer = setTimeout(() => {
-    if (done) return
-    finish()
-    conn.close()
-  }, IDLE_MS)
+  // Idle, not total. A deadline from the moment of accept would close a slow
+  // upload mid-transfer with no answer at all — at the tens of kilobytes a
+  // second an NE2000 manages, that is an ordinary POST, not an attack — so the
+  // clock restarts every time the guest says something.
+  const idle = (): void => {
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      if (done) return
+      finish()
+      conn.close()
+    }, IDLE_MS)
+  }
+  idle()
+
+  const collected = (): Uint8Array => {
+    if (chunks.length === 1) return chunks[0]
+    const joined = new Uint8Array(size)
+    let at = 0
+    for (const part of chunks) {
+      joined.set(part, at)
+      at += part.length
+    }
+    return joined
+  }
 
   conn.on('data', (data) => {
     if (done) return
-    const chunk = data instanceof Uint8Array ? data : new Uint8Array(data)
+    idle()
+    const view = data instanceof Uint8Array ? data : new Uint8Array(data)
+    // Copied out of whatever v86 handed over: the emulator's memory is a
+    // `SharedArrayBuffer` on a cross-origin-isolated page, and `TextDecoder`
+    // refuses a view onto shared memory.
+    const chunk = new Uint8Array(view)
+    chunks.push(chunk)
+    size += chunk.length
+
     if (pending !== undefined) {
-      buffer = concat(buffer, chunk)
-      if (buffer.length < pending.need) return
-      const body = buffer
+      if (size < pending.need) return
+      const body = collected()
       const deliver = pending.deliver
       pending = undefined
-      buffer = new Uint8Array(0)
+      chunks = []
+      size = 0
       deliver(body)
       return
     }
-    buffer = concat(buffer, chunk)
+
+    const buffer = collected()
+    chunks = [buffer]
+    size = buffer.length
     const separator = headEnd(buffer)
     if (separator === -1) {
       // A first chunk that cannot be the start of a request line is not a
@@ -558,7 +738,8 @@ function serve(conn: GuestConnection): void {
     }
     const head = new TextDecoder().decode(buffer.subarray(0, separator))
     let body: Uint8Array = buffer.subarray(separator + 4)
-    buffer = new Uint8Array(0)
+    chunks = []
+    size = 0
 
     const lines = head.split('\r\n')
     const first = lines[0] ?? ''
@@ -589,25 +770,34 @@ function serve(conn: GuestConnection): void {
 
     let target: URL
     try {
-      target = /^https?:/i.test(path)
-        ? new URL(path)
-        : new URL(`http://${host ?? ''}${path}`)
+      // Parsed against a placeholder authority and then overridden, which is
+      // what v86's own handler does — and it is not a stylistic choice. Building
+      // `http://` + `''` + `/index.html` gives `http:///index.html`, which the
+      // URL parser reads as the host `index.html` with an empty path: a request
+      // with no Host header would have been sent to a hostname invented from its
+      // own path, silently, instead of being refused.
+      target = /^https?:/i.test(path) ? new URL(path) : new URL(`http://request.invalid${path}`)
+      if (!/^https?:/i.test(path)) {
+        if (host === undefined) {
+          finish()
+          answerText(conn, 400, 'Bad Request',
+            'The request carried no Host header, so there is nothing to fetch: this machine\'s DNS answers '
+            + 'every name with the same address, and the name in the Host header is the only thing that says '
+            + 'where a request really goes.\n')
+          return
+        }
+        target.host = host
+      }
     } catch {
       finish()
       answerText(conn, 400, 'Bad Request', `This bridge could not read a URL out of "${first}".\n`)
       return
     }
-    if (target.hostname === '') {
-      finish()
-      answerText(conn, 400, 'Bad Request',
-        'The request carried no Host header, so there is nothing to fetch: the machine\'s DNS answers '
-        + 'every name with one address, and the name in the Host header is what says where a request '
-        + 'really goes.\n')
-      return
-    }
-    // The guest aimed at a port; unless it addressed a different one explicitly,
-    // that is the port the request belongs to.
-    if (target.port === '' && conn.sport !== 80 && conn.sport !== 443) target.port = String(conn.sport)
+    // The guest aimed at a port and its Host header need not repeat it. Ports 80
+    // and 443 never reach here — the first belongs to v86's own handler and the
+    // second is refused as a TLS port — so whatever this connection came in on
+    // is the port the request belongs to.
+    if (target.port === '') target.port = String(conn.sport)
 
     const dispatch = (payload: Uint8Array | undefined): void => {
       finish()
@@ -617,20 +807,43 @@ function serve(conn: GuestConnection): void {
         ...payload === undefined || payload.length === 0 ? {} : { body: payload as BodyInit },
       }
       void guestFetch(target.href, init)
-        .then(async response => relayResponse(conn, response))
+        .then(async response => relayResponse(conn, response, () => { answered = true }))
         .catch((error: unknown) => {
+          // Only while there is still a status line to write. A stream that
+          // fails halfway through a download has already sent a 200, and
+          // appending a 502 to a body the guest is reading would corrupt it.
+          if (answered) {
+            conn.close()
+            return
+          }
           answerText(conn, 502, 'Fetch Error', `${describe(error)}\n`)
         })
     }
 
+    // A body belongs only to a method that carries one. Bytes after the head of
+    // a GET are a pipelined second request or a stray CRLF, and handing them to
+    // `fetch` as a body makes it throw — turning a request that would have
+    // worked into a 502.
     const length = Number.parseInt(head.match(/\r\ncontent-length:\s*(\d+)/i)?.[1] ?? '0', 10)
-    if (length > 0 && body.length < length) {
-      buffer = body
-      pending = { need: length, deliver: chunkBody => { dispatch(chunkBody.subarray(0, length)) } }
+    const carries = method !== 'GET' && method !== 'HEAD' && method !== 'DELETE' && length > 0
+    if (!carries) {
+      dispatch(undefined)
       return
     }
-    if (length > 0) body = body.subarray(0, length)
-    dispatch(body.length === 0 ? undefined : body)
+    if (length > MAX_BODY) {
+      finish()
+      answerText(conn, 413, 'Payload Too Large',
+        `This bridge buffers a request body in the page before sending it, and ${String(length)} bytes is `
+        + `beyond the ${String(MAX_BODY / (1024 * 1024))} MB it will hold.\n`)
+      return
+    }
+    if (body.length < length) {
+      chunks = [body]
+      size = body.length
+      pending = { need: length, deliver: whole => { dispatch(whole.subarray(0, length)) } }
+      return
+    }
+    dispatch(body.subarray(0, length))
   })
 
   conn.accept()

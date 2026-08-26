@@ -722,14 +722,29 @@ const scenarios: Scenario[] = [
       expect(/refused/i.test(tls.output),
         `port 443 did not refuse promptly: ${JSON.stringify(tls.output.slice(0, 200))}`)
 
+      // The rule that says the machine was given the internet rather than the
+      // network of the person running the browser. Hermetic: nothing is
+      // contacted, and the refusal is what is being measured — before it
+      // existed this request left the tab and hung for the full header budget.
+      const started = Date.now()
+      await run(page, 'wget -O - http://192.168.1.1/ 2>&1 | head -c 200', 60_000)
+      const spent = Date.now() - started
+      expect(spent < 20_000, `a refused private address took ${String(Math.round(spent / 1000))}s, which means it was tried`)
+
       // And the page's own account of all of it, which the settings page shows.
       const traffic = await page.evaluate(() => (globalThis as unknown as {
-        __DSH_WEB_NETWORK__: { machine: { traffic(): { requests: { url: string, status?: number }[], refusedPorts: number[] } } }
+        __DSH_WEB_NETWORK__: {
+          machine: {
+            traffic(): { requests: { url: string, status?: number, error?: string }[], refusedPorts: number[] }
+          }
+        }
       }).__DSH_WEB_NETWORK__.machine.traffic())
       expect(traffic.requests.some(entry => entry.url.includes('example.com') && entry.status === 200),
         `the page did not record the guest's request: ${JSON.stringify(traffic.requests.slice(-4))}`)
       expect(traffic.refusedPorts.includes(443),
         `the page did not record the refused TLS port: ${JSON.stringify(traffic.refusedPorts)}`)
+      expect(traffic.requests.some(entry => entry.url.includes('192.168.1.1') && /not on the internet/.test(entry.error ?? '')),
+        `the private address was not refused by the page: ${JSON.stringify(traffic.requests.slice(-4))}`)
       process.stdout.write(`  the machine made ${String(traffic.requests.length)} requests through the page\n`)
     },
   },

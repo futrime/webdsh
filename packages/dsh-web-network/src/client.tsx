@@ -33,8 +33,10 @@ interface NetworkBridge {
 
 /** What the page offers the emulated machine, and what the machine did with it. */
 interface MachineBridge {
-  config(): { enabled: boolean, relay: string }
-  setConfig(next: { enabled?: boolean, relay?: string }): { enabled: boolean, relay: string }
+  config(): { enabled: boolean, relay: string, allowPrivate: boolean }
+  setConfig(next: { enabled?: boolean, relay?: string, allowPrivate?: boolean }): {
+    enabled: boolean, relay: string, allowPrivate: boolean
+  }
   test(relay: string): Promise<{ ok: boolean, detail: string }>
   relays: { url: string, label: string, detail: string }[]
   traffic(): { requests: { url: string, status?: number, error?: string }[], refusedPorts: number[] }
@@ -91,6 +93,7 @@ function MachineNetwork(): JSX.Element | null {
   const bridge = network()?.machine
   const [enabled, setEnabled] = useState(() => bridge?.config().enabled ?? false)
   const [relay, setRelay] = useState(() => bridge?.config().relay ?? '')
+  const [allowPrivate, setAllowPrivate] = useState(() => bridge?.config().allowPrivate ?? false)
   const [status, setStatus] = useState<{ text: string, error?: boolean } | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [traffic, setTraffic] = useState(() => bridge?.traffic() ?? { requests: [], refusedPorts: [] })
@@ -105,11 +108,12 @@ function MachineNetwork(): JSX.Element | null {
     return () => { clearInterval(timer) }
   }, [])
 
-  const save = useCallback((next: { enabled?: boolean, relay?: string }) => {
+  const save = useCallback((next: { enabled?: boolean, relay?: string, allowPrivate?: boolean }) => {
     const api = network()?.machine
     if (api === undefined) return
     const applied = api.setConfig(next)
     setEnabled(applied.enabled)
+    setAllowPrivate(applied.allowPrivate)
     if (next.relay !== undefined) setRelay(applied.relay)
     setStatus({
       text: !applied.enabled
@@ -153,8 +157,15 @@ function MachineNetwork(): JSX.Element | null {
         <p>
           What it cannot carry is TLS. A guest asking for <code>https://</code> would have to complete
           a handshake with the far end, and a tab has no socket to carry one, so those connections are
-          refused rather than hung. Plain <code>http://</code> URLs are the way out — the page turns
-          them into HTTPS on the wire wherever the host wants it.
+          refused rather than hung. Plain <code>http://</code> URLs are the way out — served over HTTPS,
+          this page sends them as HTTPS on the wire wherever the host wants that.
+        </p>
+        <p>
+          It is outbound HTTP and nothing else. There is no inbound route, so a server started inside the
+          guest is not reachable from here; cookies are dropped in both directions and a cross-origin
+          response arrives with only the headers CORS exposes, so anything that depends on logging in will
+          not work; and <code>ping</code> and DNS are answered by this page rather than by the host named,
+          so a reply proves the emulated card works and nothing more.
         </p>
       </div>
 
@@ -165,6 +176,24 @@ function MachineNetwork(): JSX.Element | null {
           onChange={event => { save({ enabled: event.target.checked }) }}
         />
         <span>Give the emulated machine a route out of the page</span>
+      </label>
+
+      <label className="dsh-web-network-toggle">
+        <input
+          type="checkbox"
+          checked={allowPrivate}
+          onChange={event => { save({ allowPrivate: event.target.checked }) }}
+        />
+        <span>
+          Also let it reach this page&apos;s own address and private networks
+          <br />
+          Off by default, and it is the one setting here that is about safety rather than reach. The page
+          fetches whatever address the guest asks for, so without this rule a machine — driven by a model —
+          could aim at <code>192.168.x.x</code>, at the browser&apos;s own <code>localhost</code>, or at this
+          page&apos;s origin, where a same-origin request needs no CORS at all and would reach the
+          harness&apos;s own <code>/api</code>. Turn it on only if you meant to, for instance to reach a
+          development server through v86&apos;s <code>&lt;port&gt;.external</code> names.
+        </span>
       </label>
 
       <div className="dsh-web-network-field">
@@ -185,9 +214,11 @@ function MachineNetwork(): JSX.Element | null {
         </div>
         <p>
           A relay is a WebSocket server that owns real sockets and forwards the guest&apos;s bytes to
-          them. With one, the machine gets unrestricted TCP: <code>https://</code>, package managers,
-          <code> ssh</code>, anything — and real DNS instead of the one address this page invents.
-          Without one, nothing leaves this tab except through <code>fetch</code>.
+          them. With one, the guest has real TCP rather than HTTP-shaped TCP — <code>https://</code> can
+          work, and so can anything else it has a client for — and real DNS instead of the single address
+          this page invents. What was measured from here is one thing: a raw connection to port 443
+          completing through the first preset below. Without a relay, nothing leaves this tab except
+          through <code>fetch</code>.
         </p>
         <ul className="dsh-web-network-list">
           {bridge.relays.map(preset => (
