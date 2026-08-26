@@ -17,7 +17,7 @@ Node itself, in the tab.
 - ⚡ **Nothing to run.** No server, no install, no local Node — the harness boots in the page.
 - 🖥️ **Real Node, real Python.** `npm install` and `pip install` both work, and the terminal and the agent share one container.
 - 💾 **Or a whole PC.** Settings → Machine swaps the container for [v86](https://github.com/copy/v86) and offers **128 machines** — the whole of v86's catalog, from a 512-byte bootsector game to Windows 2000, **87 of them booting with nothing to set up** — emulated x86, on its own screen, with the tool set that machine actually has.
-- 🌐 **The PC is online.** The page is its router: it answers the guest's DHCP, DNS and pings and carries its HTTP as browser `fetch`, through the same CORS policy the rest of the app uses — so `wget http://example.com` works on an emulated Buildroot, which is a host the container itself cannot reach.
+- 🌐 **The PC is online.** The page is its router: it answers the guest's DHCP, DNS and pings and carries its HTTP as browser `fetch`, through the same CORS policy the rest of the app uses — so `wget http://example.com` works on an emulated Buildroot, and the same URL from the container answers `fetch failed` unless the model routes it through the proxy by hand.
 - 👁️ **It can see.** Attach an image and the model reads it: oriented, capped and re-encoded to the route's budget by the browser's own decoder, with the source's EXIF and colour profile stripped on the way.
 - 🧩 **Real plugins.** Install from npm, a tarball, GitHub, or a path — from the browser.
 - 📦 **Real dsh.** The published `@deepseek-ai/*` packages, unmodified: 120 of 135 rows compose exactly as `dsh web` composes them.
@@ -103,18 +103,27 @@ whose `NOTICE.json` records where every image came from and under what licence.
 the other end of it: it answers the guest's ARP, DHCP, DNS and pings itself, and
 turns the HTTP requests inside the guest's TCP into `fetch` calls — which go
 through the CORS policy above, direct first and proxied only when a host refuses
-a browser. So an emulated Buildroot can `wget http://example.com`, a host that
-sends no CORS headers at all and that the container cannot reach either, and a
-guest running a web browser can open an `http://` address. Ports other than 80
-work too, which stock v86 resets. What a tab cannot carry is TLS: `https://`
-*from inside the guest* would have to terminate here, so those connections are
-refused rather than left hanging, and plain `http://` is sent as HTTPS on the
-wire wherever the host wants it. Settings → Network can name a WISP or
-websockproxy relay for a session that needs real TCP — package managers, `ssh` —
-and says plainly what routing every byte through a third party costs. Whether a
-particular guest has a driver for the card is a fact about its disk: it is
-measured per machine, and the machines that were measured say so in their own
-description.
+a browser. So an emulated Buildroot can `wget http://example.com`; the same URL
+from the container answers `fetch failed`, because its requests leave from
+StackBlitz's worker where this page never sees them and no automatic retry is
+possible. Ports other than 80 work too, which stock v86 resets.
+
+What a tab cannot carry is TLS: `https://` *from inside the guest* would have to
+terminate here, so those connections are refused rather than left hanging, and
+served over HTTPS this page sends plain `http://` as HTTPS on the wire wherever
+the host wants that. It is outbound HTTP and nothing else — no inbound route to
+a server running in the guest, no UDP beyond the DHCP and DNS the page fakes,
+and no cookies or CORS-hidden response headers, so anything that needs a login
+will not work. `ping` and DNS are answered by the page, not by the host named.
+The guest is refused this page's own origin and private address ranges, because
+the fetch is made by the tab and a same-origin request needs no CORS at all;
+Settings → Network can allow them for a deployment that means to.
+
+Settings → Network can also name a WISP or websockproxy relay for a session that
+needs real TCP, and says plainly what routing every byte through a third party
+costs. Whether a particular guest has a driver for the card is a fact about its
+disk: it is measured per machine — three of them so far — and a machine nobody
+has measured is described as exactly that rather than promised a network.
 
 **Plugins.** `/plugin add <package>` in the composer, or Settings → Plugins.
 Takes an npm name, a tarball URL, `owner/repo#ref`, or a path. The composition
@@ -138,7 +147,9 @@ Issues and PRs welcome at [futrime/webdsh](https://github.com/futrime/webdsh/iss
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/);
 `npx tsc --noEmit` and `npm test` should pass first; `npm run test:vision`,
 `npm run test:v86` and `npm run test:workload` cover the image pipeline, the
-emulated machines and the agent finishing real jobs on each of them.
+emulated machines and the agent finishing real jobs on each of them, and
+`npm run test:machine-network` exercises the guest HTTP bridge's parser and its
+refusals without booting anything.
 
 ## License
 

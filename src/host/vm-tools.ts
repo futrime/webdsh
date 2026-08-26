@@ -155,29 +155,43 @@ function networkAdvice(spec: GuestSpec): string[] {
   }
   if (config.relay !== '') {
     return [
-      `This machine is on the network through a relay (${config.relay}), which carries real TCP: \`https://\`,`,
-      'package managers, `ssh` and anything else the guest has a client for all work, and DNS is real.',
-      'It is somebody else\'s server and it sees everything the machine sends, so do not send a',
-      'credential through it that you would not hand over.',
-      ...spec.network?.bring === 'dhcp' ? [] : ['If nothing reaches the network, the interface may need bringing up — try `udhcpc` or `dhcpcd`.'],
+      `This machine is on the network through a relay (${config.relay}) rather than through the page, so it`,
+      'has real TCP rather than HTTP-shaped TCP: `https://` can work, and so can anything else the guest',
+      'has a client for. What was measured from this build is one thing only — a raw connection to port',
+      '443 completing — so treat a package manager or an `ssh` as plausible rather than promised, and read',
+      'what it actually says.',
+      'The relay is somebody else\'s server and it sees every byte the machine sends, including inside a',
+      'TLS session it is only forwarding. Do not send a credential through it that you would not hand to',
+      'its operator.',
+      ...spec.network?.bring === 'dhcp'
+        ? []
+        : ['If nothing reaches the network, the interface may need bringing up — try `udhcpc` or `dhcpcd`.'],
     ]
   }
   const proxy = proxyConfig()
   return [
     'This machine is on the network, and it is worth reading how, because it is not a normal one.',
-    'The page is the router: it answers the guest\'s DHCP, DNS and pings itself, and turns the HTTP',
+    'The page is the router: it answers the guest\'s ARP, DHCP, DNS and pings itself, and turns the HTTP',
     'requests inside the guest\'s TCP into browser `fetch` calls.',
-    '  Use `http://` URLs, always. The page sends them as HTTPS wherever the host wants that, so',
-    '  `http://example.com` reaches the same page a browser would — but `https://` typed inside the',
-    '  guest cannot work at all: TLS would have to terminate here, and a tab has no socket for it.',
-    '  Those connections are refused immediately rather than hanging.',
+    '  Use `http://` URLs. On this deployment a plaintext request is sent as HTTPS on the wire wherever',
+    '  the host wants that, so `http://example.com` reaches what a browser reaches — but `https://` typed',
+    '  inside the guest cannot work: TLS would have to terminate in the tab, and a tab has no socket for',
+    '  it. Those connections are refused at once rather than hanging.',
     proxy.enabled
-      ? '  A host that refuses browser requests is retried through the page\'s CORS proxy automatically,'
-        + ' so most public sites do answer.'
+      ? '  A host that refuses browser requests is retried once through the page\'s CORS proxy, automatically'
+        + ' and invisibly. That proxy is a third party and it sees the whole request, so never send a'
+        + ' credential — an API key, a token, a cookie — to a host that needs the retry.'
       : '  A host that refuses browser requests fails, and this session has no CORS proxy configured to'
         + ' retry it through — Settings → Network is where one is turned on.',
-    '  A failure comes back as an HTTP 502 whose body says what went wrong; read it rather than',
-    '  retrying blind.',
+    '  `ping` and DNS are answered by the page, not by the host you named: a reply proves the emulated',
+    '  card works and says nothing about whether anything is out there. Fetch something to find that out.',
+    '  Cookies do not survive the trip in either direction, and a cross-origin response arrives with only',
+    '  the headers CORS exposes — no `location`, no `set-cookie`, no `www-authenticate` — so anything that',
+    '  depends on logging in will not work.',
+    '  This page\'s own address, `localhost`, and private network ranges are refused rather than fetched:',
+    '  the machine was given a route to the internet, not to the computer running the browser.',
+    '  A failure before the response starts comes back as an HTTP 502 whose body says what went wrong;',
+    '  read it rather than retrying blind.',
     '  Anything that is not HTTP — `ssh`, a database client, a raw socket — needs a relay, which is',
     '  the other setting on that page.',
     ...spec.network?.bring === 'dhcp'
@@ -401,14 +415,44 @@ function machinePrompt(spec: GuestSpec): string {
     // Said here as well as in the shell tool because a graphical guest has no
     // shell tool to say it in, and "can this machine reach the web" is exactly
     // the question a model asks before it opens a browser on one.
-    ...machineNetworkConfig().enabled && spec.network?.bring !== 'none'
-      ? ['It is also on the network, in a way worth knowing about: this page is its router, and it carries '
-        + 'HTTP by turning the guest\'s requests into the browser\'s own. So an `http://` address works — '
-        + 'including from a web browser on the machine itself — and an `https://` one cannot, because TLS '
-        + 'would have to terminate in this tab. Settings → Network can name a relay that carries real TCP '
-        + 'if a session needs one.']
-      : [],
+    //
+    // Hedged by what is actually known about *this* guest, which for most of
+    // them is nothing. Three machines in the catalog have had their networking
+    // measured; the rest have a card and an unknown driver, and the flat
+    // sentence this used to be told a model that Windows 3.1 was online.
+    ...machineNetworkConfig().enabled && spec.network?.bring !== 'none' ? [networkParagraph(spec)] : [],
   ].join('\n\n')
+}
+
+/**
+ * The system prompt's sentence about the network, for a guest of any kind.
+ *
+ * Separate from {@link networkAdvice} because it answers a different question.
+ * That one is read by a model with a shell, about to type a command; this one
+ * is read by a model about to open a browser on Windows 98, and the thing it
+ * most needs not to do is trust a promise nobody checked. So what is asserted
+ * here is exactly what is known: that the page offers a route, what kind of
+ * route it is, and — for the twelve machines whose driver situation was never
+ * measured — that whether this particular guest can use it is an open question
+ * with a one-command answer.
+ * @param spec - the guest.
+ * @returns the paragraph.
+ */
+function networkParagraph(spec: GuestSpec): string {
+  const { relay } = machineNetworkConfig()
+  const route = relay === ''
+    ? 'The page is its router: it answers the guest\'s DHCP, DNS and pings itself and carries HTTP by '
+      + 'turning the guest\'s requests into this browser\'s own, so an `http://` address works — including '
+      + 'from a web browser on the machine itself — and an `https://` one cannot, because TLS would have to '
+      + 'terminate in this tab. This page\'s own address and private network ranges are refused.'
+    : `Its traffic goes through the relay configured in Settings → Network (${relay}), which carries real `
+      + 'TCP, so `https://` can work too. That relay is a third party and sees everything the machine sends.'
+  const known = spec.network?.bring === undefined
+    ? ' Whether this particular machine has a driver for the emulated card was never measured here — most '
+      + 'of the catalog has not been — so treat its network as unproven until something on it actually '
+      + 'fetches: if it has no interface, it has no driver, and nothing will change that.'
+    : ''
+  return `There is a network offered to this machine. ${route}${known}`
 }
 
 /** Turn a tool-call abort into the error the loop recognises. */
