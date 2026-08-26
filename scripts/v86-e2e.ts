@@ -297,7 +297,14 @@ async function proveKeyboardReaches(page: Page, key: string): Promise<void> {
   // answering the same keystroke locally. Waiting *for the change* rather than
   // for the clock makes a slow host slow instead of red.
   let after = await shot()
-  const deadline = Date.now() + 30_000
+  // Ninety seconds, and the number comes from what the slow case actually is.
+  // Measured here, warm: Windows 98 opens its Start menu 830ms after the
+  // keystroke, with the machine's network on or off alike. On CI the same guest
+  // is streaming a three-hundred-megabyte disk from upstream for the first time
+  // while it tries to redraw, and it has repeatedly missed thirty. A machine
+  // that never answers still fails; it now takes a minute and a half to say so
+  // rather than reporting a starved guest as a broken keyboard.
+  const deadline = Date.now() + 90_000
   while (Date.now() < deadline && after >= low - margin && after <= high + margin) {
     await page.waitForTimeout(1000)
     after = await shot()
