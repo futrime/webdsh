@@ -349,6 +349,25 @@ async function offeredTools(page: Page): Promise<string[]> {
   return []
 }
 
+/** Dismiss the surface's first-run notice, which masks every click under it. */
+async function dismissNotice(page: Page): Promise<void> {
+  const acknowledge = page.getByRole('button', { name: /Continue/ })
+  await acknowledge.first().waitFor({ state: 'visible', timeout: 20_000 }).catch(() => undefined)
+  if (await acknowledge.count() > 0) {
+    await acknowledge.first().click().catch(() => undefined)
+    await acknowledge.first().waitFor({ state: 'detached', timeout: 20_000 }).catch(() => undefined)
+  }
+}
+
+/** Open the Machine panel through the plugin's own sidebar action. */
+async function openMachinePanel(page: Page): Promise<void> {
+  await dismissNotice(page)
+  const action = page.getByRole('button', { name: 'Machine panel', exact: true })
+  await action.first().waitFor({ state: 'visible', timeout: 30_000 })
+  await action.first().evaluate((node: HTMLElement) => { node.click() })
+  await page.waitForSelector('.dsh-web-machine[data-open]', { timeout: 20_000 })
+}
+
 /** Load the app on the browser machine and wait for its shell. */
 async function open(page: Page): Promise<void> {
   await page.goto(`${url}?runtime=browser`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
@@ -618,6 +637,53 @@ const scenarios: Scenario[] = [
         `the console log holds ${JSON.stringify(logs.console.slice(-3))}`)
       expect(logs.requests.some((entry) => entry.status === 200),
         `no request was recorded: ${JSON.stringify(logs.requests.slice(-3))}`)
+    },
+  },
+  {
+    // The panel, and the handover it performs. A tab is one browsing context,
+    // so showing it to a person means *moving* the frame into the panel rather
+    // than drawing a second one — and a frame that has been moved into a
+    // detached or mis-styled element stops being laid out, which breaks
+    // clicking and screenshots for the agent without breaking anything a
+    // person can see. So the machine is driven while the panel holds it, and
+    // again after the panel gives it back.
+    name: 'panel',
+    async run(page, site) {
+      await open(page)
+      await drive.navigate(page, `${site}/`)
+      await openMachinePanel(page)
+
+      await page.waitForSelector('.dsh-web-browser-tabs', { timeout: 20_000 })
+      const strip = await page.locator('.dsh-web-browser-tab').allInnerTexts()
+      expect(strip.some((entry) => entry.includes('Fixture home')),
+        `the tab strip shows ${JSON.stringify(strip)}`)
+      const shown = await page.locator('.dsh-web-browser-url').inputValue()
+      expect(shown === `${site}/`, `the address bar shows ${JSON.stringify(shown)}`)
+
+      // The frame really is inside the panel now, not still parked off-screen.
+      const adopted = await page.evaluate(() => {
+        const stage = document.querySelector('.dsh-web-browser-scaler')
+        return stage !== null && stage.querySelector('iframe') !== null
+      })
+      expect(adopted, 'the panel is open but holds no tab')
+
+      // And it is still drivable, at its real size, while adopted. A frame
+      // that lost its layout would report a zero-height document here.
+      const sized = await drive.run<{ value: unknown }>(page, 'evaluate', {
+        source: 'innerWidth + "x" + (document.body.getBoundingClientRect().height > 0)',
+      })
+      expect(String(sized.value) === '1280xtrue',
+        `an adopted tab reports its viewport as ${String(sized.value)}`)
+      const still = await drive.run<{ text: string }>(page, 'text', { selector: '#heading' })
+      expect(still.text.includes('Fixture home'), `driving stopped working while the panel was open: ${still.text}`)
+
+      // Closing gives the tab back, and it keeps working.
+      await page.getByRole('button', { name: 'Close', exact: true }).first()
+        .evaluate((node: HTMLElement) => { node.click() })
+      await page.waitForTimeout(500)
+      const after = await drive.run<{ text: string }>(page, 'text', { selector: '#heading' })
+      expect(after.text.includes('Fixture home'),
+        `driving stopped working after the panel closed: ${after.text}`)
     },
   },
 ]
