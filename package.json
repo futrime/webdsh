@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Pure-static, browser-only build of DeepSeek Harness (dsh web) \u2014 no server, deployable to GitHub Pages",
+  "description": "Pure-static, browser-only build of DeepSeek Harness (dsh web) — no server, deployable to GitHub Pages",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "assemble": "npm run build:plugins && npm run build:shell && npm run build:python && npm run build:v86 && tsx scripts/assemble.ts",
+    "assemble": "npm run build:plugins && npm run build:shell && npm run build:python && npm run build:v86 && npm run build:browser && tsx scripts/assemble.ts",
     "dev": "npm run assemble && vite",
     "build": "npm run assemble && vite build",
     "preview": "vite preview --port 4173",
@@ -26,16 +26,19 @@
     "test:python": "tsx scripts/python-e2e.ts",
     "test:files": "tsx scripts/files-e2e.ts",
     "test:v86": "tsx scripts/v86-e2e.ts",
+    "test:browser": "tsx scripts/browser-e2e.ts",
     "test:vision": "tsx scripts/vision-e2e.ts",
     "test:workload": "tsx scripts/workload-e2e.ts",
     "test:v86:all": "tsx scripts/v86-e2e.ts --all",
     "v86:catalog": "tsx scripts/v86-catalog.ts",
     "v86:images": "tsx scripts/v86-fetch-images.ts",
     "v86:boot": "tsx scripts/v86-boot-probe.ts",
+    "openharmony:check": "tsx scripts/openharmony-probe.ts",
     "build:plugins": "node scripts/build-plugins.mjs",
     "build:shell": "node scripts/build-container-shell.mjs",
     "build:python": "node scripts/build-container-python.mjs",
-    "build:v86": "node scripts/build-v86.mjs"
+    "build:v86": "node scripts/build-v86.mjs",
+    "build:browser": "node scripts/build-browser-frame.mjs"
   },
   "dependencies": {
     "@bokuweb/zstd-wasm": "^0.0.27",
@@ -233,10 +236,12 @@
     "@webcontainer/api": "^1.6.4",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "acorn": "^8.18.0",
     "buffer": "^6.0.3",
     "events": "^3.3.0",
     "fflate": "^0.8.2",
     "isomorphic-git": "^1.27.1",
+    "magic-string": "^1.2.3",
     "sql.js": "^1.12.0",
     "v86": "^0.5.432"
   },

@@ -25,8 +25,9 @@ import {
   DEFAULT_IMAGE_HOST, GUESTS, UPSTREAM_IMAGE_HOST, imageHost, setImageHost, type GuestSpec,
 } from '../runtime/guests.ts'
 import { forgetDisk, forgetLegacyDisk, storeDisk, storedDisks } from '../runtime/disks.ts'
-import { isEmulated, runtimeSelection, setRuntimeSelection, type RuntimeSelection } from '../runtime/selection.ts'
+import { isBrowser, isEmulated, runtimeSelection, setRuntimeSelection, type RuntimeSelection } from '../runtime/selection.ts'
 import { keepScreenshots, setKeepScreenshots } from '../runtime/screenshots.ts'
+import { VIEWPORT, browserMachine } from '../browser/engine.ts'
 import { ripgrep } from '../runtime/ripgrep.ts'
 import type { PluginManager } from '../plugins/manager.ts'
 import { volume } from '../vfs/volume.ts'
@@ -200,6 +201,7 @@ export function publishMachineBridge(): void {
     /** What the machine is doing right now. */
     status: (): MachineStatus => ({
       emulated: isEmulated(),
+      browser: isBrowser(),
       guest: machineGuest()?.id,
       started: machineStarted(),
       running: currentMachine() !== undefined,
@@ -296,6 +298,63 @@ export function publishMachineBridge(): void {
     },
     /** Wait until the guest has reached its own readiness marker. */
     ready: async (timeoutMs?: number) => (await bootMachine()).ready(timeoutMs),
+
+    /**
+     * The browser machine, when this session is one.
+     *
+     * A separate sub-object rather than more entries beside `console` and
+     * `screen`, because none of those words means anything here: a browser has
+     * no console to run a command in, no screen to press a key at, and no
+     * single document to screenshot — it has tabs. Kept on the same bridge
+     * because it answers the same question the rest of it does, which is "what
+     * is this session running on, and how do I show it".
+     *
+     * The panel and `scripts/browser-e2e.ts` both drive this, and so — through
+     * `src/host/browser-tools.ts` — does the model, which is the same
+     * arrangement the emulated machine has and for the same reason.
+     */
+    browser: {
+      /** Every open tab. */
+      tabs: () => browserMachine().tabs(),
+      /** Open one, optionally at a URL, and report its id. */
+      newTab: async (url?: string) => browserMachine().newTab(url),
+      close: (id: string) => { browserMachine().closeTab(id) },
+      select: (id: string) => { browserMachine().selectTab(id) },
+      /** Go somewhere in a tab. */
+      navigate: async (url: string, id?: string) => browserMachine().navigate(url, id),
+      /** Back, forward. */
+      go: async (delta: number, id?: string) => browserMachine().go(delta, id),
+      /** Run one driver command, which is what every `browser_*` tool does. */
+      run: async (kind: string, payload?: Record<string, unknown>, id?: string) =>
+        browserMachine().run(kind, payload ?? {}, id),
+      /** What a tab has logged. */
+      logs: (id?: string) => browserMachine().logs(id),
+      /** The cookie jar and the sites that have stored something. */
+      profile: () => ({
+        cookies: browserMachine().cookies(),
+        origins: browserMachine().profile.storedOrigins(),
+      }),
+      clear: async () => { await browserMachine().clearProfile() },
+      /** The size every tab is, which the panel scales to fit. */
+      viewport: VIEWPORT,
+      /** Start it without opening a tab, so the panel can draw before browsing. */
+      open: async () => { await browserMachine().open() },
+      /**
+       * Lend the tabs to a panel, exactly as `adoptScreen` lends the emulated
+       * machine's display — and for the same reason it moves rather than
+       * copies: two frames showing one page would be two browsing contexts,
+       * and the agent and the user would be looking at different pages.
+       * @param host - where to put them.
+       * @returns the disposer that takes them back.
+       */
+      adopt: async (host: HTMLElement): Promise<() => void> => {
+        const machine = browserMachine()
+        await machine.open()
+        return machine.adoptScreen(host)
+      },
+      /** Redraw whenever a tab changes. */
+      watch: (watcher: () => void): (() => void) => browserMachine().watch(watcher),
+    },
   }
 }
 
@@ -336,6 +395,8 @@ export interface GuestSummary {
 /** What the machine is doing, as the panel reads it. */
 export interface MachineStatus {
   emulated: boolean
+  /** Whether this session's machine is the browser rather than either of the others. */
+  browser: boolean
   guest?: string
   started: boolean
   running: boolean

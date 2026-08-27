@@ -36,7 +36,7 @@ import type { Context } from '@deepseek-ai/cordis'
 const ESC = '\u001b'
 
 /** What the session runs on. */
-type Selection = { kind: 'node' } | { kind: 'v86', image: string }
+type Selection = { kind: 'node' } | { kind: 'v86', image: string } | { kind: 'browser' }
 
 /** One machine the setting can offer. */
 interface Guest {
@@ -62,11 +62,46 @@ interface StoredDisk { guest: string, slot: string, name: string, size: number }
 /** What the machine is doing right now. */
 interface Status {
   emulated: boolean
+  browser: boolean
   guest?: string
   started: boolean
   running: boolean
   failure?: string
   unsupported?: string
+}
+
+/** One open tab, as the panel lists it. */
+interface Tab {
+  id: string
+  url: string
+  title: string
+  active: boolean
+  loading: boolean
+  error?: string
+  canGoBack: boolean
+  canGoForward: boolean
+}
+
+/**
+ * The browser machine's half of the bridge.
+ *
+ * Deliberately the same shape the agent's tools use rather than a display-only
+ * view: the panel opens tabs and navigates through exactly the calls
+ * `src/host/browser-tools.ts` makes, so what a person does here and what the
+ * model does are the same operations on the same machine — which is what makes
+ * watching it worth anything.
+ */
+interface BrowserBridge {
+  tabs(): Tab[]
+  newTab(url?: string): Promise<string>
+  close(id: string): void
+  select(id: string): void
+  navigate(url: string, id?: string): Promise<Tab>
+  go(delta: number, id?: string): Promise<Tab>
+  viewport: { width: number, height: number }
+  open(): Promise<void>
+  adopt(host: HTMLElement): Promise<() => void>
+  watch(watcher: () => void): () => void
 }
 
 /** The capability the app publishes about the machine. */
@@ -89,6 +124,7 @@ interface MachineBridge {
   restart(): Promise<void>
   keepScreenshots(): boolean
   setKeepScreenshots(next: boolean): boolean
+  browser: BrowserBridge
 }
 
 /** The capability the app publishes for whoever draws a terminal. */
@@ -149,6 +185,7 @@ function consoleLabel(kind: string): string {
 /** The machine the session is on, named the way the panel's bar names it. */
 function runningName(active: Selection, guests: Guest[]): string {
   if (active.kind === 'node') return 'Node container'
+  if (active.kind === 'browser') return 'Browser'
   return guests.find(guest => guest.id === active.image)?.name ?? active.image
 }
 
@@ -568,6 +605,7 @@ function MachinePanel({ open, onClose }: { open: boolean, onClose: () => void })
   const guests = machine?.guests() ?? []
   const status = machine?.status()
   const emulated = active.kind === 'v86'
+  const browsing = active.kind === 'browser'
   const panel = useRef<HTMLDivElement | null>(null)
 
   // Runs once and then watches: the panel's own size observation is what tells
@@ -584,7 +622,7 @@ function MachinePanel({ open, onClose }: { open: boolean, onClose: () => void })
     <div
       className="dsh-web-machine"
       ref={panel}
-      {...(emulated ? { 'data-emulated': '' } : {})}
+      {...(emulated || browsing ? { 'data-emulated': '' } : {})}
       {...(open ? { 'data-open': '' } : { hidden: true })}
     >
       <div className="dsh-web-machine-bar">
@@ -604,10 +642,201 @@ function MachinePanel({ open, onClose }: { open: boolean, onClose: () => void })
           keeps being drawn into and keeps photographing. */}
       {emulated
         ? (open && <Screen guestName={runningName(active, guests)} />)
-        : <TerminalScreen open={open} />}
+        : browsing
+          ? (open && <BrowserScreen />)
+          : <TerminalScreen open={open} />}
     </div>
   )
 }
+
+
+/* ── the browser machine's tabs ────────────────────────────────── */
+
+/**
+ * The browser, as a person watches it: a tab strip, an address bar, and the
+ * live tabs themselves.
+ *
+ * The frames are borrowed rather than recreated, exactly as the emulated
+ * machine's screen is, and for a sharper version of the same reason. A second
+ * frame pointed at the same page would not be a second view of one tab — it
+ * would be a second browsing context, with its own scripts, its own scroll
+ * position and its own idea of what had been clicked. The agent and the person
+ * watching would be looking at two different pages and neither would know.
+ *
+ * So this component takes the machine's tabs out of their off-screen host on
+ * mount, and puts them back on unmount. Forgetting the second half would leave
+ * the tabs inside a detached element, where they stop being laid out — and a
+ * tab that is not laid out reports every element at zero size, which breaks
+ * clicking and screenshots for the agent, silently, until the page is
+ * reloaded.
+ *
+ * Scaled with a transform for the same reason the emulated screen is: a tab is
+ * a fixed size the agent's coordinates are expressed in, and how much of the
+ * panel it covers is a question about the window rather than about the machine.
+ */
+function BrowserScreen(): JSX.Element {
+  const stage = useRef<HTMLDivElement | null>(null)
+  const scaler = useRef<HTMLDivElement | null>(null)
+  const [tabs, setTabs] = useState<Tab[]>([])
+  const [typed, setTyped] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [failed, setFailed] = useState<string | undefined>(undefined)
+  const browser = machineBridge()?.browser
+
+  const fit = useCallback(() => {
+    const box = stage.current
+    const inner = scaler.current
+    if (box === null || inner === null || browser === undefined) return
+    const next = Math.min(
+      box.clientWidth / browser.viewport.width,
+      box.clientHeight / browser.viewport.height,
+    )
+    const clamped = Number.isFinite(next) && next > 0 ? Math.min(next, 1) : 1
+    inner.style.transform = `scale(${String(clamped)})`
+  }, [browser])
+
+  useEffect(() => {
+    if (browser === undefined || scaler.current === null) return
+    let release: (() => void) | undefined
+    let gone = false
+    void (async () => {
+      try {
+        const disposer = await browser.adopt(scaler.current as HTMLElement)
+        // Checked after the await rather than before it: a panel closed while
+        // `adopt` was in flight would otherwise leave the tabs in a detached
+        // element and stop the agent being able to drive them.
+        if (gone) {
+          disposer()
+          return
+        }
+        release = disposer
+        setTabs(browser.tabs())
+        fit()
+      } catch (error) {
+        if (!gone) setFailed(error instanceof Error ? error.message : String(error))
+      }
+    })()
+    return () => {
+      gone = true
+      release?.()
+    }
+  }, [browser, fit])
+
+  // The agent opens tabs, navigates and closes them with nothing open here, so
+  // the strip follows the machine rather than this component's own actions.
+  useEffect(() => {
+    if (browser === undefined) return
+    const stop = browser.watch(() => { setTabs(browser.tabs()) })
+    return () => { stop() }
+  }, [browser])
+
+  useEffect(() => {
+    const box = stage.current
+    if (box === null) return
+    const sizes = new ResizeObserver(() => { fit() })
+    sizes.observe(box)
+    return () => { sizes.disconnect() }
+  }, [fit])
+
+  const current = tabs.find(tab => tab.active)
+  // The typed address follows the active tab until it is edited, which is what
+  // an address bar does: it shows where you are, and stops as soon as you start
+  // saying where you would rather be.
+  const showing = current?.url === undefined || current.url === 'about:blank' ? '' : current.url
+  useEffect(() => {
+    if (!editing) setTyped(showing)
+  }, [showing, editing])
+
+  const goto = useCallback((url: string) => {
+    if (browser === undefined || url.trim() === '') return
+    setEditing(false)
+    setFailed(undefined)
+    void browser.navigate(url.trim()).catch((error: unknown) => {
+      setFailed(error instanceof Error ? error.message : String(error))
+    })
+  }, [browser])
+
+  if (browser === undefined) {
+    return <div className="dsh-web-browser-note">This build has no browser machine.</div>
+  }
+
+  return (
+    <div className="dsh-web-browser">
+      <div className="dsh-web-browser-tabs">
+        {tabs.map(tab => (
+          <span
+            key={tab.id}
+            className="dsh-web-browser-tab"
+            {...(tab.active ? { 'data-active': '' } : {})}
+            title={tab.url}
+          >
+            <button type="button" onClick={() => { browser.select(tab.id) }}>
+              {tab.loading ? '· ' : ''}{tab.title === '' ? tab.url : tab.title}
+            </button>
+            <button
+              type="button"
+              className="dsh-web-browser-tab-close"
+              aria-label={`Close ${tab.title}`}
+              onClick={() => { browser.close(tab.id) }}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        <button
+          type="button"
+          className="dsh-web-browser-new"
+          aria-label="New tab"
+          onClick={() => { void browser.newTab().catch(() => undefined) }}
+        >
+          +
+        </button>
+      </div>
+
+      <div className="dsh-web-browser-bar">
+        <button
+          type="button"
+          disabled={current?.canGoBack !== true}
+          aria-label="Back"
+          onClick={() => { void browser.go(-1).catch(() => undefined) }}
+        >
+          ‹
+        </button>
+        <button
+          type="button"
+          disabled={current?.canGoForward !== true}
+          aria-label="Forward"
+          onClick={() => { void browser.go(1).catch(() => undefined) }}
+        >
+          ›
+        </button>
+        <input
+          className="dsh-web-browser-url"
+          value={typed}
+          placeholder="Enter a URL"
+          spellCheck={false}
+          onChange={event => {
+            setEditing(true)
+            setTyped(event.currentTarget.value)
+          }}
+          onKeyDown={event => {
+            if (event.key === 'Enter') goto(event.currentTarget.value)
+            if (event.key === 'Escape') setEditing(false)
+          }}
+        />
+      </div>
+
+      {(failed ?? current?.error) !== undefined && (
+        <div className="dsh-web-browser-error">{failed ?? current?.error}</div>
+      )}
+
+      <div className="dsh-web-browser-stage" ref={stage}>
+        <div className="dsh-web-browser-scaler" ref={scaler} />
+      </div>
+    </div>
+  )
+}
+
 
 /* ── the setting ───────────────────────────────────────────────────────── */
 
@@ -791,6 +1020,16 @@ function MachineSettings(): JSX.Element {
         chosen={chosen.kind === 'node'}
         onChoose={() => { choose({ kind: 'node' }) }}
         action={rowAction(chosen.kind === 'node')}
+      />
+
+      <MachineRow
+        title="Browser"
+        detail={'Real tabs of the real web, each sandboxed away from this page. The assistant drives them '
+          + 'by the page structure, by pixels, or by running JavaScript in the page.'}
+        tags={['tabs', 'nothing to download', 'cannot log in']}
+        chosen={chosen.kind === 'browser'}
+        onChoose={() => { choose({ kind: 'browser' }) }}
+        action={rowAction(chosen.kind === 'browser')}
       />
 
       {guests.map((guest) => {
@@ -1031,6 +1270,42 @@ const STYLE = `
    box-shadow:-8px 0 32px rgba(0,0,0,.18)}
   .dsh-web-machine[data-emulated]{height:auto;width:min(58vw,68rem,100vw - 44rem)}
 }
+
+/* The browser machine: a tab strip, an address bar, and the tabs themselves.
+   The stage is what the frames are scaled into, and it is the only part that
+   is allowed to be smaller than the tab really is — everything above it is
+   chrome at the panel's own scale, so the controls stay legible however far
+   down a 1280-pixel-wide tab has been scaled to fit. */
+.dsh-web-browser{display:flex;flex-direction:column;min-height:0;flex:1}
+.dsh-web-browser-tabs{display:flex;align-items:stretch;gap:.25rem;padding:.3rem .5rem 0;overflow-x:auto;flex:none}
+.dsh-web-browser-tab{display:flex;align-items:center;max-width:14rem;border-radius:.4rem .4rem 0 0;
+ background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.12))}
+.dsh-web-browser-tab[data-active]{background:var(--dsw-alias-bg-layer-1,Canvas);
+ box-shadow:inset 0 -2px 0 var(--dsw-alias-brand,#2f81f7)}
+.dsh-web-browser-tab > button{border:0;background:none;color:inherit;font:inherit;font-size:.8rem;
+ padding:.35rem .5rem;max-width:11rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.dsh-web-browser-tab-close{opacity:.6;padding:.35rem .4rem !important}
+.dsh-web-browser-tab-close:hover{opacity:1}
+.dsh-web-browser-new{border:0;background:none;color:inherit;font:inherit;padding:.35rem .6rem;cursor:pointer;opacity:.7}
+.dsh-web-browser-new:hover{opacity:1}
+.dsh-web-browser-bar{display:flex;align-items:center;gap:.35rem;padding:.35rem .5rem;flex:none;
+ border-bottom:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3))}
+.dsh-web-browser-bar > button{border:0;background:none;color:inherit;font:inherit;font-size:1rem;
+ padding:.1rem .45rem;cursor:pointer;border-radius:.3rem}
+.dsh-web-browser-bar > button:disabled{opacity:.3;cursor:default}
+.dsh-web-browser-url{flex:1;min-width:0;font:inherit;font-size:.8rem;padding:.25rem .5rem;border-radius:.35rem;
+ border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.08));
+ color:inherit}
+.dsh-web-browser-error{flex:none;padding:.35rem .6rem;font-size:.75rem;
+ background:rgba(200,40,40,.12);color:var(--dsw-alias-label-primary,CanvasText)}
+.dsh-web-browser-note{padding:1rem;font-size:.85rem;opacity:.8}
+/* The frames are laid out at their real size and scaled by a transform, so the
+   stage has to clip rather than scroll: a transform does not change the box the
+   element reserves, and without this the panel would scroll to a tab's full
+   1280x800 however small it had been drawn. */
+.dsh-web-browser-stage{flex:1;min-height:0;overflow:hidden;display:flex;align-items:flex-start;
+ justify-content:center;background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.08))}
+.dsh-web-browser-scaler{transform-origin:top center;flex:none;position:relative}
 
 .dsh-web-machine-bar{display:flex;align-items:center;gap:.75rem;padding:.4rem .75rem;flex:none;
  color:var(--dsw-alias-label-primary,CanvasText);

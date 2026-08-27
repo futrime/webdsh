@@ -18,6 +18,7 @@ Node itself, in the tab.
 - 🌍 **The container is online too.** The page's CORS policy is preloaded into every Node process it starts, so `fetch` inside the container retries a refused host through the proxy on its own — `http://example.com` answers there now, and it did not before.
 - 🖥️ **Real Node, real Python.** `npm install` and `pip install` both work, and the terminal and the agent share one container.
 - 💾 **Or a whole PC.** Settings → Machine swaps the container for [v86](https://github.com/copy/v86) and offers **128 machines** — the whole of v86's catalog, from a 512-byte bootsector game to Windows 2000, **127 of them booting with nothing to set up** — emulated x86, on its own screen, with the tool set that machine actually has.
+- 🧭 **Or a browser.** The third machine is real tabs of the real web, and the assistant drives them three ways: the page structure (a labelled tree with a handle on everything clickable), the pixels, or JavaScript in the page itself. Multi-tab, with its own cookies and per-site storage that persist — and each tab is sandboxed into an opaque origin, so a page cannot reach this harness, its storage, or your keys. That is the browser's own rule, not a promise this build makes: every escape route comes back `SecurityError`, and `npm run test:browser` checks it.
 - 🌐 **The PC is online.** A WISP relay by default, so the guest gets real TCP — `https://`, package managers, `ssh` — and without one the page itself is the router: it answers the guest's DHCP, DNS and pings and carries HTTP as browser `fetch`, through the same CORS policy the rest of the app uses. `wget http://example.com` works on an emulated Buildroot either way; the same URL from the container answers `fetch failed`.
 - 👁️ **It can see.** Attach an image and the model reads it: oriented, capped and re-encoded to the route's budget by the browser's own decoder, with the source's EXIF and colour profile stripped on the way. A model you add yourself is asked what it accepts, so a vision model on your own gateway arrives with its eyes open rather than registered as text-only.
 - 🧩 **Real plugins.** Install from npm, a tarball, GitHub, or a path — from the browser.
@@ -76,19 +77,24 @@ Three things live in the sidebar:
   in; take a file, a directory or a tick-box selection back out. Click a path
   the assistant mentions to open it here.
 - **Machine** — `` Ctrl+` ``. What this session runs on: a terminal for the Node
-  container, the live screen for an emulated PC. Click the screen and the
-  machine gets your keyboard and mouse; Escape gives them back.
+  container, the live screen for an emulated PC, the tab strip and address bar
+  for the browser. Click the screen and the machine gets your keyboard and
+  mouse; Escape gives them back. The browser's tabs are the same tabs the
+  assistant is driving, not a second copy of them — what it clicks, you watch.
 - **Settings** — which machine, which models, which CORS proxy, which plugins.
 
 Both panels dock beside the conversation on a wide window and along the bottom
 on a narrow one, and take width from it rather than covering it.
 
-**Machines.** Settings → Machine offers **128** — the whole of [v86's
-catalog](https://copy.sh/v86/) — and **127 boot with nothing to set up**. The
-choice applies on the next load, because it decides which tools the assistant
-gets: `jsh`, Node and Python in the container; `sh` or `dos` plus
-`vm_screenshot`, `vm_key`, `vm_type`, `vm_mouse` and friends on a guest, whose
-disk shares nothing with your workspace. A guest is offered the tools that
+**Machines.** Settings → Machine offers three kinds: the Node container, a
+**browser**, and **128** emulated PCs — the whole of [v86's
+catalog](https://copy.sh/v86/), **127 of which boot with nothing to set up**.
+The choice applies on the next load, because it decides which tools the
+assistant gets: `jsh`, Node and Python in the container; `browser_navigate`,
+`browser_snapshot`, `browser_click`, `browser_screenshot`, `browser_eval` and
+the rest on the browser; `sh` or `dos` plus `vm_screenshot`, `vm_key`,
+`vm_type`, `vm_mouse` and friends on a guest, whose disk shares nothing with
+your workspace. A guest is offered the tools that
 currently work on it and not the ones that would come back empty — no
 `vm_screen` on a desktop with no text, no `vm_mouse` at a prompt that never
 turned a mouse on. The one that is left, Arch, wants a host for its 9p tree —
@@ -100,15 +106,54 @@ disks come from v86's own `copy/images` and the hosts
 [AndyZijianZhang/webdsh-images](https://huggingface.co/datasets/AndyZijianZhang/webdsh-images),
 whose `NOTICE.json` records where every image came from and under what licence.
 
-**Screenshots.** A model driving an emulated machine photographs the screen to
-see it, and `vm_screenshot` hands the picture straight back the way `read_image`
-hands back a file — one call, nothing to open. The picture is not also written
-into the workspace: watching a boot is a screenshot every few seconds, and the
-Files panel filling with them is not what anyone asked for. What still writes a
-file is the assistant naming a path for one it wants to keep, a model that
-cannot be shown a picture at all (there the file is the whole answer), and
-Settings → Machine → Screenshots, which keeps every one of them for anybody who
-wants the record.
+What the catalog cannot hold is an operating system v86 cannot execute.
+OpenHarmony is the one people ask for: every target it has is ARM, RISC-V,
+Xtensa, C-SKY or x86-**64**, and v86 is 32-bit only, so there is no image to
+offer and no row for it. [`docs/openharmony-on-v86.md`](docs/openharmony-on-v86.md)
+has the evidence, and `npm run openharmony:check` re-reads it from upstream so
+the answer cannot go stale unnoticed.
+
+**The browser machine.** Tabs, in a frame this page cannot be reached from.
+Each one is sandboxed *without* `allow-same-origin`, which gives it an opaque
+origin — so the browser itself refuses it this page's DOM, its `localStorage`,
+its IndexedDB and the keys in them. That choice costs everything else: an
+opaque-origin document is not controlled by a service worker, cannot fetch
+anything cross-origin, and gets `SecurityError` from `localStorage`,
+`sessionStorage`, `document.cookie` and `indexedDB` alike. All of it was
+measured before any of it was written.
+
+So the page is the browser's network and storage process, and the frame is only
+its renderer. The page fetches through the same CORS policy everything else here
+uses, rewrites the document to be self-contained, and hands cookies and per-site
+storage across a message channel into shims. Three measurements shaped it: a
+service worker never controls an opaque origin, so the usual same-origin-proxy
+trick was out; `data:` URLs do not taint a canvas and `blob:` URLs do, so every
+subresource is inlined as `data:` or `browser_screenshot` breaks on any page
+with an image on it; and `window.location` is the one global `defineProperty`
+refuses, which is why script text is parsed with acorn and the expressions
+naming `location`, `top` and `parent` are rewritten to read a virtual one — a
+site that routes on its own URL works, and the frame-buster every large site
+ships quietly does nothing.
+
+Two limits, stated plainly here and in the tool descriptions the model reads.
+**No cookie travels on a request** — `Cookie` is a header a browser forbids a
+page to set, and `set-cookie` is not exposed cross-origin — so cookies work
+*inside* a page and persist between visits, and nothing behind a login is
+reachable. **Most hosts need the CORS proxy**, because most of the web does not
+permit cross-origin reads; without one, only hosts that send
+`access-control-allow-origin` can be browsed. `npm run test:browser` drives all
+of it against a local fixture site, including the isolation.
+
+**Screenshots.** A model driving a machine it can see photographs it to look at
+it, and both screen tools — `vm_screenshot` on an emulated PC, `browser_screenshot`
+on a tab — hand the picture straight back the way `read_image` hands back a file:
+one call, nothing to open. The picture is not also written into the workspace.
+Watching a boot is a screenshot every few seconds and checking a page is another
+one every edit, and the Files panel filling up with them is not what anyone asked
+for. What still writes a file is the assistant naming a path for a view worth
+keeping, a model that cannot be shown a picture at all (there the file is the
+whole answer), and Settings → Machine → Screenshots, which keeps every one of
+them for anybody who wants the record.
 
 **Models you add.** Settings → Models takes any OpenAI-compatible route: a base
 URL, a key, and *Fetch models*. What that listing says about modalities is read
