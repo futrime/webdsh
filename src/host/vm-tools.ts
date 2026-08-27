@@ -50,6 +50,7 @@ import { WORKSPACE_ROOT } from './seed.ts'
 import { dirname } from '../vfs/path.ts'
 import { machineNetworkConfig } from '../net/machine-network.ts'
 import { proxyConfig } from '../net/cors-proxy.ts'
+import { REQUEST_PIXEL_BUDGET, routeSeesImages, type Attachments } from './vision.ts'
 
 /** Services this row waits for before it applies. */
 export const inject = ['tools', 'systemPrompt']
@@ -652,69 +653,6 @@ interface Shot {
   }
 }
 
-/** The attachment store, when one is mounted. */
-interface Attachments {
-  saveImage(input: { data: Uint8Array, mediaType: string, name?: string }): Promise<{
-    attachmentId: string
-    mediaType: string
-    bytes: number
-    width: number
-    height: number
-    name?: string
-  }>
-}
-
-/**
- * Whether the model this call is running on can be shown a picture.
- *
- * Asked rather than assumed, because it decides between two different tools:
- * one that hands the screen over and one that can only say where it was saved.
- * A route that does not declare image input is not a failure — most of the free
- * routes this build registers do not — so this returns false rather than
- * throwing, and the caller falls back to the path.
- * @param ctx - the row's context.
- * @param exec - the tool-execution context, which knows the calling agent.
- * @returns whether an image block would reach the model.
- */
-async function routeSeesImages(ctx: Context, exec: { agent?: unknown, signal: AbortSignal }): Promise<boolean> {
-  try {
-    const agent = exec.agent as {
-      session?: { requestHeader?: () => { config?: { provider?: string, model?: string } } | undefined }
-      options?: { provider?: string, model?: string }
-    } | undefined
-    const routed = agent?.session?.requestHeader?.()?.config
-    const provider = routed?.provider ?? agent?.options?.provider
-    const model = routed?.model ?? agent?.options?.model
-    const llm = ctx.get('llm') as {
-      resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<{ inputModalities?: string[] }>
-    } | undefined
-    if (provider === undefined || model === undefined || llm === undefined) return false
-    const info = await llm.resolveModelInfo(provider, model, exec.signal)
-    return info.inputModalities?.includes('image') === true
-  } catch {
-    return false
-  }
-}
-
-/**
- * The most pixels a picture may carry to the model.
- *
- * Not a preference: it is the request-image budget dsh's own adapters apply —
- * `DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET` in `dsh-llm-deepseek`, 640,000 — and
- * anything larger is resized to fit it on the way into the request, by a layer
- * this tool never sees the output of.
- *
- * That resize is why this constant is here. A 1024×768 screen arrives at the
- * model as a 923×692 picture, and a tool result that says "1024×768" while the
- * model looks at 923×692 has told it that a pixel it can see is a pixel the
- * machine has. It is not: every coordinate read off that picture is 10% short,
- * and a model calibrating a pointer against it derives a different, wrong
- * scale each time — which is exactly what happened. So the picture is brought
- * within the budget *here*, where the numbers can be reported honestly, and the
- * result says what the picture is, what the screen is, and how to get from one
- * to the other.
- */
-const REQUEST_PIXEL_BUDGET = 640_000
 
 /** The screenshot tool. */
 function registerScreenshot(ctx: Context, spec: GuestSpec): void {
