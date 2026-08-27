@@ -54,6 +54,7 @@ import { dirname } from '../vfs/path.ts'
 import { proxyConfig } from '../net/cors-proxy.ts'
 import { fitToBudget, routeSeesImages, type Attachments } from './vision.ts'
 import { keepScreenshots } from '../runtime/screenshots.ts'
+import { routedToRuntime, runtimeWriteFile } from '../runtime/fs-bridge.ts'
 
 /** Services this row waits for before it applies. */
 export const inject = ['tools', 'systemPrompt']
@@ -900,8 +901,18 @@ function registerScreenshot(ctx: Context): void {
       const write = args.path !== undefined || keepScreenshots() || image === undefined
       if (write) {
         if (args.path === undefined) counter += 1
-        volume.mkdirp(dirname(path))
-        volume.writeFile(path, fitted.bytes)
+        // Into the filesystem the workspace actually is. This session's machine
+        // is a browser, so nothing stops the container from being the live one
+        // — and it is: the agent's own `read`, `glob` and the Files panel all
+        // go through it. A picture written to the page's volume instead is a
+        // file the tool names in its result and nobody can open. (The emulated
+        // machine has no container at all, so its screen tool writes where the
+        // workspace is there, which is the page.)
+        if (await routedToRuntime(path)) await runtimeWriteFile(path, fitted.bytes)
+        else {
+          volume.mkdirp(dirname(path))
+          volume.writeFile(path, fitted.bytes)
+        }
       }
 
       return { ...result, ...(write ? { path } : {}), ...(image === undefined ? {} : { image }) }

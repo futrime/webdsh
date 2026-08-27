@@ -27,6 +27,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock, ImageBlock } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import { volume } from '../vfs/volume.ts'
+import { routeSeesImages, type Attachments } from './vision.ts'
 
 /** Services this row waits for before it applies. */
 export const inject = ['tools']
@@ -43,18 +44,6 @@ const MEDIA_TYPES: Record<string, string> = {
   '.gif': 'image/gif',
 }
 
-/** The durable store an image has to go through to reach a request. */
-interface Attachments {
-  saveImage(input: { data: Uint8Array, mediaType: string, name?: string }): Promise<{
-    attachmentId: string
-    mediaType: string
-    bytes: number
-    width: number
-    height: number
-    name?: string
-  }>
-}
-
 /** What one read produces. */
 interface Read {
   path: string
@@ -65,36 +54,6 @@ interface Read {
     width: number
     height: number
     name?: string
-  }
-}
-
-/**
- * Whether the model this call is running on can be shown a picture.
- *
- * Refused up front rather than after the read, because "your model cannot see
- * images" is a different problem from "that file is not there" and a model
- * told the second one will go looking for a file that exists.
- * @param ctx - the row's context.
- * @param exec - the tool-execution context, which knows the calling agent.
- * @returns whether an image block would reach the model.
- */
-async function routeSeesImages(ctx: Context, exec: { agent?: unknown, signal: AbortSignal }): Promise<boolean> {
-  try {
-    const agent = exec.agent as {
-      session?: { requestHeader?: () => { config?: { provider?: string, model?: string } } | undefined }
-      options?: { provider?: string, model?: string }
-    } | undefined
-    const routed = agent?.session?.requestHeader?.()?.config
-    const provider = routed?.provider ?? agent?.options?.provider
-    const model = routed?.model ?? agent?.options?.model
-    const llm = ctx.get('llm') as {
-      resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<{ inputModalities?: string[] }>
-    } | undefined
-    if (provider === undefined || model === undefined || llm === undefined) return false
-    const info = await llm.resolveModelInfo(provider, model, exec.signal)
-    return info.inputModalities?.includes('image') === true
-  } catch {
-    return false
   }
 }
 
