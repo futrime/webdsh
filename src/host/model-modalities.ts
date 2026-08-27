@@ -304,10 +304,16 @@ async function reconcile(ctx: Context, cache: Map<string, Promise<Map<string, st
 
   if (operations.length === 0) return
   // The revision the descriptor was read at, so a write racing the Models page
-  // is refused rather than applied over it. The refusal is not an error worth
-  // reporting: the page's own write re-enters this row, and the second pass
-  // sees whatever the user just saved.
-  await ctx.settings.mutate(NS, operations, descriptor.revision)
+  // is refused rather than applied over it. The refusal is not a failure: the
+  // page's own write re-enters this row, and the second pass sees whatever the
+  // user just saved — and answers it from the listing already read rather than
+  // asking the gateway again.
+  try {
+    await ctx.settings.mutate(NS, operations, descriptor.revision)
+  } catch (error) {
+    if ((error as { code?: string }).code !== 'SETTINGS_CONFLICT') throw error
+    ctx.logger.debug('web-model-modalities: the section moved while this was being read; the next pass has it')
+  }
 }
 
 /**
