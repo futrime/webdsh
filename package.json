@@ -33,6 +33,7 @@
     "v86:catalog": "tsx scripts/v86-catalog.ts",
     "v86:images": "tsx scripts/v86-fetch-images.ts",
     "v86:boot": "tsx scripts/v86-boot-probe.ts",
+    "openharmony:check": "tsx scripts/openharmony-probe.ts",
     "build:plugins": "node scripts/build-plugins.mjs",
     "build:shell": "node scripts/build-container-shell.mjs",
     "build:python": "node scripts/build-container-python.mjs",
