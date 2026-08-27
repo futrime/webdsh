@@ -122,6 +122,37 @@ function model(id: string, parts: Omit<FreeModel, 'id'>): FreeModel {
   }
 }
 
+/**
+ * What OVHcloud's own listing will not say, measured by asking the model.
+ *
+ * Every other route here publishes its modalities and this module reads them;
+ * OVHcloud publishes ids, context and token ceilings and nothing else, so a
+ * vision model on that route came through describing itself as text — and a
+ * model declared text-only is refused an image *before* the request leaves the
+ * page. `Qwen2.5-VL-72B-Instruct` is one of the twelve models this build
+ * registers for a visitor with no account, and it is a vision model.
+ *
+ * So it was asked. On 2026-08-27 the anonymous endpoint was sent a 64×64 PNG —
+ * a red square in the top-left quadrant, white elsewhere — with the question
+ * "what colour is the square and which corner is it in?", and answered "Red
+ * square top left corner." That is a measurement, in the same sense as every
+ * other fact in this file; it just could not be read out of a catalog.
+ *
+ * What this does not buy is a working agent turn on that model: OVHcloud
+ * answers a request carrying tool definitions with `400 {"message":"feature
+ * 'tool calls' is not currently supported"}`, and every turn carries them.
+ * Declaring the modality is still the honest state — the page stops refusing a
+ * picture it could have sent, and the refusal that remains is the provider's,
+ * with the provider's own reason — but a reader expecting a conversation about
+ * an image on this route should know which wall it hits.
+ *
+ * Anything added here must be measured the same way. A name ending in `-VL` is
+ * not evidence.
+ */
+const OVH_MEASURED_INPUT: Readonly<Record<string, readonly ('text' | 'image')[]>> = {
+  'Qwen2.5-VL-72B-Instruct': ['text', 'image'],
+}
+
 export const FREE_ROUTES: readonly FreeRoute[] = [
   {
     id: 'ovh-free',
@@ -143,7 +174,9 @@ export const FREE_ROUTES: readonly FreeRoute[] = [
       const maxTokens = positive(field(row, 'max_completion_tokens'))
       const contextWindow = positive(field(row, 'context_length'))
       if (id === undefined || maxTokens === undefined || contextWindow === undefined) return []
-      return [model(id, { contextWindow, maxTokens })]
+      // The one field the listing does not carry, for the models it has been
+      // asked about directly. See {@link OVH_MEASURED_INPUT}.
+      return [model(id, { contextWindow, maxTokens, input: OVH_MEASURED_INPUT[id] })]
     }),
     excluded: {
       'Qwen3Guard-Gen-0.6B': 'a safety classifier, not an assistant: asked for a haiku it answers "Safety: Safe\\nCategories: None"',

@@ -15,6 +15,7 @@ import type {} from '@deepseek-ai/dsh-shell-env'
 import { SandboxProvider, type ConfinedArgv, type SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import * as TypertLoaderBrowser from './typert-loader-browser.ts'
 import * as machineToolsPlugin from './machine-tools.ts'
+import * as modelModalitiesPlugin from './model-modalities.ts'
 import * as readImagePlugin from './read-image-tool.ts'
 import { isEmulated, selectedGuest } from '../runtime/selection.ts'
 
@@ -207,6 +208,10 @@ export const BROWSER_PLUGINS: Record<string, unknown> = {
   // otherwise have no way to look at a picture at all. See
   // `src/host/read-image-tool.ts`.
   'browser:read-image': readImagePlugin,
+  // What a route the user configured accepts, read from that route's own model
+  // listing — the field the Models page's fetch has nowhere to put. See
+  // `src/host/model-modalities.ts`.
+  'browser:model-modalities': modelModalitiesPlugin,
 }
 
 /** Re-exported so `boot.ts` can register the client-module table under the same scheme. */

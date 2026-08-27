@@ -167,8 +167,15 @@ export function apply(ctx: Context): void {
       const attachments = ctx.get('attachments') as Attachments | undefined
       if (attachments === undefined) throw new Error(`cannot read "${path}" as an image: no attachment service is mounted`)
       if (!await routeSeesImages(ctx, exec)) {
-        throw new Error(`cannot read "${path}" as an image: the current model does not accept image input; `
-          + 'switch to an image-capable model to read images')
+        // Which is a fact about how the model is *registered*, not necessarily
+        // about the model: a route that publishes no modalities in its own
+        // model listing leaves its entries at the text-only default, and this
+        // page has no other way to learn better. Saying so is what turns "your
+        // model cannot see" into something the user can act on.
+        throw new Error(`cannot read "${path}" as an image: the current model is registered as accepting text `
+          + 'only; switch to an image-capable model, or — if this one does accept images — declare '
+          + '`input: [text, image]` on its entry in Settings → Models, which this page fills in from the '
+          + 'route\'s own model listing when the route states it')
       }
       let data: Uint8Array
       try {

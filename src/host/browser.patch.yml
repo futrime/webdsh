@@ -79,6 +79,15 @@
     - id: sandbox-browser
       name: 'browser:sandbox'
 
+    # What the routes a user configured actually accept. The Models page can
+    # add any OpenAI-compatible model to any route, and what it writes says
+    # nothing about modalities — the discovery seam it reads has no field for
+    # them — so a vision model added that way is resolved as text-only and
+    # refused every picture. This row asks the route's own listing and records
+    # the answer. See `src/host/model-modalities.ts`.
+    - id: model-modalities-browser
+      name: 'browser:model-modalities'
+
 
 # ── rows kept, with browser-appropriate values ──────────────────────────────
 

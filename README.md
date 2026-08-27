@@ -19,7 +19,7 @@ Node itself, in the tab.
 - 🖥️ **Real Node, real Python.** `npm install` and `pip install` both work, and the terminal and the agent share one container.
 - 💾 **Or a whole PC.** Settings → Machine swaps the container for [v86](https://github.com/copy/v86) and offers **128 machines** — the whole of v86's catalog, from a 512-byte bootsector game to Windows 2000, **127 of them booting with nothing to set up** — emulated x86, on its own screen, with the tool set that machine actually has.
 - 🌐 **The PC is online.** A WISP relay by default, so the guest gets real TCP — `https://`, package managers, `ssh` — and without one the page itself is the router: it answers the guest's DHCP, DNS and pings and carries HTTP as browser `fetch`, through the same CORS policy the rest of the app uses. `wget http://example.com` works on an emulated Buildroot either way; the same URL from the container answers `fetch failed`.
-- 👁️ **It can see.** Attach an image and the model reads it: oriented, capped and re-encoded to the route's budget by the browser's own decoder, with the source's EXIF and colour profile stripped on the way.
+- 👁️ **It can see.** Attach an image and the model reads it: oriented, capped and re-encoded to the route's budget by the browser's own decoder, with the source's EXIF and colour profile stripped on the way. A model you add yourself is asked what it accepts, so a vision model on your own gateway arrives with its eyes open rather than registered as text-only.
 - 🧩 **Real plugins.** Install from npm, a tarball, GitHub, or a path — from the browser.
 - 📦 **Real dsh.** The published `@deepseek-ai/*` packages, unmodified: 120 of 135 rows compose exactly as `dsh web` composes them.
 - 🔒 **Yours.** Files, sessions and keys live in your browser's storage. Nothing is uploaded.
@@ -99,6 +99,22 @@ disks come from v86's own `copy/images` and the hosts
 `src/runtime/v86-mirror.json` names, mostly
 [AndyZijianZhang/webdsh-images](https://huggingface.co/datasets/AndyZijianZhang/webdsh-images),
 whose `NOTICE.json` records where every image came from and under what licence.
+
+**Models you add.** Settings → Models takes any OpenAI-compatible route: a base
+URL, a key, and *Fetch models*. What that listing says about modalities is read
+along with the rest of it, so a model the endpoint describes as accepting images
+is registered accepting images — GLM-5.3-Flash on a gateway is the case this was
+measured against. Nothing is guessed: a listing that describes no modalities
+leaves its models where the route's default puts them, which is text, and an
+entry you have declared yourself is never rewritten. If your route says nothing
+and its model does take pictures, `input: [text, image]` on that model's entry in
+the settings document is the whole of what this fills in for you. The roster the
+page ships is described the same way, from each service's own catalog — except
+OVHcloud, which publishes no modalities at all, so its vision model was asked a
+question about a picture instead and answered it. (That route then refuses the
+tool definitions every agent turn carries, which is its own wall and the
+provider's to move; what changed here is that the page no longer refuses to send
+a picture it could have sent.)
 
 **The machine's network.** An emulated PC gets an ethernet card and this page on
 the other end of it: it answers the guest's ARP, DHCP, DNS and pings itself, and

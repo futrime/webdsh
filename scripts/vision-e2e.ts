@@ -317,6 +317,117 @@ const scenarios: Scenario[] = [
   },
 
   {
+    // Whether a model the user added can be shown a picture at all.
+    //
+    // Settings → Models writes an id, a name and two capacities for every model
+    // it adds, and nothing about modalities — the discovery seam it reads has
+    // no field for one. A vision model added that way used to resolve to
+    // `[text]` and be refused every image before the request left the page,
+    // which is how GLM-5.3-Flash arrived here blind while its own gateway
+    // listing said `"input_modalities": ["text", "image", "video"]`.
+    //
+    // The listing is served by this scenario rather than by a gateway: the
+    // shape is what `api.kilo.ai` answered on 2026-08-27, and a suite that
+    // needed somebody's account to run would not be run.
+    name: 'route-modalities',
+    async run(page) {
+      let asked = 0
+      // On the context rather than the page: this build serves its own
+      // requests through a service worker, and a `page.route` never sees them.
+      await page.context().route('https://gateway.example/v1/models', async (route) => {
+        asked += 1
+        await route.fulfill({
+          status: 200,
+          headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*' },
+          body: JSON.stringify({
+            object: 'list',
+            data: [
+              {
+                id: 'glm-5.3-flash',
+                name: 'Z.ai: GLM 5.3 Flash',
+                context_length: 1_310_720,
+                architecture: { input_modalities: ['text', 'image', 'video'], output_modalities: ['text'] },
+              },
+              {
+                id: 'glm-5.3',
+                name: 'Z.ai: GLM 5.3',
+                context_length: 1_048_576,
+                architecture: { input_modalities: ['text'], output_modalities: ['text'] },
+              },
+            ],
+          }),
+        })
+      })
+      await waitForHost(page)
+
+      // Exactly what the Models page stores when someone presses *Fetch
+      // models* and ticks two rows. Written through the same settings service
+      // it writes through, so nothing here is a shape this build invented.
+      const wrote = await page.evaluate(async () => {
+        const settings = globalThis.dsh.ctx.get('settings') as {
+          update(ns: string, patch: object): Promise<void>
+          describe(): { ns: string, user?: unknown }[]
+        }
+        await settings.update('llm-pi-ai', {
+          providers: {
+            'gateway-probe': {
+              displayName: 'Gateway',
+              api: 'openai-completions',
+              baseURL: 'https://gateway.example/v1',
+              models: [
+                { id: 'glm-5.3-flash', name: 'Z.ai: GLM 5.3 Flash', contextWindow: 200_000, maxTokens: 32_000 },
+                { id: 'glm-5.3', name: 'Z.ai: GLM 5.3', contextWindow: 200_000, maxTokens: 32_000 },
+              ],
+            },
+          },
+        })
+        return true
+      })
+      expect(wrote, 'the provider could not be configured')
+
+      /** What the route says it accepts, as the tools and the adapter ask it. */
+      const modalities = async (model: string): Promise<string[] | undefined> => page.evaluate(async (id) => {
+        const llm = globalThis.dsh.ctx.get('llm') as {
+          resolveModelInfo(provider: string, model: string): Promise<{ inputModalities?: string[] }>
+        }
+        return llm.resolveModelInfo('gateway-probe', id).then(info => info.inputModalities, () => undefined)
+      }, model)
+
+      const deadline = Date.now() + 30_000
+      let seen: string[] | undefined
+      while (Date.now() < deadline) {
+        seen = await modalities('glm-5.3-flash')
+        if (seen?.includes('image') === true) break
+        await page.waitForTimeout(250)
+      }
+      expect(seen?.includes('image') === true,
+        `the model the listing describes as taking images resolves as ${JSON.stringify(seen)}`)
+
+      // The other half of not guessing: a model the listing describes as text
+      // stays text, and nothing was written about it.
+      expect((await modalities('glm-5.3'))?.includes('image') !== true,
+        'a text-only model was given image input as well')
+      const stored = await page.evaluate(() => {
+        const settings = globalThis.dsh.ctx.get('settings') as { describe(): { ns: string, user?: unknown }[] }
+        const section = settings.describe().find(entry => entry.ns === 'llm-pi-ai')?.user as {
+          providers?: Record<string, { models?: { id?: string, input?: string[] }[] }>
+        } | undefined
+        return section?.providers?.['gateway-probe']?.models ?? []
+      })
+      expect(stored.find(model => model.id === 'glm-5.3-flash')?.input?.includes('image') === true,
+        `the answer was not recorded where the adapter reads it: ${JSON.stringify(stored)}`)
+      expect(stored.find(model => model.id === 'glm-5.3')?.input === undefined,
+        `a text-only entry was written to anyway: ${JSON.stringify(stored)}`)
+
+      // And the endpoint was asked once, not once per settings change — the
+      // write above is itself a settings change, and a row that reacted to its
+      // own writes would interrogate the user's gateway in a loop.
+      await page.waitForTimeout(1500)
+      expect(asked === 1, `the gateway's model listing was fetched ${String(asked)} times`)
+    },
+  },
+
+  {
     // Vision where this deployment actually needs it: an emulated machine.
     //
     // A guest that only draws pixels has no text to read, so the tool set it
@@ -401,6 +512,107 @@ const scenarios: Scenario[] = [
         /ms-?dos executive/i.test(result.reply ?? ''),
         `the model did not describe what is on the screen:\n${(result.reply ?? '').slice(0, 900)}`,
       )
+    },
+  },
+
+  {
+    // The same turn, on the roster this page ships, with no account at all.
+    //
+    // `ovh-free` publishes no modalities in its listing, so its one vision
+    // model came through the roster describing itself as text and was refused
+    // every image before the request left the page. It is declared from a
+    // measurement instead — see `OVH_MEASURED_INPUT` in
+    // `scripts/free-routes.ts` — and this is that measurement, kept where it
+    // will be re-run: a model a visitor is given by default either reads a
+    // picture or does not.
+    //
+    // What is asserted is the half this build owns: the page accepts the
+    // picture and puts it in the request. Before the roster said so, the same
+    // prompt was refused outright with `MODEL_DOES_NOT_SUPPORT_IMAGES` — the
+    // composer's own error, raised before any request — which is exactly what
+    // a user reports as "vision input isn't supported".
+    //
+    // The turn after that is not this build's to guarantee. OVHcloud answers a
+    // request carrying tool definitions with `400 {"message":"feature 'tool
+    // calls' is not currently supported"}` on this model, and every agent turn
+    // carries them, so the reply usually never arrives; the model's ability to
+    // read the picture was measured directly instead, and that measurement is
+    // recorded in `scripts/free-routes.ts`. When a reply does come back it has
+    // to be about the picture.
+    name: 'keyless-vision',
+    async run(page) {
+      await waitForHost(page)
+      const result = await page.evaluate(async () => {
+        const { ctx } = globalThis.dsh
+        const proxy = ctx.get('apiProxy') as Gateway
+        const created = await proxy.sessions.create({ rpcId: crypto.randomUUID(), payload: {} })
+        if (!created.result.ok || created.result.value === undefined) {
+          return { error: `session.create: ${JSON.stringify(created.result.error)}` }
+        }
+        const { sessionId } = created.result.value
+        const selected = await proxy.sessions.selectModel({
+          rpcId: crypto.randomUUID(),
+          payload: { sessionId, provider: 'ovh-free', model: 'Qwen2.5-VL-72B-Instruct' },
+        })
+        // The refusal this case exists to catch: a route whose model is
+        // declared text-only rejects the picture here, before any request.
+        if (!selected.result.ok) return { error: `session.selectModel: ${JSON.stringify(selected.result.error)}` }
+
+        // A red square in one corner of a white field: nothing about it can be
+        // inferred from the prompt, and it survives any downscale on the way.
+        const canvas = new OffscreenCanvas(256, 256)
+        const context = canvas.getContext('2d')!
+        context.fillStyle = '#ffffff'
+        context.fillRect(0, 0, 256, 256)
+        context.fillStyle = '#ff0000'
+        context.fillRect(0, 0, 128, 128)
+        const blob = await canvas.convertToBlob({ type: 'image/png' })
+        const bytes = new Uint8Array(await blob.arrayBuffer())
+        let binary = ''
+        for (const byte of bytes) binary += String.fromCharCode(byte)
+        const base64 = btoa(binary)
+
+        const abort = new AbortController()
+        const frames = proxy.events.mux({ rpcId: crypto.randomUUID(), payload: {} }, abort.signal)
+        let reply = ''
+        const collected = (async () => {
+          for await (const frame of frames) {
+            const event = frame.payload.event
+            if (event?.type === 'assistant/chunk' && event.data?.chunk?.type === 'text-delta') reply += event.data.chunk.text ?? ''
+            if (event?.type === 'turn/end') break
+          }
+        })()
+
+        const prompted = await proxy.sessions.prompt({
+          rpcId: crypto.randomUUID(),
+          payload: {
+            sessionId,
+            content: [
+              { type: 'image', mediaType: 'image/png', data: base64, name: 'square.png' },
+              { type: 'text', text: 'What colour is the square in this image, and which corner is it in? Answer in five words.' },
+            ],
+          },
+        })
+        // The refusal this case is about: a model registered as text-only is
+        // turned away here, by the attachment path, with no request made.
+        if (!prompted.result.ok) { abort.abort(); return { refused: JSON.stringify(prompted.result.error) } }
+        await Promise.race([collected, new Promise(resolve => setTimeout(resolve, 150_000))])
+        abort.abort()
+
+        const history = await proxy.sessions.history({ rpcId: crypto.randomUUID(), payload: { sessionId } })
+        const stored = JSON.stringify(history.result.value ?? {})
+        return { reply, storedImage: /"type":"image"/.test(stored) }
+      })
+
+      expect(result.refused === undefined,
+        `the page refused to send the picture to its own vision model: ${String(result.refused)}`)
+      expect(result.storedImage === true, 'the prompt was recorded without an image block; nothing was sent to look at')
+      if ((result.reply ?? '').trim() === '') {
+        console.log('  note: no reply — this route refuses tool calls, and every turn carries them; the picture '
+          + 'was accepted and put in the request, which is the part this build decides')
+        return
+      }
+      expect(/red/i.test(result.reply ?? ''), `the model did not read the picture:\n${(result.reply ?? '').slice(0, 600)}`)
     },
   },
 
