@@ -18,7 +18,8 @@ import { disableAllPlugins, installedPluginNames, installPluginManager } from '.
 import { installWindowApi } from './api.ts'
 import { bootRuntime, runtimeSupported } from './runtime/webcontainer.ts'
 import { bootMachine } from './runtime/v86.ts'
-import { isEmulated } from './runtime/selection.ts'
+import { isBrowser, isEmulated } from './runtime/selection.ts'
+import { browserMachine } from './browser/engine.ts'
 import {
   publishFilesBridge, publishInstallerBridge, publishMachineBridge, publishNetworkBridge, publishRuntimeBridge,
 } from './host/bridges.ts'
@@ -147,7 +148,12 @@ async function main(): Promise<void> {
     // already the decision to download an operating system, so starting it now
     // means it is at a prompt when the user first asks it for something rather
     // than a minute after.
-    if (isEmulated()) void bootMachine().catch(() => undefined)
+    // The browser machine is the cheapest of the three to start — a frame host
+    // and an IndexedDB open, no download and nothing to boot — so it is
+    // started here too, and for the third reason as well: the panel should be
+    // able to draw a tab strip before the agent has opened anything.
+    if (isBrowser()) void browserMachine().open().catch(() => undefined)
+    else if (isEmulated()) void bootMachine().catch(() => undefined)
     else if (runtimeSupported().ok) void bootRuntime().catch(() => undefined)
 
     progress.step('Loading the web client')

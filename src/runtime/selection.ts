@@ -28,6 +28,17 @@ export type RuntimeSelection =
   | { kind: 'node' }
   /** v86: an emulated PC booting `image`. */
   | { kind: 'v86', image: string }
+  /**
+   * A browser: tabs of the real web, each in a frame this page cannot be
+   * reached from.
+   *
+   * The third machine, and the one that is least like the other two. There is
+   * no filesystem to share and no shell to run a command in — the thing being
+   * driven is a document, and the tools are about documents. See
+   * `src/browser/engine.ts` for what the isolation actually is, and
+   * `src/host/browser-tools.ts` for what the model is handed.
+   */
+  | { kind: 'browser' }
 
 /** Where the choice is kept. */
 const STORAGE_KEY = 'dsh-web:runtime'
@@ -51,6 +62,7 @@ const URL_PARAMETER = 'runtime'
 function parse(raw: string | null): RuntimeSelection | undefined {
   if (raw === null || raw === '') return undefined
   if (raw === 'node') return { kind: 'node' }
+  if (raw === 'browser') return { kind: 'browser' }
   if (!raw.startsWith('v86:')) return undefined
   const image = raw.slice('v86:'.length)
   // A guest that is no longer in the catalog must not strand the page on a
@@ -61,7 +73,9 @@ function parse(raw: string | null): RuntimeSelection | undefined {
 
 /** The text form, as it is stored. */
 function format(selection: RuntimeSelection): string {
-  return selection.kind === 'node' ? 'node' : `v86:${selection.image}`
+  if (selection.kind === 'node') return 'node'
+  if (selection.kind === 'browser') return 'browser'
+  return `v86:${selection.image}`
 }
 
 /**
@@ -102,6 +116,18 @@ export function runtimeSelection(): RuntimeSelection {
 /** Whether this session is an emulated PC rather than a Node container. */
 export function isEmulated(): boolean {
   return resolved.kind === 'v86'
+}
+
+/**
+ * Whether this session's machine is a browser.
+ *
+ * Asked in the same places and at the same time as {@link isEmulated}, and
+ * separate from it for the same reason the two tool rows are separate: a
+ * browser has no shell, no filesystem of its own and no screen to send a
+ * keystroke to, so nothing written for the emulated PC applies to it.
+ */
+export function isBrowser(): boolean {
+  return resolved.kind === 'browser'
 }
 
 /**
