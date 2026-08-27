@@ -45,6 +45,7 @@ import { HarnessError, type ContentBlock, type ImageBlock } from '@deepseek-ai/d
 import type { Context } from '@deepseek-ai/cordis'
 import { KEY_NAMES, bootMachine, currentMachine, machineGuest, type CommandResult, type Machine } from '../runtime/v86.ts'
 import type { GuestSpec } from '../runtime/guests.ts'
+import { keepScreenshots } from '../runtime/screenshots.ts'
 import { volume } from '../vfs/volume.ts'
 import { WORKSPACE_ROOT } from './seed.ts'
 import { dirname } from '../vfs/path.ts'
@@ -628,7 +629,12 @@ function registerWriteFile(ctx: Context, spec: GuestSpec): void {
 
 /** What a screenshot call produces. */
 interface Shot {
-  path: string
+  /**
+   * Where the picture was written, when it was written at all. Absent is the
+   * ordinary case: the picture goes to the model and no file is left behind.
+   * See {@link keepScreenshots}.
+   */
+  path?: string
   /** The picture's own width — what a coordinate read off it is measured in. */
   width: number
   /** The picture's own height. */
@@ -725,9 +731,15 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
       `Photograph ${spec.name}'s screen. The picture comes back with the result, the way \`read_image\``,
       'returns a file — there is no second call to make.',
       '',
-      'It is also saved into the workspace as a PNG, so the user can open it from the Files panel and',
-      'so you can point at it later. On a model that does not accept images you get the path and the',
-      'size and nothing to look at, which is the whole of what this tool can do there.',
+      'Nothing is written to the workspace unless you ask for it. Watching a machine takes a lot of',
+      'screenshots and a folder filling up with them is not what the user asked for, so the picture',
+      'comes back and that is all. Name a `path` when a particular screen is worth keeping as a file —',
+      'to point at it later, or to hand it to the user — and that one is saved. (A deployment can also',
+      'ask for every screenshot to be kept, in Settings → Machine.)',
+      '',
+      'On a model that does not accept images there is nothing to hand you, so the picture is written',
+      'to the workspace instead and you get the path and the size — which is the whole of what this',
+      'tool can do there.',
       '',
       '`region` takes a rectangle of the screen instead of the whole thing, in screen pixels with',
       '`0,0` at the top left. Reach for it when you are reading something small — a dialog, a status',
@@ -749,7 +761,8 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
     parameters: {
       path: {
         type: 'string',
-        description: 'Where to save it, relative to the workspace. Defaults to screenshots/<machine>-<n>.png.',
+        description: 'Save this one as a file, at this path relative to the workspace. Omit it and the '
+          + 'picture is returned without writing anything.',
       },
       region: {
         type: 'object',
@@ -768,7 +781,7 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
         type: 'object',
         additionalProperties: false,
         properties: {
-          path: { type: 'string', required: true },
+          path: { type: 'string' },
           width: { type: 'integer', required: true },
           height: { type: 'integer', required: true },
           bytes: { type: 'integer', required: true },
@@ -820,10 +833,13 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
               : `x_screen = x ÷ ${String(shot.scale)} + ${String(shot.origin?.x ?? 0)}, `
                 + `y_screen = y ÷ ${String(shot.scale)} + ${String(shot.origin?.y ?? 0)}.`)
         const text = `${spec.name}: ${String(shot.width)}×${String(shot.height)}, ${shot.mode} mode`
-          + `\nsaved ${shot.path}${mapping}`
+          + (shot.path === undefined ? '' : `\nsaved ${shot.path}`)
+          + mapping
           + (shot.mode === 'text' ? '\nThe screen is in a text mode: `vm_screen` reads it exactly.' : '')
           + (shot.image === undefined
-            ? '\nThis model does not accept images, so the picture is not attached; the file is there for the user.'
+            ? '\nThis model is registered as accepting text only, so the picture is not attached and the file '
+              + 'above is the whole of it. If it does accept images, its entry in Settings → Models has to say '
+              + 'so — this page reads that from the route\'s own model listing, and this route did not state it.'
             : '')
         const parts: ContentBlock[] = [{ type: 'text', text }]
         // The picture rides beside the text, which is what `read_image` does
@@ -896,13 +912,7 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
         ? { width: shot.width, height: shot.height }
         : undefined
 
-      const relative = args.path ?? `screenshots/${spec.id}-${String(++counter)}.png`
-      const path = relative.startsWith('/') ? relative : `${WORKSPACE_ROOT}/${relative}`
-      volume.mkdirp(dirname(path))
-      volume.writeFile(path, bytes)
-
       const result: Shot = {
-        path,
         width,
         height,
         bytes: bytes.length,
@@ -912,25 +922,46 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
         ...(scale === undefined ? {} : { scale: Number(scale.toFixed(4)) }),
       }
 
+      const relative = args.path ?? `screenshots/${spec.id}-${String(counter + 1)}.png`
+      const path = relative.startsWith('/') ? relative : `${WORKSPACE_ROOT}/${relative}`
+
       // The picture itself, when there is somewhere for it to go. Both halves
       // have to hold: a store to put it in, and a model that will be shown it.
-      // Where either does not, the file on disk is the whole answer and the
-      // render above says so rather than leaving the model waiting for a
-      // picture that never arrives.
+      // Where either does not, the file is the whole answer and the render
+      // above says so rather than leaving the model waiting for a picture that
+      // never arrives.
       const attachments = ctx.get('attachments') as Attachments | undefined
-      if (attachments === undefined || !await routeSeesImages(ctx, exec)) return result
-      try {
-        const saved = await attachments.saveImage({
-          data: bytes,
-          mediaType: 'image/png',
-          name: path.slice(path.lastIndexOf('/') + 1),
-        })
-        return { ...result, image: { ...saved, mediaType: 'image/png' } }
-      } catch {
-        // A screen too large for this deployment's image limits is still a
-        // screen that was saved. Losing the tool call over the attachment
-        // would be the worse trade.
-        return result
+      let image: Shot['image']
+      if (attachments !== undefined && await routeSeesImages(ctx, exec)) {
+        try {
+          const saved = await attachments.saveImage({
+            data: bytes,
+            mediaType: 'image/png',
+            name: path.slice(path.lastIndexOf('/') + 1),
+          })
+          image = { ...saved, mediaType: 'image/png' }
+        } catch {
+          // A screen too large for this deployment's image limits is still a
+          // screen worth having. Losing the tool call over the attachment would
+          // be the worse trade — and the file below is what is left of it.
+        }
+      }
+
+      // The file, when it is wanted or when it is all there is. Watching a
+      // machine is a screenshot every few seconds, and a workspace filling with
+      // them is what this used to do to every session; see
+      // `src/runtime/screenshots.ts`.
+      const write = args.path !== undefined || keepScreenshots() || image === undefined
+      if (write) {
+        if (args.path === undefined) counter += 1
+        volume.mkdirp(dirname(path))
+        volume.writeFile(path, bytes)
+      }
+
+      return {
+        ...result,
+        ...(write ? { path } : {}),
+        ...(image === undefined ? {} : { image }),
       }
     },
     presentCall: () => ({ card: 'generic' as const, title: `${spec.name} screen`, kind: 'read' as const }),

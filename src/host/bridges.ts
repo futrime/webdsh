@@ -26,6 +26,7 @@ import {
 } from '../runtime/guests.ts'
 import { forgetDisk, forgetLegacyDisk, storeDisk, storedDisks } from '../runtime/disks.ts'
 import { isEmulated, runtimeSelection, setRuntimeSelection, type RuntimeSelection } from '../runtime/selection.ts'
+import { keepScreenshots, setKeepScreenshots } from '../runtime/screenshots.ts'
 import { ripgrep } from '../runtime/ripgrep.ts'
 import type { PluginManager } from '../plugins/manager.ts'
 import { volume } from '../vfs/volume.ts'
@@ -250,6 +251,17 @@ export function publishMachineBridge(): void {
     usePointer: (on: boolean): void => { currentMachine()?.usePointer(on) },
     /** Throw the machine away so the next boot is a cold one. */
     restart: async (): Promise<void> => { await stopMachine() },
+
+    /**
+     * Whether every screenshot is also written into the workspace.
+     *
+     * Off by default, and the setting is here rather than in the tool because
+     * it is about what the session leaves behind rather than about what the
+     * model is shown — the picture reaches the model either way. See
+     * `src/runtime/screenshots.ts`.
+     */
+    keepScreenshots,
+    setKeepScreenshots,
 
     /**
      * The machine itself: its console, its screen, its keyboard and its mouse.

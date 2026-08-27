@@ -100,6 +100,16 @@ disks come from v86's own `copy/images` and the hosts
 [AndyZijianZhang/webdsh-images](https://huggingface.co/datasets/AndyZijianZhang/webdsh-images),
 whose `NOTICE.json` records where every image came from and under what licence.
 
+**Screenshots.** A model driving an emulated machine photographs the screen to
+see it, and `vm_screenshot` hands the picture straight back the way `read_image`
+hands back a file — one call, nothing to open. The picture is not also written
+into the workspace: watching a boot is a screenshot every few seconds, and the
+Files panel filling with them is not what anyone asked for. What still writes a
+file is the assistant naming a path for one it wants to keep, a model that
+cannot be shown a picture at all (there the file is the whole answer), and
+Settings → Machine → Screenshots, which keeps every one of them for anybody who
+wants the record.
+
 **Models you add.** Settings → Models takes any OpenAI-compatible route: a base
 URL, a key, and *Fetch models*. What that listing says about modalities is read
 along with the rest of it, so a model the endpoint describes as accepting images

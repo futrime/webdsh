@@ -87,6 +87,8 @@ interface MachineBridge {
   pointer(): { enabled: boolean, absolute: boolean, held: boolean }
   usePointer(on: boolean): void
   restart(): Promise<void>
+  keepScreenshots(): boolean
+  setKeepScreenshots(next: boolean): boolean
 }
 
 /** The capability the app publishes for whoever draws a terminal. */
@@ -701,6 +703,7 @@ function MachineSettings(): JSX.Element {
   const [chosen, setChosen] = useState<Selection>(() => machine?.selection() ?? { kind: 'node' })
   const [disks, setDisks] = useState<StoredDisk[]>([])
   const [host, setHost] = useState<string>(() => machine?.imageHost() ?? '')
+  const [keepShots, setKeepShots] = useState(() => machine?.keepScreenshots() ?? false)
   const [saved, setSaved] = useState(false)
   const [problem, setProblem] = useState<string | undefined>(undefined)
   const active = machine?.selection() ?? { kind: 'node' as const }
@@ -897,6 +900,27 @@ function MachineSettings(): JSX.Element {
         <button type="button" onClick={() => { setHost(machine?.hosts.default ?? '') }}>Default</button>
       </div>
 
+      <h3>Screenshots</h3>
+      <p className="dsh-web-machine-lede">
+        The assistant sees the screen by photographing it, and watching a machine takes a great many
+        photographs. It is shown each one whether or not this is on; what this decides is whether a
+        copy is also left in the workspace.
+      </p>
+      <label className="dsh-web-machine-toggle">
+        <input
+          type="checkbox"
+          checked={keepShots}
+          onChange={(event) => {
+            setKeepShots(machine?.setKeepScreenshots(event.currentTarget.checked) ?? false)
+          }}
+        />
+        <span>
+          Keep every screenshot in <code>screenshots/</code>. Off, the assistant still writes one when
+          it asks for a particular file — or when the model it is running on cannot be shown a picture
+          at all, since then the file is all there is.
+        </span>
+      </label>
+
       {problem !== undefined && <p className="dsh-web-machine-problem">{problem}</p>}
 
       {same && (
@@ -1070,6 +1094,9 @@ const STYLE = `
 .dsh-web-machine-file span{flex:1;min-width:16rem}
 .dsh-web-machine-tree{display:block}
 .dsh-web-machine-problem{margin:.8rem 0 0;color:var(--dsw-alias-label-danger,#f5a3a3)}
+.dsh-web-machine-toggle{display:flex;gap:.6rem;align-items:flex-start;cursor:pointer;max-width:52rem}
+.dsh-web-machine-toggle input{margin-top:.25rem}
+.dsh-web-machine-toggle span{opacity:.85}
 .dsh-web-machine-host{display:flex;gap:.5rem;align-items:center}
 .dsh-web-machine-host input{flex:1;font:inherit;padding:.3rem .5rem;border-radius:.35rem;background:transparent;
  color:inherit;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4))}

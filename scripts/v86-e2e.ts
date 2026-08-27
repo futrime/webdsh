@@ -168,6 +168,14 @@ interface MachineHandle {
     click(which?: 'left' | 'middle' | 'right'): Promise<void>
   }
   status(): { emulated: boolean, guest?: string, running: boolean, failure?: string }
+  keepScreenshots(): boolean
+  setKeepScreenshots(next: boolean): boolean
+}
+
+/** The workspace, as the Files panel reads it. */
+interface FilesHandle {
+  root(): string
+  list(path: string): Promise<{ name: string, directory: boolean }[]>
 }
 
 /** Run one command on the machine through the page's own console channel. */
@@ -1504,6 +1512,115 @@ const scenarios: Scenario[] = [
       await page.waitForTimeout(1500)
       expect(!requested.some(request => /copy\/images|i\.copy\.sh/.test(request)),
         `the refusal still went to the network: ${requested.join(', ')}`)
+    },
+  },
+
+  {
+    // What a screenshot leaves behind.
+    //
+    // The picture goes to the model on every call; the file is the thing that
+    // used to pile up. A model watching a boot photographs the screen every few
+    // seconds, and this used to write every one of them into `screenshots/`,
+    // which is how a session about an operating system ended with a folder of
+    // eighty PNGs nobody asked for.
+    //
+    // Driven through the tool itself rather than through the machine bridge —
+    // the bridge's `screen.shot()` writes nothing and never did, so a suite
+    // that only used it could not see this at all. The route each call names is
+    // what decides whether the picture can be handed over: `kilo-free`'s
+    // StepFun entry declares `input: [text, image]` in this build's own model
+    // catalog, and `ovh-free`'s Qwen coder declares nothing, so both branches
+    // are exercised without a key and without a request leaving the page.
+    name: 'screenshot-files',
+    async run(page) {
+      await page.goto(`${url}?runtime=v86:freedos`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      await waitForShell(page)
+      expect(await ready(page, 120_000), 'FreeDOS did not reach a prompt')
+
+      /**
+       * Take one, as an agent on `route` would, and say what came back.
+       *
+       * A real session, because the machine's tools live in the agent's own
+       * scope rather than in the global registry — `tools.get` finds nothing
+       * without one. The execution context names the route directly rather
+       * than through `selectModel`, because the routed model reaches the
+       * session's request header when a turn starts and there is no turn here;
+       * naming it is what the tool reads either way.
+       */
+      const shoot = async (
+        args: Record<string, unknown>,
+        route: { provider: string, model: string },
+      ): Promise<{ path?: string, image: boolean, bytes: number }> => page.evaluate(async ([call, model]) => {
+        const { ctx } = globalThis.dsh
+        const proxy = ctx.get('apiProxy') as {
+          sessions: {
+            create(request: { rpcId: string, payload: Record<string, never> }): Promise<{
+              result: { ok: boolean, value?: { sessionId: string }, error?: unknown }
+            }>
+          }
+        }
+        const created = await proxy.sessions.create({ rpcId: crypto.randomUUID(), payload: {} })
+        const sessionId = created.result.value?.sessionId
+        if (sessionId === undefined) throw new Error(`session.create: ${JSON.stringify(created.result.error)}`)
+        const agent = (ctx.get('agents') as { get(id: string): unknown }).get(sessionId)
+        if (agent === undefined) throw new Error('the session produced no agent')
+        const tools = ctx.get('tools') as {
+          get(name: string, scope?: unknown): { execute(args: unknown, exec: unknown): Promise<unknown> } | undefined
+        }
+        const tool = tools.get('vm_screenshot', agent)
+        if (tool === undefined) throw new Error('vm_screenshot is not registered')
+        const shot = await tool.execute(call, {
+          signal: new AbortController().signal,
+          agent: { options: model },
+        }) as { path?: string, image?: unknown, bytes: number }
+        return { path: shot.path, image: shot.image !== undefined, bytes: shot.bytes }
+      }, [args, route] as const)
+
+      /** What is in the workspace's screenshot folder right now. */
+      const kept = async (): Promise<string[]> => page.evaluate(async () => {
+        const files = (globalThis as unknown as { __DSH_WEB_FILES__: FilesHandle }).__DSH_WEB_FILES__
+        return files.list(`${files.root()}/screenshots`).then(
+          entries => entries.map(entry => entry.name),
+          () => [],
+        )
+      })
+
+      const seeing = { provider: 'kilo-free', model: 'stepfun/step-3.7-flash:free' }
+      const blind = { provider: 'ovh-free', model: 'Qwen3-Coder-30B-A3B-Instruct' }
+
+      // The default: the model is handed the picture and the workspace is left
+      // alone. This is the assertion the report was about.
+      const plain = await shoot({}, seeing)
+      expect(plain.image, 'the picture did not reach a model that accepts images')
+      expect(plain.bytes > 1000, `the screenshot is ${String(plain.bytes)} bytes`)
+      expect(plain.path === undefined, `a screenshot nobody asked to keep was written to ${String(plain.path)}`)
+      expect((await kept()).length === 0, `the workspace has screenshots in it: ${(await kept()).join(', ')}`)
+
+      // A named path is a request for a file, and it is answered exactly.
+      const named = await shoot({ path: 'shots/menu.png' }, seeing)
+      expect(named.image, 'a saved screenshot was not also handed to the model')
+      expect(named.path?.endsWith('/shots/menu.png') === true, `the file went to ${String(named.path)}`)
+      const written = await page.evaluate(async (): Promise<string[]> => {
+        const files = (globalThis as unknown as { __DSH_WEB_FILES__: FilesHandle }).__DSH_WEB_FILES__
+        return files.list(`${files.root()}/shots`).then(entries => entries.map(entry => entry.name), () => [])
+      })
+      expect(written.includes('menu.png'), `the named file is not in the workspace: ${written.join(', ')}`)
+
+      // A model that cannot be shown a picture gets the file instead, because
+      // otherwise the call returns nothing at all.
+      const unseen = await shoot({}, blind)
+      expect(!unseen.image, 'a text-only route was handed an image')
+      expect(unseen.path !== undefined, 'a model that cannot see the picture was given no file either')
+      expect((await kept()).length === 1, `the fallback wrote ${String((await kept()).length)} files, not one`)
+
+      // And the setting, which is the album for anyone who wants one.
+      await page.evaluate(() => (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle })
+        .__DSH_WEB_MACHINE__.setKeepScreenshots(true))
+      const album = await shoot({}, seeing)
+      expect(album.image, 'the picture stopped reaching the model once the file was kept as well')
+      expect(album.path !== undefined, 'the setting is on and nothing was written')
+      expect((await kept()).length === 2, `the kept folder holds ${String((await kept()).length)} files, not two`)
+      process.stdout.write(`  kept: ${(await kept()).join(', ')}\n`)
     },
   },
 
