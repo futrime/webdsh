@@ -32,6 +32,10 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { chromium, type Page } from 'playwright'
 import { GUESTS } from '../src/runtime/guests.ts'
+// @ts-expect-error -- a plain script, and the only thing wanted from it is the
+// two-byte edit that turns the circulated Windows 3.1 disk into the one this
+// build serves. Duplicating it here would let the test and the disk drift.
+import { enhance } from './v86-win31-enhanced.mjs'
 
 const args = process.argv.slice(2)
 const url = valueOf('--url') ?? 'http://127.0.0.1:4173/'
@@ -222,6 +226,31 @@ async function ready(page: Page, timeoutMs: number): Promise<boolean> {
     const machine = (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle }).__DSH_WEB_MACHINE__
     return machine.ready(budget)
   }, timeoutMs)
+}
+
+/**
+ * Wait until the guest's text screen says something.
+ *
+ * A graphical guest that drops back into a text mode — a DOS session opened
+ * from inside Windows — paints on its own schedule, and how long that takes is
+ * a fact about the host this runs on rather than about the guest. So the words
+ * are polled for rather than slept towards.
+ * @param page - the loaded app.
+ * @param wanted - what to look for, anywhere on the screen.
+ * @param timeoutMs - how long to keep looking.
+ * @returns the whole screen as it was when it matched, or undefined if it never did.
+ */
+async function waitForText(page: Page, wanted: RegExp, timeoutMs: number): Promise<string | undefined> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const screen = await page.evaluate(async () => {
+      const machine = (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle }).__DSH_WEB_MACHINE__
+      return (await machine.screen.text()).lines.join('\n')
+    })
+    if (wanted.test(screen)) return screen
+    await page.waitForTimeout(1000)
+  }
+  return undefined
 }
 
 /**
@@ -952,6 +981,88 @@ const scenarios: Scenario[] = [
       expect(!tools.includes('vm_screen'), `a guest with no text screen was offered vm_screen: ${tools.join(', ')}`)
       expect(tools.includes('vm_mouse'), `a guest with a pointer was not offered vm_mouse: ${tools.join(', ')}`)
       process.stdout.write(`  tools: ${tools.join(', ')}\n`)
+    },
+  },
+
+  {
+    // A DOS session opened from inside Windows 3.1, which is the thing this
+    // machine could not do until the disk it boots was changed.
+    //
+    // Windows 3.x picks its operating mode at startup. In standard mode a DOS
+    // box is a protected mode → real mode → protected mode round trip whose way
+    // back in goes through 16-bit call gates v86 does not implement: the guest
+    // spins in them, never services the keyboard interrupt, and shows a blank
+    // screen that ignores typing. In 386 enhanced mode a DOS box is a
+    // virtual-8086 machine and works. Two things decide which: `win` rather
+    // than `win -s` in `AUTOEXEC.BAT`, and the Bochs BIOS rather than SeaBIOS —
+    // under SeaBIOS this Windows refuses enhanced mode and exits to DOS.
+    //
+    // So this is a test of both at once, and it fails if either regresses:
+    // revert the disk and it hangs, revert the BIOS and Windows never starts.
+    name: 'windows31-dosbox',
+    async run(page) {
+      const stock = await cachedImage('win31.img', 34_463_744)
+      if (stock === undefined) {
+        throw new Skipped('no Windows 3.1 image on this machine, and the image host would not serve one')
+      }
+      // Derived here rather than downloaded: the deployment's copy lives on a
+      // mirror, and a suite that fetched 34 MB from it per run would be paying
+      // for bytes it can make from the ones it already has.
+      const enhanced = join(CACHE, 'win31-enhanced.img')
+      if (!existsSync(enhanced) || statSync(enhanced).size !== 34_463_744) {
+        writeFileSync(`${enhanced}.part`, enhance(readFileSync(stock)))
+        renameSync(`${enhanced}.part`, enhanced)
+      }
+
+      const images = await startImageHost()
+      try {
+        await page.goto(`${url}?runtime=node`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+        await waitForShell(page)
+        await openMachineSettings(page)
+        await page.getByLabel('Image host').fill(images.origin)
+        await page.getByRole('button', { name: /^Windows 3\.1/ }).first().click()
+        await page.getByRole('button', { name: 'Use this machine' }).click()
+
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+        await waitForShell(page)
+        expect(await ready(page, 300_000), 'Windows 3.1 did not reach Program Manager')
+
+        // File → Run → `command.com`, the way a person opens one.
+        await page.evaluate(async () => {
+          const machine = (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle }).__DSH_WEB_MACHINE__
+          machine.input.press('Alt+f')
+          await new Promise(settle => setTimeout(settle, 1500))
+          await machine.input.type('r')
+          await new Promise(settle => setTimeout(settle, 1500))
+          await machine.input.type('command.com')
+          await new Promise(settle => setTimeout(settle, 1000))
+          machine.input.press('Enter')
+        })
+
+        // Waited for rather than slept through: the guest leaves graphical mode
+        // for an 80×25 text screen and writes a banner into it, and how long
+        // that takes is a fact about the host this runs on.
+        //
+        // Looked for by the line Windows itself prints above a DOS session, not
+        // by a `C:\>` — the boot screen this machine passed through on the way
+        // to Program Manager has one of those still in the text buffer, and a
+        // test that matched it would pass against the disk that hangs.
+        const banner = await waitForText(page, /Type EXIT and press ENTER/i, 90_000)
+        expect(banner !== undefined, 'no DOS session appeared inside Windows within 90s — the blank-screen hang is back')
+        expect(/MS-DOS/i.test(banner ?? ''), `the DOS box came up without its banner: ${JSON.stringify(banner)}`)
+
+        // And it takes typing, which is the half that used to be missing: the
+        // screen could in principle paint while the keyboard went nowhere.
+        await page.evaluate(async () => {
+          const machine = (globalThis as unknown as { __DSH_WEB_MACHINE__: MachineHandle }).__DSH_WEB_MACHINE__
+          await machine.input.type('ver')
+          machine.input.press('Enter')
+        })
+        const answered = await waitForText(page, /MS-DOS Version/i, 60_000)
+        expect(answered !== undefined, 'the DOS box ignored `ver`, so its keyboard is not reaching DOS')
+      } finally {
+        await images.close()
+      }
     },
   },
 

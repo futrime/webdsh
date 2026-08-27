@@ -24,8 +24,13 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const source = join(root, 'node_modules', 'v86', 'build')
 const target = join(root, 'public', 'v86')
 
-/** The BIOS that ships with this repository; its absence means a broken checkout. */
-const VENDORED = ['seabios.bin', 'vgabios.bin']
+/**
+ * The BIOS images that ship with this repository; their absence means a broken
+ * checkout. Two pairs rather than one because Windows 3.x decides which
+ * operating mode to run in by asking the firmware what the machine is — see
+ * `GuestSpec.firmware`.
+ */
+const VENDORED = ['seabios.bin', 'vgabios.bin', 'bochs-bios.bin', 'bochs-vgabios.bin']
 
 /** The emulator builds copied out of the package. */
 const COPIED = ['v86.wasm', 'v86-fallback.wasm']

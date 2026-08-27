@@ -471,6 +471,10 @@
   "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/678e853018bbeb76be152f541eb2c47c5546db85/vanadiumos.iso",
   "bytes": 8388608
  },
+ "win31-enhanced.img": {
+  "url": "https://huggingface.co/datasets/AndyZijianZhang/webdsh-images/resolve/ca49c2a81669ae9af4748419d3a0965b3f5da1e0/win31-enhanced.img",
+  "bytes": 34463744
+ },
  "win31.img": {
   "url": "https://raw.githubusercontent.com/Hologram-Technologies/hologram-apps/921dbc0fcd17d2ae68b2908b8f9a369de6a09297/apps/windows31/images/win31.img",
   "bytes": 34463744

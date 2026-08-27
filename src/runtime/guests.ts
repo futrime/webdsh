@@ -339,6 +339,24 @@ export interface GuestSpec {
    */
   mouseDisabled?: boolean
 
+  /**
+   * Which BIOS this machine boots, when the default one gives it a worse OS.
+   *
+   * Nearly every guest boots SeaBIOS and never notices. Windows 3.x is the
+   * exception: it picks standard mode or 386 enhanced mode by asking the
+   * firmware what the machine is, and under SeaBIOS it either picks standard
+   * mode or — told to pick enhanced — exits back to DOS on the spot. Under the
+   * Bochs BIOS the same disk starts enhanced mode, and the difference matters
+   * far more than which BIOS prints the boot message: in standard mode a DOS
+   * session is a protected-mode round trip through 16-bit call gates that v86
+   * does not implement and hangs in, and in enhanced mode it is a
+   * virtual-8086 machine, the same mechanism Windows 95 and 98 use here.
+   *
+   * Both BIOSes are vendored in `public/v86`, so this costs a different file
+   * name and nothing else.
+   */
+  firmware?: 'seabios' | 'bochs'
+
   /** What a serial guest prints when its console is ready, as a regular expression. */
   banner?: string
   /** A login the serial console asks for before it gives a shell. */
@@ -546,7 +564,13 @@ const MEASURED: GuestSpec[] = [
     name: 'Windows 3.0',
     console: 'gui',
     summary: 'Program Manager, on a 24 MB disk.',
-    contains: 'CorelDRAW! 2.0, Actor 2.0, the Microsoft Entertainment Pack.',
+    contains: 'CorelDRAW! 2.0, Actor 2.0, the Microsoft Entertainment Pack. '
+      + 'Its DOS Prompt does not work and there is no version of this machine where it does: this disk starts '
+      + 'Windows in real mode, and a DOS session opened from Program Manager paints its MS-DOS 4.00 banner and '
+      + 'prompt and then ignores every keystroke. Measured, along with the obvious remedy — forcing 386 '
+      + 'enhanced mode, which is what fixes this on Windows 3.1 — which is worse here: Windows starts and the '
+      + 'DOS session then never opens at all. Use Windows 3.1 for a DOS prompt inside Windows, or MS-DOS 6.22 '
+      + 'and FreeDOS for DOS on its own.',
     bundled: false,
     transfer: 25_165_824,
     images: [{ slot: 'hda', file: 'windows30.img', size: 25_165_824 }],
@@ -560,15 +584,24 @@ const MEASURED: GuestSpec[] = [
     console: 'gui',
     summary: 'The one most people mean by "Windows 3". Boots MS-DOS, then runs WIN.',
     contains: 'QBasic, Minesweeper, Solitaire, Write, Paintbrush — and the DOS prompt underneath it. '
-      + 'One thing on this machine does not work and it is worth knowing before you try it: a DOS session '
-      + 'started from *inside* Windows — File → Run → `command.com` — comes up as a blank screen that '
-      + 'ignores the keyboard. Measured, and measured against v86\'s own defaults with the same disk, which '
-      + 'fail identically: it is the emulator, not this build. Exiting Windows instead (Alt+F4, then Enter) '
-      + 'gives a DOS prompt that renders and types normally, and Windows 98\'s DOS prompt works as well.',
+      + 'It runs in 386 enhanced mode, so a DOS session started from inside Windows — File → Run → '
+      + '`command.com` — is a real MS-DOS 6.22 prompt that renders and takes typing; Alt+Enter puts it in '
+      + 'a window, and `exit` returns to Program Manager. Exiting Windows entirely (Alt+F4, then Enter) '
+      + 'reaches the same DOS underneath.',
     bundled: false,
     transfer: 34_463_744,
-    images: [{ slot: 'hda', file: 'win31.img', size: 34_463_744 }],
+    // The disk this build serves is the circulated one with two bytes changed:
+    // `AUTOEXEC.BAT` runs `win` rather than `win -s`, so Windows starts in 386
+    // enhanced mode rather than standard mode. `scripts/v86-win31-enhanced.mjs`
+    // makes it and says why. A disk opened from your own computer is whatever
+    // it is — the stock one starts standard mode, boots the same, and hangs the
+    // moment you open a DOS box.
+    images: [{ slot: 'hda', file: 'win31-enhanced.img', size: 34_463_744 }],
     options: { memory_size: 64 * MB },
+    // Enhanced mode is the reason for the DOS box, and the Bochs BIOS is the
+    // reason for enhanced mode: under SeaBIOS this Windows exits to DOS on the
+    // spot rather than starting it.
+    firmware: 'bochs',
     timeoutMs: 180_000,
     boots: 'about 9 seconds',
   },

@@ -737,8 +737,13 @@ async function start(): Promise<Machine> {
     // from elsewhere. Resolved against the document rather than hard-coded, so
     // the build works under a GitHub Pages project path.
     wasm_path: new URL(`${BIOS_BASE}v86.wasm`, base).href,
-    bios: { url: new URL(`${BIOS_BASE}seabios.bin`, base).href },
-    vga_bios: { url: new URL(`${BIOS_BASE}vgabios.bin`, base).href },
+    // Which BIOS is a property of the guest, not of the deployment: Windows
+    // 3.x reads the machine through it and picks a different operating mode
+    // depending on the answer. See `GuestSpec.firmware`.
+    bios: { url: new URL(`${BIOS_BASE}${spec.firmware === 'bochs' ? 'bochs-bios' : 'seabios'}.bin`, base).href },
+    vga_bios: {
+      url: new URL(`${BIOS_BASE}${spec.firmware === 'bochs' ? 'bochs-vgabios' : 'vgabios'}.bin`, base).href,
+    },
     screen: { container: screen, use_graphical_text: true },
     // The card the guest's own driver expects, wired to whatever Settings →
     // Network says the page is offering. Computed rather than written into the
