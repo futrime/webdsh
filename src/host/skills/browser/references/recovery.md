@@ -69,10 +69,10 @@ Prefer returning an aggregate. When a result comes back as a resource:
 2. Append the slice, continue from the `nextOffset` it reports.
 3. Stop when it says that is all of it.
 
-Slices are at most 8192 bytes and the server chooses the length. Do not echo a
-whole resource into an answer when a summary is what was asked for — and
-consider `saveFile()` instead, which turns the result into a file the user can
-open.
+A slice is 8192 bytes unless you ask for more with `maxBytes`, which goes up to
+65536. Do not echo a whole resource into an answer when a summary is what was
+asked for — and consider `saveFile()` instead, which turns the result into a
+file the user can open.
 
 ## Cleaning up
 
