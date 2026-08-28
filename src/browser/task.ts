@@ -582,7 +582,12 @@ export class TaskSpace {
       throw new Error(`task "${this.name}" has no page open. Start with \`await page.goto(url)\`, which opens one.`)
     }
     const machine = browserMachine()
-    const created = await machine.newTab(undefined, { background: true })
+    // The first page a task opens is the one it is *about*, so it becomes the
+    // visible tab — otherwise the one-shot tools, which act on the active tab,
+    // would be looking at a different page than the task is. Every page after
+    // it opens behind: a task that opens six should not take the panel six
+    // times from whoever is watching.
+    const created = await machine.newTab(undefined, { background: this.pages().length > 0 })
     this.owned.add(created)
     return created
   }
@@ -707,7 +712,7 @@ export class TaskSpace {
 
       case 'tabs.new': {
         const created = await machine.newTab(params.url === undefined ? undefined : String(params.url), {
-          background: true,
+          background: this.pages().length > 0,
         })
         this.owned.add(created)
         const info = machine.tabs().find((entry) => entry.id === created)

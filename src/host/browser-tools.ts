@@ -1649,6 +1649,11 @@ function registerTask(ctx: Context): void {
       'job is done. Read the `browser` skill for recipes: popups, dialogs, frames, downloads, uploads,',
       'pagination, and what to do when a call is interrupted.',
       '',
+      'The first page a task opens becomes the visible tab; the ones after it open behind. So a task and the',
+      'one-at-a-time tools agree about which page they mean until the task opens a second one — after that,',
+      'name the tab (`browser_screenshot {tab}`) or take the picture inside the task with',
+      '`page.screenshot()`, which always photographs the page the task is on.',
+      '',
       'If the call comes back STILL RUNNING, the body is still going — do not run it again, read the receipt.',
     ].join('\n'),
     parameters: {

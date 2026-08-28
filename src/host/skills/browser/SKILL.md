@@ -44,6 +44,12 @@ globalThis.rows = await page.getByRole('row').allInnerTexts();
 return {count: rows.length};
 ```
 
+The first page a task opens becomes the visible tab, and later ones open
+behind it. That matters when you mix the two styles of driving:
+`browser_screenshot` and `browser_snapshot` act on the *active* tab, so once a
+task has opened a second page, name the tab or take the picture inside the task
+with `page.screenshot()` — which always photographs the page the task is on.
+
 Finish a task when the job is done:
 
 ```
