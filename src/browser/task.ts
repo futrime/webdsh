@@ -53,6 +53,18 @@ export const DEFAULT_WAIT_MS = 55_000
 /** How long any one page operation may take. */
 const OPERATION_TIMEOUT_MS = 60_000
 
+/**
+ * The most task spaces one session holds at once.
+ *
+ * Each one is a live frame with a JavaScript realm in it, kept until it is
+ * finished, so an agent that started a new space per step would accumulate
+ * them for as long as the tab is open. The limit is a refusal rather than an
+ * eviction: finishing somebody else's task to make room would close pages a
+ * flow was in the middle of. It is also the nudge towards the right shape —
+ * one task space is one job, and eight jobs at once is not what is happening.
+ */
+const MAX_TASKS = 8
+
 /** Randomness enough to authenticate a realm's messages. */
 function token(): string {
   const bytes = new Uint8Array(12)
@@ -943,6 +955,13 @@ const spaces = new Map<string, TaskSpace>()
 export function taskSpace(name: string): TaskSpace {
   const held = spaces.get(name)
   if (held !== undefined && !held.finished && held.generation === browserMachine().generation) return held
+  const live = taskSpaces()
+  if (live.length >= MAX_TASKS) {
+    throw new Error(`this machine holds ${String(MAX_TASKS)} task spaces at once, and they are all in use: `
+      + `${live.map((space) => `"${space.name}"`).join(', ')}. Finish one you are done with — `
+      + '`browser_tasks {action: "finish", task}` — or carry on in one of them; a task space is meant to be '
+      + 'one job, not one step.')
+  }
   const created = new TaskSpace(name)
   spaces.set(name, created)
   return created
