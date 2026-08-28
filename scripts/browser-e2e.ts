@@ -39,6 +39,20 @@ const url = valueOf('--url') ?? 'http://127.0.0.1:4173/'
 const only = valueOf('--case')
 const headed = args.includes('--headed')
 
+/** The key the model scenarios need; without it they skip rather than fail. */
+const apiKey = process.env.DEEPSEEK_API_KEY ?? ''
+
+/**
+ * The two routes worth driving, and why both.
+ *
+ * A browsing session is mostly text — a tree, a value, a title — and one model
+ * covers that. The other is the one with eyes, and the difference matters here
+ * more than anywhere else in this build: a screenshot a task takes is only
+ * useful if it reaches the model, and whether it does is decided by what the
+ * route says it accepts.
+ */
+const MODELS = ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'] as const
+
 /** Read a `--flag value` pair from argv. */
 function valueOf(flag: string): string | undefined {
   const index = args.indexOf(flag)
@@ -133,6 +147,78 @@ const PAGES: Record<string, { type: string, body: string | Buffer }> = {
     'host=' + document.location.host,
     'framed=' + (top !== self)
   ].join('\\n')
+</script>
+</body></html>`,
+  },
+  '/records': {
+    type: 'text/html; charset=utf-8',
+    // A table, a form, a frame and every event a task has to be able to wait
+    // for. One page rather than six: a task space is about doing a whole job
+    // in one place, and the suite should exercise it the same way.
+    body: `<!doctype html><html><head><title>Records</title></head><body>
+<h1>Records</h1>
+<table><thead><tr><th>Name</th><th>Amount</th><th>Status</th></tr></thead><tbody>
+<tr><td>Ada</td><td data-amount="120">120</td><td>Active</td></tr>
+<tr><td>Grace</td><td data-amount="80">80</td><td>Retired</td></tr>
+<tr><td>Katherine</td><td data-amount="240">240</td><td>Active</td></tr>
+</tbody></table>
+<label for="q">Search</label><input id="q" name="q" placeholder="Type here">
+<button id="go" type="button">Search</button>
+<p id="result">nothing yet</p>
+<select id="pick"><option value="a">Alpha</option><option value="b">Beta</option></select>
+<button id="ask" type="button">Delete</button>
+<p id="deleted">not deleted</p>
+<button id="pop" type="button">Open details</button>
+<a id="grab" href="/export.csv" download="records.csv">Export</a>
+<input id="file" type="file">
+<p id="uploaded">no file</p>
+<button id="choose" type="button">Choose a file</button>
+<iframe src="/inner-form" title="Payment" width="360" height="160"></iframe>
+<script>
+  document.getElementById('go').addEventListener('click', function () {
+    document.getElementById('result').textContent = 'searched: ' + document.getElementById('q').value
+  })
+  document.getElementById('ask').addEventListener('click', function () {
+    if (confirm('Delete this record?')) document.getElementById('deleted').textContent = 'deleted'
+  })
+  document.getElementById('pop').addEventListener('click', function () { window.open('/about') })
+  document.getElementById('choose').addEventListener('click', function () { document.getElementById('file').click() })
+  document.getElementById('file').addEventListener('change', function (event) {
+    var file = event.target.files[0]
+    document.getElementById('uploaded').textContent = file ? 'uploaded ' + file.name : 'none'
+  })
+</script>
+</body></html>`,
+  },
+  '/inner-form': {
+    type: 'text/html; charset=utf-8',
+    // A frame's document is its own opaque origin — the page holding it cannot
+    // read it — so everything here is reached through the runtime the machine
+    // put inside it.
+    body: `<!doctype html><html><head><title>Payment</title></head><body>
+<label for="card">Card number</label><input id="card" name="card">
+<button id="pay" type="button">Pay</button><p id="state">unpaid</p>
+<script>document.getElementById('pay').addEventListener('click', function () {
+  document.getElementById('state').textContent = 'paid ' + document.getElementById('card').value
+})</script>
+</body></html>`,
+  },
+  '/export.csv': { type: 'text/csv', body: 'name,amount\nAda,120\nKatherine,240\n' },
+  '/poster': {
+    type: 'text/html; charset=utf-8',
+    // Everything here is pixels a script painted. The DOM says `<canvas>` and
+    // nothing else, so a model that answers has looked at the picture — which
+    // is the only way to tell a screenshot that reached the model from one
+    // that was taken and dropped.
+    body: `<!doctype html><html><head><title>Poster</title></head><body style="margin:0">
+<canvas id="poster" width="600" height="300"></canvas>
+<script>
+  var context = document.getElementById('poster').getContext('2d')
+  context.fillStyle = '#1b7f3b'
+  context.fillRect(0, 0, 600, 300)
+  context.fillStyle = '#ffffff'
+  context.font = 'bold 90px system-ui'
+  context.fillText('KANGAROO', 40, 170)
 </script>
 </body></html>`,
   },
@@ -238,6 +324,31 @@ interface BrowserBridge {
   profile(): { cookies: { name: string, value: string }[], origins: string[] }
   clear(): Promise<void>
   open(): Promise<void>
+  tasks: {
+    run(task: string, code: string, options?: {
+      requestId?: string, readOnly?: boolean, waitMs?: number, claimTab?: string
+    }): Promise<TaskReceipt>
+    list(): { name: string, pages: string[], artifacts: string, receipts: string[] }[]
+    receipt(task: string, request?: string): TaskReceipt | undefined
+    checkpoint(task: string): Promise<Record<string, unknown> | undefined>
+    resource(task: string, id: string, offset?: number): { text: string, nextOffset: number, eof: boolean } | undefined
+    finish(task: string, keep?: boolean): { closed: number } | undefined
+    observe(task: string, options?: Record<string, unknown>): Promise<Record<string, unknown>>
+  }
+}
+
+/** What one run of a task body leaves behind, as the suite reads it. */
+interface TaskReceipt {
+  state: string
+  requestId: string
+  mutation: string
+  value?: unknown
+  error?: string
+  log?: string[]
+  ms?: number
+  resource?: { id: string, bytes: number }
+  screenshots?: { path?: string }[]
+  pages?: { tab: string, url: string }[]
 }
 
 /**
@@ -298,6 +409,13 @@ const drive = {
 
   /** Empty it. */
   clear: async (page: Page): Promise<void> => { await page.evaluate(async () => { await bridge().clear() }) },
+
+  /** Run one body in a task space, the way `browser_task` does. */
+  task: async (page: Page, name: string, code: string, options: Record<string, unknown> = {}): Promise<TaskReceipt> =>
+    page.evaluate(
+      async ([name_, code_, options_]) => bridge().tasks.run(name_ as string, code_ as string, options_ as never),
+      [name, code, options] as const,
+    ) as Promise<TaskReceipt>,
 
   /** What a tab has logged. */
   logs: async (page: Page): Promise<{ console: { level: string, text: string }[], requests: { url: string, status: number }[] }> =>
@@ -374,6 +492,104 @@ async function open(page: Page): Promise<void> {
   await waitForShell(page)
 }
 
+
+/** What one real turn did. */
+interface Turn {
+  reply: string
+  finished: boolean
+  tools: string[]
+}
+
+/**
+ * Drive one complete turn through the same RPC the composer uses.
+ *
+ * Not `promptOnce`: that entry point exists for the boot suite and takes the
+ * default agent. This is the path a person's prompt takes, which is the only
+ * one whose tool set is this machine's.
+ * @param page - the loaded app.
+ * @param model - which route to select.
+ * @param prompt - the job.
+ * @param timeoutMs - how long the turn may run.
+ * @returns the reply, the tools it called, and whether it ended on its own.
+ */
+async function promptModel(page: Page, model: string, prompt: string, timeoutMs: number): Promise<Turn> {
+  return page.evaluate(async ([key, chosen, text, budget]: [string, string, string, number]) => {
+    /** One RPC's answer, in the shape the gateway returns it. */
+    interface Answer<T> { result: { ok: boolean, value?: T, error?: unknown } }
+    /** As much of the gateway as one turn needs. */
+    interface Gateway {
+      sessions: {
+        create(request: { rpcId: string, payload: Record<string, never> }): Promise<Answer<{ sessionId: string }>>
+        selectModel(request: { rpcId: string, payload: Record<string, string> }): Promise<Answer<unknown>>
+        prompt(request: { rpcId: string, payload: Record<string, unknown> }): Promise<Answer<unknown>>
+      }
+      events: {
+        mux(request: { rpcId: string, payload: Record<string, never> }, signal: AbortSignal): AsyncIterable<{
+          payload: { event?: { type?: string, data?: Record<string, unknown> } }
+        }>
+      }
+    }
+    const { ctx } = globalThis.dsh
+    const credentials = ctx.get('credentials') as { set(reference: string, value: string): Promise<void> }
+    await credentials.set('DEEPSEEK_API_KEY', key)
+    const proxy = ctx.get('apiProxy') as Gateway
+
+    const created = await proxy.sessions.create({ rpcId: crypto.randomUUID(), payload: {} })
+    if (!created.result.ok || created.result.value === undefined) {
+      throw new Error(`session.create: ${JSON.stringify(created.result.error)}`)
+    }
+    const { sessionId } = created.result.value
+    const selected = await proxy.sessions.selectModel({
+      rpcId: crypto.randomUUID(),
+      payload: { sessionId, provider: 'deepseek-official', model: chosen },
+    })
+    if (!selected.result.ok) throw new Error(`session.selectModel: ${JSON.stringify(selected.result.error)}`)
+
+    const abort = new AbortController()
+    const frames = proxy.events.mux({ rpcId: crypto.randomUUID(), payload: {} }, abort.signal)
+    let reply = ''
+    const tools: string[] = []
+    let finished = false
+    const collected = (async () => {
+      for await (const frame of frames) {
+        const event = frame.payload.event
+        if (event === undefined) continue
+        const data = (event.data ?? {}) as {
+          toolName?: string
+          name?: string
+          call?: { name?: string }
+          chunk?: { type?: string, text?: string }
+        }
+        if (event.type === 'tool/call') {
+          // The event names the tool in whichever field this version of the
+          // session log spells it in; asking for one of them and finding
+          // nothing would report a turn that used no tools while its own
+          // narration says otherwise.
+          const called = data.toolName ?? data.name ?? data.call?.name
+          if (typeof called === 'string') tools.push(called)
+        }
+        if (event.type === 'assistant/chunk' && data.chunk?.type === 'text-delta') reply += data.chunk.text ?? ''
+        if (event.type === 'turn/end') {
+          finished = true
+          break
+        }
+      }
+    })()
+
+    const prompted = await proxy.sessions.prompt({
+      rpcId: crypto.randomUUID(),
+      payload: { sessionId, content: [{ type: 'text', text }] },
+    })
+    if (!prompted.result.ok) {
+      abort.abort()
+      throw new Error(`session.prompt: ${JSON.stringify(prompted.result.error)}`)
+    }
+    await Promise.race([collected, new Promise((resolve) => setTimeout(resolve, budget))])
+    abort.abort()
+    return { reply, finished, tools }
+  }, [apiKey, model, prompt, timeoutMs] as [string, string, string, number])
+}
+
 /** One scenario. */
 interface Scenario {
   name: string
@@ -392,7 +608,8 @@ const scenarios: Scenario[] = [
       const offered = await offeredTools(page)
       expect(offered.length > 0, 'no request carried a tool list')
       for (const wanted of ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
-        'browser_screenshot', 'browser_eval', 'browser_console', 'browser_tabs']) {
+        'browser_screenshot', 'browser_eval', 'browser_console', 'browser_tabs',
+        'browser_task', 'browser_tasks', 'browser_inspect', 'browser_paste']) {
         expect(offered.includes(wanted), `the browser machine does not offer ${wanted}; it offers ${offered.join(', ')}`)
       }
       for (const absent of ['jsh', 'sh', 'dos', 'bash', 'vm_screenshot', 'vm_key']) {
@@ -723,6 +940,381 @@ const scenarios: Scenario[] = [
         `no request was recorded: ${JSON.stringify(logs.requests.slice(-3))}`)
     },
   },
+  {
+    // A task space: the shape of driving that this machine grew a second half
+    // for. Everything here is one tool call in a session and would be a dozen
+    // without it — which is the claim being tested, not just that the API
+    // exists.
+    name: 'task',
+    async run(page, site) {
+      await open(page)
+
+      const opened = await drive.task(page, 'records', `
+        await page.goto(${JSON.stringify(`${site}/records`)}, {waitUntil: 'domcontentloaded'});
+        return {title: await page.title(), heading: await page.getByRole('heading').first().innerText()};
+      `)
+      expect(opened.state === 'succeeded', `opening the page failed: ${String(opened.error)}`)
+      const first = opened.value as { title: string, heading: string }
+      expect(first.title === 'Records', `the task read the title as ${JSON.stringify(first.title)}`)
+
+      // A loop over a table, which is the case one action per turn cannot do.
+      const extracted = await drive.task(page, 'records', `
+        const rows = page.getByRole('table').getByRole('row');
+        const total = await rows.count();
+        const records = [];
+        for (let index = 1; index < total; index += 1) {
+          const cells = rows.nth(index).getByRole('cell');
+          records.push({
+            name: (await cells.nth(0).innerText()).trim(),
+            amount: Number(await cells.nth(1).innerText()),
+            status: (await cells.nth(2).innerText()).trim(),
+          });
+        }
+        globalThis.active = records.filter((record) => record.status === 'Active');
+        return {count: records.length, active: active.map((record) => record.name)};
+      `)
+      expect(extracted.state === 'succeeded', `the extraction failed: ${String(extracted.error)}`)
+      const table = extracted.value as { count: number, active: string[] }
+      expect(table.count === 3, `it found ${String(table.count)} rows`)
+      expect(table.active.join(',') === 'Ada,Katherine', `the active rows are ${table.active.join(',')}`)
+
+      // The globals, which are what makes a task space a space rather than a
+      // series of unrelated evaluations.
+      const remembered = await drive.task(page, 'records', 'return {kept: active.length, total: globalThis.active[0].amount};')
+      expect(remembered.state === 'succeeded', `the second call failed: ${String(remembered.error)}`)
+      expect((remembered.value as { kept: number }).kept === 2,
+        `the globals did not survive: ${JSON.stringify(remembered.value)}`)
+
+      // Acting, and verifying with a retrying assertion rather than a sleep.
+      const acted = await drive.task(page, 'records', `
+        await page.getByLabel('Search').fill('ada');
+        await page.getByRole('button', {name: 'Search'}).click();
+        await expect(page.locator('#result')).toHaveText('searched: ada');
+        await page.getByRole('combobox').selectOption('Beta');
+        return {result: await page.locator('#result').innerText(), pick: await page.locator('#pick').inputValue()};
+      `)
+      expect(acted.state === 'succeeded', `acting failed: ${String(acted.error)}`)
+      const after = acted.value as { result: string, pick: string }
+      expect(after.result === 'searched: ada', `the page shows ${JSON.stringify(after.result)}`)
+      expect(after.pick === 'b', `the select is on ${JSON.stringify(after.pick)}`)
+
+      // The page realm, and the argument channel into it.
+      const counted = await drive.task(page, 'records', `
+        const minimum = 100;
+        return await page.evaluate(({minimum}) => {
+          const amounts = [...document.querySelectorAll('[data-amount]')].map((node) => Number(node.dataset.amount));
+          return {count: amounts.length, above: amounts.filter((amount) => amount >= minimum).length};
+        }, {minimum});
+      `)
+      expect(counted.state === 'succeeded', `page.evaluate failed: ${String(counted.error)}`)
+      expect((counted.value as { above: number }).above === 2,
+        `it counted ${JSON.stringify(counted.value)}`)
+
+      // Ambiguity fails immediately and says what it matched, rather than
+      // waiting fifteen seconds to say nothing useful.
+      const ambiguous = await drive.task(page, 'records', 'await page.getByRole("cell").click(); return "clicked"')
+      expect(ambiguous.state === 'failed', 'clicking an ambiguous locator was allowed')
+      expect((ambiguous.error ?? '').includes('needs exactly one'),
+        `the strictness error reads ${JSON.stringify(ambiguous.error)}`)
+      expect((ambiguous.ms ?? 0) < 5000, `it took ${String(ambiguous.ms)}ms to refuse an ambiguous locator`)
+
+      process.stdout.write(`  ${String(table.count)} rows, ${String(table.active.length)} active\n`)
+    },
+  },
+
+  {
+    // The frames, which are the thing a snapshot of the top document cannot
+    // see: each one is its own opaque origin with its own runtime, and both
+    // halves — driving it, and reading it — have to work.
+    name: 'task-frames',
+    async run(page, site) {
+      await open(page)
+      await drive.task(page, 'frames', `await page.goto(${JSON.stringify(`${site}/records`)});`)
+
+      const paid = await drive.task(page, 'frames', `
+        const payment = page.frameLocator('iframe[title="Payment"]');
+        await payment.getByLabel('Card number').fill('4242 4242 4242 4242');
+        await payment.getByRole('button', {name: /pay/i}).click();
+        await expect(payment.locator('#state')).toContainText('paid');
+        return {card: await payment.locator('#card').inputValue(), state: await payment.locator('#state').innerText()};
+      `)
+      expect(paid.state === 'succeeded', `driving the frame failed: ${String(paid.error)}`)
+      const inner = paid.value as { card: string, state: string }
+      expect(inner.card === '4242 4242 4242 4242', `the frame's field holds ${JSON.stringify(inner.card)}`)
+      expect(inner.state === 'paid 4242 4242 4242 4242', `the frame reports ${JSON.stringify(inner.state)}`)
+
+      // And the observation half: the frame's contents in the same look as the
+      // page's, which is what `browser_inspect` returns.
+      const seen = await page.evaluate(async () => bridge().tasks.observe('frames', { frames: 'all', focus: true })) as {
+        frames?: { token: string, snapshot?: string, actionable?: boolean }[]
+      }
+      const frames = seen.frames ?? []
+      expect(frames.length === 1, `the observation found ${String(frames.length)} frames`)
+      expect((frames[0]?.snapshot ?? '').includes('Card number'),
+        `the frame's tree is ${JSON.stringify((frames[0]?.snapshot ?? '').slice(0, 120))}`)
+      expect(frames[0]?.actionable === true, 'the frame reports itself as not actionable')
+      process.stdout.write('  drove and read a frame in its own origin\n')
+    },
+  },
+
+  {
+    // The events a flow actually turns on: a popup, a modal, a download and an
+    // upload. Each one is a thing this machine has to invent, because none of
+    // them means in a page what it means on a desktop.
+    name: 'task-events',
+    async run(page, site) {
+      await open(page)
+      await drive.task(page, 'events', `await page.goto(${JSON.stringify(`${site}/records`)});`)
+
+      const popup = await drive.task(page, 'events', `
+        const original = page;
+        const [opened] = await Promise.all([
+          context.waitForEvent('page', {timeout: 15000}),
+          page.getByRole('button', {name: 'Open details'}).click(),
+        ]);
+        await opened.waitForLoadState('domcontentloaded');
+        usePage(opened);
+        const evidence = {title: await page.title(), url: page.url(), pages: pages().length};
+        await page.close();
+        usePage(original);
+        return {...evidence, backOn: page.url()};
+      `)
+      expect(popup.state === 'succeeded', `the popup flow failed: ${String(popup.error)}`)
+      const opened = popup.value as { title: string, pages: number, backOn: string }
+      expect(opened.title === 'About', `the popup is titled ${JSON.stringify(opened.title)}`)
+      expect(opened.pages === 2, `the task had ${String(opened.pages)} pages while the popup was open`)
+      expect(opened.backOn.endsWith('/records'), `after closing it the task is on ${opened.backOn}`)
+
+      // A modal, answered from the policy the handler arms — the honest shape
+      // for a machine that cannot pause a synchronous `confirm()`.
+      const dialog = await drive.task(page, 'events', `
+        let asked = null;
+        page.on('dialog', async (modal) => { asked = modal.message(); await modal.accept(); });
+        await page.getByRole('button', {name: 'Delete'}).click();
+        await expect(page.locator('#deleted')).toHaveText('deleted');
+        return {asked, state: await page.locator('#deleted').innerText()};
+      `)
+      expect(dialog.state === 'succeeded', `the dialog flow failed: ${String(dialog.error)}`)
+      expect((dialog.value as { asked: string }).asked === 'Delete this record?',
+        `the handler saw ${JSON.stringify((dialog.value as { asked: string }).asked)}`)
+
+      // A download: a link with the attribute is bytes, not a navigation.
+      const download = await drive.task(page, 'events', `
+        const [file] = await Promise.all([
+          page.waitForEvent('download', {timeout: 15000}),
+          page.getByRole('link', {name: 'Export'}).click(),
+        ]);
+        const output = artifactPath('records.csv');
+        await file.saveAs(output);
+        return {artifact: output, suggested: file.suggestedFilename(), url: page.url()};
+      `)
+      expect(download.state === 'succeeded', `the download failed: ${String(download.error)}`)
+      const saved = download.value as { artifact: string, suggested: string, url: string }
+      expect(saved.suggested === 'records.csv', `the file offered itself as ${JSON.stringify(saved.suggested)}`)
+      expect(saved.url.endsWith('/records'), `the download navigated the tab to ${saved.url}`)
+      const contents = await page.evaluate(async (path) => {
+        const machine = (globalThis as { dsh?: { ctx?: unknown } }).dsh
+        void machine
+        return bridge().tasks.run('events', `return await (await context.request.get('about:blank')).status()`)
+          .then(() => path)
+      }, saved.artifact)
+      expect(typeof contents === 'string', 'the artifact path did not come back')
+
+      // A file going the other way, through the chooser a button opens.
+      const upload = await drive.task(page, 'events', `
+        await saveFile(artifactPath('note.txt'), 'a file from the workspace');
+        const [chooser] = await Promise.all([
+          page.waitForEvent('filechooser', {timeout: 15000}),
+          page.getByRole('button', {name: 'Choose a file'}).click(),
+        ]);
+        await chooser.setFiles(artifactPath('note.txt'));
+        await expect(page.locator('#uploaded')).toHaveText('uploaded note.txt');
+        return {uploaded: await page.locator('#uploaded').innerText()};
+      `)
+      expect(upload.state === 'succeeded', `the upload failed: ${String(upload.error)}`)
+      process.stdout.write('  popup, dialog, download and upload all landed\n')
+    },
+  },
+
+  {
+    // The bookkeeping: a request id that is not run twice, a result too large
+    // to return whole, the state of a task, and what finishing closes. This is
+    // the half that makes an interrupted mutation answerable.
+    name: 'task-receipts',
+    async run(page, site) {
+      await open(page)
+      await drive.task(page, 'books', `await page.goto(${JSON.stringify(`${site}/records`)});`)
+
+      const first = await drive.task(page, 'books',
+        'globalThis.runs = (globalThis.runs ?? 0) + 1; return {runs};', { requestId: 'count-01' })
+      const again = await drive.task(page, 'books',
+        'globalThis.runs = (globalThis.runs ?? 0) + 1; return {runs};', { requestId: 'count-01' })
+      expect((first.value as { runs: number }).runs === 1, 'the first run did not run')
+      expect((again.value as { runs: number }).runs === 1,
+        `the same request id ran the body again: ${JSON.stringify(again.value)}`)
+
+      const changed = await page.evaluate(async () => bridge().tasks
+        .run('books', 'return "different code, same id"', { requestId: 'count-01' })
+        .then(() => 'allowed', (error: Error) => error.message))
+      expect(changed.includes('already used'),
+        `a request id was reused for different code and the machine said ${JSON.stringify(changed)}`)
+
+      // A result nobody wants inline becomes a resource, read in slices.
+      const large = await drive.task(page, 'books',
+        'return Array.from({length: 4000}, (_unused, index) => ({index, text: "row " + index}));')
+      expect(large.resource !== undefined, 'a 4000-row result was returned inline')
+      const slice = await page.evaluate(async (id) => bridge().tasks.resource('books', id, 0), large.resource?.id ?? '')
+      expect(slice !== undefined && slice.text.length > 0 && !slice.eof,
+        `the first slice reads ${JSON.stringify(slice)}`)
+
+      const checkpoint = await page.evaluate(async () => bridge().tasks.checkpoint('books')) as {
+        url: string, pageCount: number, mainFrameAttached: boolean
+      }
+      expect(checkpoint.mainFrameAttached, 'the checkpoint says the document is not there')
+      expect(checkpoint.pageCount === 1, `the checkpoint counts ${String(checkpoint.pageCount)} pages`)
+
+      // Read-only refuses to act, which is what makes it safe to inspect with.
+      const refused = await drive.task(page, 'books',
+        'await page.getByRole("button", {name: "Search"}).click(); return "acted"', { readOnly: true })
+      expect(refused.state === 'failed' && (refused.error ?? '').includes('read-only'),
+        `a read-only run was allowed to click: ${JSON.stringify(refused)}`)
+
+      const before = (await drive.tabs(page)).length
+      const finished = await page.evaluate(async () => bridge().tasks.finish('books'))
+      const remaining = (await drive.tabs(page)).length
+      expect((finished?.closed ?? 0) === 1, `finishing closed ${String(finished?.closed)} pages`)
+      expect(remaining === before - 1, `finishing left ${String(remaining)} of ${String(before)} tabs`)
+      process.stdout.write('  receipts, resources, checkpoint and finish all held\n')
+    },
+  },
+
+  {
+    // The realm is where a model's own code runs, and it is inside the same
+    // opaque origin a browsed page gets. This is the check that it cannot
+    // reach the harness: the code is hostile on purpose.
+    name: 'task-isolation',
+    async run(page) {
+      await open(page)
+      const reached = await drive.task(page, 'escape', `
+        const lines = [];
+        const attempt = (name, fn) => {
+          try { lines.push(name + '=' + String(fn())) } catch (error) { lines.push(name + '=blocked:' + error.name) }
+        };
+        attempt('origin', () => globalThis.origin ?? self.origin);
+        attempt('localStorage', () => self.localStorage.length);
+        attempt('parentDocument', () => parent.document.title);
+        attempt('parentBridge', () => String(parent.__DSH_WEB_MACHINE__));
+        attempt('topLocation', () => top.location.href);
+        attempt('indexedDB', () => { const request = self.indexedDB.open('x'); return typeof request });
+        return lines.join(' | ');
+      `)
+      expect(reached.state === 'succeeded', `the isolation probe would not run: ${String(reached.error)}`)
+      const report = String(reached.value)
+      process.stdout.write(`  ${JSON.stringify(report)}\n`)
+      expect(report.includes('origin=null'), `the realm reports its origin as ${report}`)
+      for (const blocked of ['localStorage', 'parentDocument', 'parentBridge', 'topLocation']) {
+        expect(report.includes(`${blocked}=blocked:SecurityError`),
+          `${blocked} was not refused by the browser: ${report}`)
+      }
+    },
+  },
+
+  {
+    // The skill, which is where the recipes live. Checked through a real turn
+    // rather than through the registry, because a skill is registered into the
+    // agent's own layer: what matters is whether the model is offered it, and
+    // the request the harness sends is the only thing that cannot be wrong
+    // about that.
+    name: 'skill',
+    async run(page) {
+      await page.goto(`${url}?runtime=browser`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      await waitForShell(page)
+      await page.evaluate(() => { (globalThis as { __SENT__?: string[] }).__SENT__ = [] })
+      await page.evaluate(async () => {
+        await Promise.race([
+          globalThis.dsh.promptOnce('sk-not-a-real-key', 'What can you do here?').catch(() => undefined),
+          new Promise((resolve) => setTimeout(resolve, 25_000)),
+        ])
+      }).catch(() => undefined)
+      await page.waitForTimeout(3000)
+      const bodies = await page.evaluate(() => (globalThis as { __SENT__?: string[] }).__SENT__ ?? [])
+      const offered = bodies.some((body) => body.includes('Drive this session')
+        && body.includes('browser') && body.includes('task spaces'))
+      expect(offered, `no request offered the browser skill; ${String(bodies.length)} request(s) were sent`)
+
+      // The references it points at have to be openable, or they are
+      // documentation that does not exist.
+      // Read in one loop rather than through a helper: a nested function in a
+      // `page.evaluate` body picks up the bundler's `__name` shim, which the
+      // page has never heard of.
+      const files = await page.evaluate((paths) => paths.map((path) => {
+        try {
+          return { path, length: globalThis.dsh.readFile(path).length }
+        } catch (error) {
+          return { path, length: 0, error: String(error) }
+        }
+      }), [
+        '/opt/dsh/config/skills/browser/SKILL.md',
+        '/opt/dsh/config/skills/browser/references/recipes.md',
+        '/opt/dsh/config/skills/browser/references/extraction.md',
+        '/opt/dsh/config/skills/browser/references/helpers.md',
+        '/opt/dsh/config/skills/browser/references/recovery.md',
+        '/opt/dsh/config/skills/browser/references/machine.md',
+      ])
+      for (const file of files) {
+        expect(file.length > 1000, `${file.path} is ${String(file.length)} characters — it should be readable prose`)
+      }
+      process.stdout.write(`  the skill and its ${String(files.length - 1)} references are there\n`)
+    },
+  },
+
+  {
+    // A real model, on a real job, on this machine. Every other scenario here
+    // drives the machinery directly; this is the only one that checks the
+    // thing the machinery is for — that a model given a page and a question
+    // reaches for these tools and comes back with the answer.
+    //
+    // Both routes, because they differ in the one way that matters here: the
+    // second has eyes, and a screenshot a task takes is only worth taking if
+    // it reaches the model that asked for it.
+    name: 'model',
+    async run(page, site) {
+      if (apiKey === '') {
+        process.stdout.write('  skipped: set DEEPSEEK_API_KEY to give a real model a real job\n')
+        return
+      }
+      for (const model of MODELS) {
+        const vision = model.includes('vision')
+        await open(page)
+        const job = vision
+          ? `Open ${site}/poster in a browser task and, in that same task, take a screenshot with `
+            + '`page.screenshot({path: artifactPath("poster.png")})` and return the path. Everything on that '
+            + 'page is drawn on a <canvas>, so the DOM will tell you nothing: read the picture that comes '
+            + 'back with the result and tell me the one word written on it.'
+          : `Open ${site}/records and tell me the total of the Amount column for the rows whose Status is `
+            + 'Active, and their names. Use a browser task. Answer with the number and the names.'
+        const turn = await promptModel(page, model, job, 300_000)
+        process.stdout.write(`  ${model}: ${turn.tools.join(', ')}\n`)
+        process.stdout.write(`    ${turn.reply.replace(/\s+/g, ' ').trim().slice(0, 160)}\n`)
+        expect(turn.finished, `${model} never finished its turn`)
+        expect(turn.tools.some((tool) => tool.startsWith('browser_')),
+          `${model} used no browser tool at all: it called ${turn.tools.join(', ') || 'nothing'}`)
+        if (vision) {
+          expect(turn.tools.includes('browser_task'),
+            `${model} did not use a task: it called ${turn.tools.join(', ')}`)
+          expect(/KANGAROO/i.test(turn.reply),
+            `${model} did not read the picture the task took; it said ${JSON.stringify(turn.reply.slice(0, 200))}`)
+        } else {
+          expect(turn.reply.includes('360'),
+            `${model} did not add up the active rows; it said ${JSON.stringify(turn.reply.slice(0, 200))}`)
+          for (const name of ['Ada', 'Katherine']) {
+            expect(turn.reply.includes(name), `${model} left out ${name}: ${JSON.stringify(turn.reply.slice(0, 200))}`)
+          }
+        }
+      }
+    },
+  },
+
   {
     // The panel, and the handover it performs. A tab is one browsing context,
     // so showing it to a person means *moving* the frame into the panel rather

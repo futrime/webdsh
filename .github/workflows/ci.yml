@@ -109,6 +109,18 @@ jobs:
           sleep 3
           npx tsx scripts/vision-e2e.ts --url http://127.0.0.1:4177/
 
+      - name: The browser machine
+        # Real pages, driven the way the model drives them: read three ways,
+        # then programmed — task spaces, locators, frames each in their own
+        # origin, popups, dialogs, downloads and uploads. The scenario that
+        # matters most is the one that proves the isolation twice over: a
+        # browsed page cannot reach this harness, and neither can the code the
+        # model itself wrote. The model rung skips without a key.
+        run: |
+          node scripts/serve.mjs 4180 &
+          sleep 3
+          npx tsx scripts/browser-e2e.ts --url http://127.0.0.1:4180/
+
       - name: Files, chat file links, and the plugin roster
         # The panel over the same filesystem the agent uses, a file in and a
         # file out of the tab, the host's "open this path" landing somewhere,
