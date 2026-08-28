@@ -661,11 +661,14 @@ class FileChooser {
   readonly #page: Page
   readonly #token: string
   readonly #multiple: boolean
+  /** The frame the input is in, when it is not in the top document. */
+  readonly #frame: string | undefined
 
-  constructor(page: Page, token: string, multiple: boolean) {
+  constructor(page: Page, token: string, multiple: boolean, frame?: string) {
     this.#page = page
     this.#token = token
     this.#multiple = multiple
+    this.#frame = frame
   }
 
   /** Whether it accepts more than one file. */
@@ -684,6 +687,10 @@ class FileChooser {
     const loaded = await rpc('fs.readMany', { paths })
     await rpc('page.command', {
       tab: this.#page.tabId,
+      // The input belongs to whichever document opened the picker, and a
+      // frame's document is not this page's — the file has to be handed to the
+      // runtime that owns the element.
+      ...(this.#frame === undefined ? {} : { frameToken: this.#frame }),
       kind: 'files.set',
       payload: { chooser: this.#token, files: loaded },
     })
@@ -1395,7 +1402,9 @@ function deliver(event: HostEvent): void {
       names.push('download')
       break
     case 'filechooser':
-      value = page === undefined ? undefined : new FileChooser(page, event.chooser ?? '', event.multiple === true)
+      value = page === undefined
+        ? undefined
+        : new FileChooser(page, event.chooser ?? '', event.multiple === true, event.frame)
       names.push('filechooser')
       break
     case 'request':

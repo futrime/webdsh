@@ -198,9 +198,16 @@ const PAGES: Record<string, { type: string, body: string | Buffer }> = {
     body: `<!doctype html><html><head><title>Payment</title></head><body>
 <label for="card">Card number</label><input id="card" name="card">
 <button id="pay" type="button">Pay</button><p id="state">unpaid</p>
-<script>document.getElementById('pay').addEventListener('click', function () {
-  document.getElementById('state').textContent = 'paid ' + document.getElementById('card').value
-})</script>
+<input id="receipt" type="file"><p id="attached">nothing attached</p>
+<script>
+  document.getElementById('pay').addEventListener('click', function () {
+    document.getElementById('state').textContent = 'paid ' + document.getElementById('card').value
+  })
+  document.getElementById('receipt').addEventListener('change', function (event) {
+    var file = event.target.files[0]
+    document.getElementById('attached').textContent = file ? 'attached ' + file.name : 'none'
+  })
+</script>
 </body></html>`,
   },
   '/export.csv': { type: 'text/csv', body: 'name,amount\nAda,120\nKatherine,240\n' },
@@ -1053,7 +1060,23 @@ const scenarios: Scenario[] = [
       expect((frames[0]?.snapshot ?? '').includes('Card number'),
         `the frame's tree is ${JSON.stringify((frames[0]?.snapshot ?? '').slice(0, 120))}`)
       expect(frames[0]?.actionable === true, 'the frame reports itself as not actionable')
-      process.stdout.write('  drove and read a frame in its own origin\n')
+
+      // A file picker opened inside a frame belongs to that frame's document,
+      // which is not this page's: the file has to be handed to the runtime
+      // that owns the element rather than to the one that saw the click.
+      const attached = await drive.task(page, 'frames', `
+        await saveFile(artifactPath('receipt.txt'), 'a receipt');
+        const payment = page.frameLocator('iframe[title="Payment"]');
+        const [chooser] = await Promise.all([
+          page.waitForEvent('filechooser', {timeout: 15000}),
+          payment.locator('#receipt').click(),
+        ]);
+        await chooser.setFiles(artifactPath('receipt.txt'));
+        await expect(payment.locator('#attached')).toHaveText('attached receipt.txt');
+        return {attached: await payment.locator('#attached').innerText()};
+      `)
+      expect(attached.state === 'succeeded', `the frame's file picker failed: ${String(attached.error)}`)
+      process.stdout.write('  drove, read and uploaded into a frame in its own origin\n')
     },
   },
 
