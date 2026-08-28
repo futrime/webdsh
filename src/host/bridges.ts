@@ -27,7 +27,8 @@ import {
 import { forgetDisk, forgetLegacyDisk, storeDisk, storedDisks } from '../runtime/disks.ts'
 import { isBrowser, isEmulated, runtimeSelection, setRuntimeSelection, type RuntimeSelection } from '../runtime/selection.ts'
 import { keepScreenshots, setKeepScreenshots } from '../runtime/screenshots.ts'
-import { VIEWPORT, browserMachine } from '../browser/engine.ts'
+import { VIEWPORT, browserMachine, type MachineEvent } from '../browser/engine.ts'
+import { claimTab, findTaskSpace, taskSpace, taskSpaces } from '../browser/task.ts'
 import { ripgrep } from '../runtime/ripgrep.ts'
 import type { PluginManager } from '../plugins/manager.ts'
 import { volume } from '../vfs/volume.ts'
@@ -317,16 +318,35 @@ export function publishMachineBridge(): void {
       /** Every open tab. */
       tabs: () => browserMachine().tabs(),
       /** Open one, optionally at a URL, and report its id. */
-      newTab: async (url?: string) => browserMachine().newTab(url),
+      newTab: async (url?: string, options?: { background?: boolean, opener?: string }) =>
+        browserMachine().newTab(url, options ?? {}),
       close: (id: string) => { browserMachine().closeTab(id) },
       select: (id: string) => { browserMachine().selectTab(id) },
       /** Go somewhere in a tab. */
       navigate: async (url: string, id?: string) => browserMachine().navigate(url, id),
       /** Back, forward. */
       go: async (delta: number, id?: string) => browserMachine().go(delta, id),
-      /** Run one driver command, which is what every `browser_*` tool does. */
-      run: async (kind: string, payload?: Record<string, unknown>, id?: string) =>
-        browserMachine().run(kind, payload ?? {}, id),
+      /**
+       * Run one driver command, which is what every `browser_*` tool does.
+       *
+       * `options.frame` names a nested frame's runtime, so a locator that has
+       * walked into an iframe is answered by the document that can actually
+       * see it; `options.timeoutMs` is for the commands that wait, which are
+       * allowed to outlast the default a plain read gets.
+       */
+      run: async (
+        kind: string,
+        payload?: Record<string, unknown>,
+        id?: string,
+        options?: { frame?: string, timeoutMs?: number },
+      ) => browserMachine().run(kind, payload ?? {}, id, options ?? {}),
+      /** Watch everything the pages do, which is what a task space waits on. */
+      onEvent: (listener: (event: MachineEvent) => void): (() => void) => browserMachine().onEvent(listener),
+      /** This run of the machine; a task from an earlier one is gone with it. */
+      generation: () => browserMachine().generation,
+      /** Fetch a URL through the machine's own policy, for `context.request`. */
+      fetch: async (url: string, init?: { method?: string, headers?: Record<string, string>, body?: string }) =>
+        browserMachine().fetch(url, init ?? {}),
       /** What a tab has logged. */
       logs: (id?: string) => browserMachine().logs(id),
       /** The cookie jar and the sites that have stored something. */
@@ -354,6 +374,47 @@ export function publishMachineBridge(): void {
       },
       /** Redraw whenever a tab changes. */
       watch: (watcher: () => void): (() => void) => browserMachine().watch(watcher),
+
+      /**
+       * Task spaces, which is what `browser_task` and `browser_tasks` drive.
+       *
+       * Here for the same reason the rest of this object is: the suites drive
+       * exactly what the model drives. A test that ran its own copy of the
+       * task machinery would prove that copy works.
+       */
+      tasks: {
+        run: async (name: string, code: string, options?: {
+          requestId?: string, readOnly?: boolean, waitMs?: number, claimTab?: string
+          foreground?: boolean, diagnostics?: string
+        }) => {
+          const space = taskSpace(name)
+          if (options?.claimTab !== undefined) claimTab(space, options.claimTab)
+          return space.run(code, options ?? {})
+        },
+        list: () => taskSpaces().map((space) => ({
+          name: space.name,
+          id: space.id,
+          pages: space.pages().map((tab) => tab.id),
+          artifacts: space.artifacts,
+          receipts: [...space.receipts.keys()],
+        })),
+        receipt: (name: string, request?: string) => {
+          const space = findTaskSpace(name)
+          if (space === undefined) return undefined
+          const all = [...space.receipts.values()]
+          return request === undefined ? all[all.length - 1] : space.receipts.get(request)
+        },
+        checkpoint: async (name: string) => findTaskSpace(name)?.checkpoint(),
+        resource: (name: string, id: string, offset?: number, maxBytes?: number) =>
+          findTaskSpace(name)?.resource(id, offset ?? 0, maxBytes),
+        finish: (name: string, keep?: boolean) => findTaskSpace(name)?.finish(keep === true),
+        observe: async (name: string, options?: Record<string, unknown>) => {
+          const space = findTaskSpace(name) ?? taskSpace(name)
+          const tab = space.activeTab() ?? browserMachine().tabs().find((entry) => entry.active)?.id
+          if (tab === undefined) throw new Error('no tab is open')
+          return space.observe(tab, options ?? {})
+        },
+      },
     },
   }
 }
