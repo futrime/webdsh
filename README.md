@@ -19,6 +19,7 @@ Node itself, in the tab.
 - 🖥️ **Real Node, real Python.** `npm install` and `pip install` both work, and the terminal and the agent share one container.
 - 💾 **Or a whole PC.** Settings → Machine swaps the container for [v86](https://github.com/copy/v86) and offers **128 machines** — the whole of v86's catalog, from a 512-byte bootsector game to Windows 2000, **127 of them booting with nothing to set up** — emulated x86, on its own screen, with the tool set that machine actually has.
 - 🧭 **Or a browser.** The third machine is real tabs of the real web, and the assistant drives them three ways: the page structure (a labelled tree with a handle on everything clickable), the pixels, or JavaScript in the page itself. Multi-tab, with its own cookies and per-site storage that persist — and each tab is sandboxed into an opaque origin, so a page cannot reach this harness, its storage, or your keys. That is the browser's own rule, not a promise this build makes: every escape route comes back `SecurityError`, and `npm run test:browser` checks it.
+- 🤖 **And it can be programmed.** One action per turn is the wrong shape for a table with twenty rows in it, so the browser machine also takes *programs*: `browser_task` runs `getByRole('button', {name: 'Save'}).click()`, retrying `expect`, frames, popups, dialogs, downloads and uploads in a named task space that keeps its pages, its variables and its login state between calls — with receipts, so a run that was interrupted halfway through a form can be asked what happened instead of repeated. The model's own code runs in an opaque origin of its own, holding nothing of this page: the same boundary that keeps a browsed site out keeps the script the model wrote out too.
 - 🌐 **The PC is online.** A WISP relay by default, so the guest gets real TCP — `https://`, package managers, `ssh` — and without one the page itself is the router: it answers the guest's DHCP, DNS and pings and carries HTTP as browser `fetch`, through the same CORS policy the rest of the app uses. `wget http://example.com` works on an emulated Buildroot either way; the same URL from the container answers `fetch failed`.
 - 👁️ **It can see.** Attach an image and the model reads it: oriented, capped and re-encoded to the route's budget by the browser's own decoder, with the source's EXIF and colour profile stripped on the way. A model you add yourself is asked what it accepts, so a vision model on your own gateway arrives with its eyes open rather than registered as text-only.
 - 🧩 **Real plugins.** Install from npm, a tarball, GitHub, or a path — from the browser.
@@ -42,10 +43,11 @@ the entire web client come from npm at install time; the only modification is a
 
 What this repository adds is the platform underneath: a synchronous POSIX
 filesystem mirrored to IndexedDB (`src/vfs`), `node:*` implemented over it
-(`src/node`), the two runtimes a session can run on — WebContainers and an
-emulated x86 PC (`src/runtime`) — an in-page virtual server for `/api`, the
-CORS policy every outbound request goes through and the network the emulated
-machine is given (`src/net`), and the plugins this build ships (`packages/`).
+(`src/node`), the runtimes a session can run on — WebContainers and an
+emulated x86 PC (`src/runtime`), and a browser built out of sandboxed frames
+(`src/browser`) — an in-page virtual server for `/api`, the CORS policy every
+outbound request goes through and the network the emulated machine is given
+(`src/net`), and the plugins this build ships (`packages/`).
 
 Six composition rows are swapped, each because the shipped one names something a
 page cannot have — or, in the shell's case, cannot honestly describe. Four more
