@@ -394,6 +394,8 @@ export function publishMachineBridge(): void {
         list: () => taskSpaces().map((space) => ({
           name: space.name,
           id: space.id,
+          /** Whether a task of this name existed before the page was reloaded. */
+          revived: space.revived,
           pages: space.pages().map((tab) => tab.id),
           artifacts: space.artifacts,
           receipts: [...space.receipts.keys()],

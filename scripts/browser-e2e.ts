@@ -328,7 +328,7 @@ interface BrowserBridge {
     run(task: string, code: string, options?: {
       requestId?: string, readOnly?: boolean, waitMs?: number, claimTab?: string
     }): Promise<TaskReceipt>
-    list(): { name: string, pages: string[], artifacts: string, receipts: string[] }[]
+    list(): { name: string, revived: boolean, pages: string[], artifacts: string, receipts: string[] }[]
     receipt(task: string, request?: string): TaskReceipt | undefined
     checkpoint(task: string): Promise<Record<string, unknown> | undefined>
     resource(task: string, id: string, offset?: number): { text: string, nextOffset: number, eof: boolean } | undefined
@@ -1185,6 +1185,39 @@ const scenarios: Scenario[] = [
       expect((finished?.closed ?? 0) === 1, `finishing closed ${String(finished?.closed)} pages`)
       expect(remaining === before - 1, `finishing left ${String(remaining)} of ${String(before)} tabs`)
       process.stdout.write('  receipts, resources, checkpoint and finish all held\n')
+    },
+  },
+
+  {
+    // A session here survives a reload — the log is persisted and a
+    // conversation picks up where it left off — and a task space does not. The
+    // failure that matters is silent: the model names its task again, gets an
+    // empty one, and carries on as though its pages and globals were still
+    // there. So the empty one says what happened.
+    name: 'task-reload',
+    async run(page, site) {
+      await open(page)
+      const before = await drive.task(page, 'research', `
+        await page.goto(${JSON.stringify(`${site}/records`)});
+        globalThis.kept = 42;
+        return {url: page.url(), pages: pages().length};
+      `)
+      expect(before.state === 'succeeded', `the first run failed: ${String(before.error)}`)
+      expect((before.value as { pages: number }).pages === 1, 'the task did not open a page')
+
+      await open(page)
+      const after = await drive.task(page, 'research', 'return {kept: globalThis.kept ?? null, pages: pages().length}')
+      expect(after.state === 'succeeded', `the run after the reload failed: ${String(after.error)}`)
+      const state = after.value as { kept: number | null, pages: number }
+      expect(state.kept === null && state.pages === 0,
+        `a task space survived a reload, which it cannot: ${JSON.stringify(state)}`)
+
+      const listed = await page.evaluate(() => bridge().tasks.list())
+      const revived = listed.find((space) => space.name === 'research')
+      expect(revived?.revived === true,
+        'the new task space does not know that its name belonged to one from before the reload, '
+        + 'so nothing will tell the model its pages are gone')
+      process.stdout.write('  a task from before a reload is gone, and says so\n')
     },
   },
 

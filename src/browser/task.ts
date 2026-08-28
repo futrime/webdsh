@@ -65,6 +65,55 @@ const OPERATION_TIMEOUT_MS = 60_000
  */
 const MAX_TASKS = 8
 
+/**
+ * Where the names of this run's task spaces are noted.
+ *
+ * A session survives a reload here — the log is persisted and a conversation
+ * picks up where it left off — and a task space does not: it is a frame with a
+ * realm in it, and both are gone. So a model that resumes and names its task
+ * again gets an empty one, with none of the pages or globals it is about to
+ * assume are there. Writing the names down is what lets that be *said* rather
+ * than discovered halfway through the next body.
+ */
+const TASK_LEDGER_KEY = 'webdsh.browser.tasks'
+
+/**
+ * Read the note left by whichever run of the machine wrote it last.
+ * @returns the generation it belonged to and the names it held.
+ */
+function ledger(): { generation: string, names: string[] } {
+  try {
+    const held = localStorage.getItem(TASK_LEDGER_KEY)
+    if (held === null) return { generation: '', names: [] }
+    const parsed = JSON.parse(held) as { generation?: unknown, names?: unknown }
+    return {
+      generation: typeof parsed.generation === 'string' ? parsed.generation : '',
+      names: Array.isArray(parsed.names) ? parsed.names.filter((name): name is string => typeof name === 'string') : [],
+    }
+  } catch {
+    // No storage, or something else wrote there. The note is a courtesy.
+    return { generation: '', names: [] }
+  }
+}
+
+/**
+ * Note a task name against this run, and say whether an older run had it.
+ * @param name - the task space being created.
+ * @returns true when a task of this name existed before the page was reloaded.
+ */
+function noteTask(name: string): boolean {
+  const generation = browserMachine().generation
+  const held = ledger()
+  const stale = held.generation !== generation && held.names.includes(name)
+  const names = held.generation === generation ? [...new Set([...held.names, name])] : [name]
+  try {
+    localStorage.setItem(TASK_LEDGER_KEY, JSON.stringify({ generation, names: names.slice(-32) }))
+  } catch {
+    // Storage full or refused; the ledger is not load-bearing.
+  }
+  return stale
+}
+
 /** Randomness enough to authenticate a realm's messages. */
 function token(): string {
   const bytes = new Uint8Array(12)
@@ -198,6 +247,14 @@ export class TaskSpace {
   /** Where this task's files go. */
   readonly artifacts: string
 
+  /**
+   * Whether a task of this name existed before the page was last reloaded.
+   *
+   * The space is new either way; this only says that somebody is about to
+   * assume otherwise.
+   */
+  readonly revived: boolean
+
   #frame: HTMLIFrameElement | undefined
   readonly #nonce = token()
   #ready: Promise<void> | undefined
@@ -213,6 +270,7 @@ export class TaskSpace {
     this.name = name
     this.generation = browserMachine().generation
     this.artifacts = `${ARTIFACT_ROOT}/${slug(name)}`
+    this.revived = noteTask(name)
   }
 
   /** Every page this task may drive. */

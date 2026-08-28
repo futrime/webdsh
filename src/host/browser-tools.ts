@@ -1408,6 +1408,7 @@ interface TaskResult {
   }[]
   pages?: { tab: string, url: string }[]
   focus?: string
+  note?: string
 }
 
 /** The schema every task-running tool validates its result against. */
@@ -1471,6 +1472,7 @@ const TASK_OUTPUT = {
       },
     },
     focus: { type: 'string' },
+    note: { type: 'string' },
   },
 } as const
 
@@ -1593,6 +1595,7 @@ function renderTask(value: TaskResult): ContentBlock[] {
         + 'The file above is the whole of it; `read_image` opens one on a model that does take images.')
     }
   }
+  if (value.note !== undefined) lines.push('', value.note)
   if (value.focus !== undefined) lines.push('', value.focus)
   if (value.pages !== undefined && value.pages.length > 0) {
     lines.push('', `pages in this task: ${value.pages.map((page) => `${page.tab} ${page.url}`).join(', ')}`)
@@ -1730,8 +1733,18 @@ function registerTask(ctx: Context): void {
         waitMs: Math.max(1000, Math.min(args.waitMs ?? DEFAULT_WAIT_MS, 120_000)),
       })
       const presented = await presentReceipt(ctx, exec, receipt)
-      if (args.compact !== true) return presented
-      const { pages: _pages, ...rest } = presented
+      // A name that belonged to a task from before the page was reloaded. The
+      // space is new and empty; whoever is using the old name is about to
+      // assume it is not.
+      const note = space.revived && space.receipts.size === 1
+        ? `NOTE: a task called "${space.name}" existed before this page was reloaded, and it did not survive `
+          + '— a task space is a live JavaScript environment, not a saved one. This one is new and empty: its '
+          + 'pages, its globals and its receipts are gone. Inspect the current state before repeating anything '
+          + 'that changes something.'
+        : undefined
+      const noted = note === undefined ? presented : { ...presented, note }
+      if (args.compact !== true) return noted
+      const { pages: _pages, ...rest } = noted
       return { ...rest, ...(presented.log === undefined ? {} : { log: presented.log.slice(-5) }) }
     },
     presentCall: (args: { task: string }) => ({
