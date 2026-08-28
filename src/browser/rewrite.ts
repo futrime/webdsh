@@ -300,6 +300,28 @@ export interface RewrittenDocument {
   title: string
 }
 
+/**
+ * Put a runtime ahead of everything a document brought with it.
+ *
+ * Ahead is load-bearing: a shim installed after the page's first inline script
+ * is a shim the page has already got round. `<base>` stays in front of it,
+ * because relative URLs have to resolve while the runtime is still evaluating.
+ * @param html - the rewritten document.
+ * @param runtime - the script tags to insert.
+ * @returns the document with the runtime in it.
+ */
+export function injectRuntime(html: string, runtime: string): string {
+  const marker = /<base\b[^>]*>/i.exec(html)
+  if (marker !== null) {
+    return html.slice(0, marker.index + marker[0].length) + runtime + html.slice(marker.index + marker[0].length)
+  }
+  const withHead = html.replace(/<head[^>]*>/i, (head) => `${head}${runtime}`)
+  if (withHead !== html) return withHead
+  // A document with no head at all — the parser will make one, but there is
+  // nowhere to inject ahead of it, so the runtime leads the document.
+  return `<!doctype html><html><head>${runtime}</head>${html.replace(/^[\s\S]*?<html[^>]*>/i, '')}`
+}
+
 /** Everything a rewrite pass needs to reach the network and remember what it fetched. */
 export interface RewriteContext {
   cache: ResourceCache
@@ -307,6 +329,19 @@ export interface RewriteContext {
   depth: number
   /** Modules already turned into `data:` URLs, keyed by absolute URL. */
   modules: Map<string, Promise<string>>
+  /**
+   * The runtime a nested frame's document is given, when the machine wants one
+   * in there.
+   *
+   * A frame inside a browsed page is its own opaque origin — measured, and it
+   * is why nothing can reach into one from the document that holds it. So a
+   * frame that is to be driven has to carry its own copy of the runtime, with
+   * its own token, and report to the machine directly. The engine supplies
+   * this; the rewriter only knows where to put what it hands back.
+   */
+  frameRuntime?: (url: string, token: string) => string
+  /** Names the next frame, so its element and its document agree on one token. */
+  frameToken?: () => string
 }
 
 /**
@@ -549,6 +584,12 @@ export async function rewriteDocument(
     frame.removeAttribute('src')
     const resolved = src === null ? undefined : absolute(src, url)
     if (resolved === undefined || context.depth >= MAX_FRAME_DEPTH) continue
+    // The frame's real source, kept as data so a snapshot can say where the
+    // frame came from — the `src` attribute has to go, or the browser fetches
+    // it cross-origin and gets nothing.
+    frame.setAttribute('data-wb-src', resolved)
+    const token = context.frameToken?.() ?? ''
+    if (token !== '') frame.setAttribute('data-wb-frame', token)
     jobs.push((async () => {
       try {
         const resource = await load(resolved)
@@ -558,7 +599,8 @@ export async function rewriteDocument(
           resource.url,
           { ...context, depth: context.depth + 1 },
         )
-        frame.setAttribute('srcdoc', inner.html)
+        const runtime = token === '' ? '' : context.frameRuntime?.(resource.url, token) ?? ''
+        frame.setAttribute('srcdoc', runtime === '' ? inner.html : injectRuntime(inner.html, runtime))
       } catch {
         // An unreachable frame stays an empty one.
       }

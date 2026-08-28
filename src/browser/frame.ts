@@ -37,6 +37,8 @@
  * hostile input, and that is the right place for that check.
  */
 
+import * as locate from './frame-locate.ts'
+
 /** What the page injects ahead of this bundle. */
 interface FrameInit {
   /** Identifies this tab to the page; every message carries it. */
@@ -51,6 +53,17 @@ interface FrameInit {
   session: Record<string, string>
   /** What `navigator.userAgent` should say. */
   userAgent: string
+  /**
+   * Which nested frame this document is, when it is one.
+   *
+   * The top document of a tab has none. A frame inside it gets a token from
+   * `src/browser/rewrite.ts`, written both here and onto the `<iframe>` element
+   * that holds it — which is what lets a locator that has walked into a frame
+   * be routed to the runtime that can resolve it. Each nested document is its
+   * own opaque origin, so the parent cannot reach into it and the token is the
+   * only correspondence there is.
+   */
+  frame?: string
 }
 
 declare global {
@@ -67,11 +80,26 @@ const init: FrameInit = window.__WB_INIT__ ?? {
 /** Messages waiting for the page to be listening. */
 const outbox: unknown[] = []
 
-/** Post one message to the page, queueing it if the channel is not up yet. */
+/**
+ * Post one message to the page, queueing it if the channel is not up yet.
+ *
+ * To `top` rather than to `parent`, which for the tab's own document are the
+ * same window and for a nested frame are not: a frame three levels down still
+ * belongs to the machine, and a chain of relays through documents that cannot
+ * read each other's messages would be one hop of forwarding code per level,
+ * each of them able to drop or forge what it passes on. `top` is reachable
+ * cross-origin, `postMessage` on it is allowed, and the page checks the sender
+ * against the windows it knows.
+ */
 function send(message: Record<string, unknown>): void {
-  const envelope = { ...message, nonce: init.nonce, wb: true }
+  const envelope = {
+    ...message,
+    nonce: init.nonce,
+    ...(init.frame === undefined ? {} : { frame: init.frame }),
+    wb: true,
+  }
   try {
-    parent.postMessage(envelope, '*')
+    ;(window.top ?? parent).postMessage(envelope, '*')
   } catch {
     outbox.push(envelope)
   }
@@ -659,19 +687,53 @@ define('history', virtualHistory)
  * gives, so a page that guards on `confirm()` takes its "no" branch rather
  * than stopping for ever.
  */
+/**
+ * How the next dialog is answered.
+ *
+ * A real `confirm()` blocks the page until someone clicks, and this one cannot:
+ * the answer has to be produced synchronously, inside the frame, while the
+ * thing that would decide it — a handler in the task realm — is two
+ * `postMessage` hops away. Measured before this was written: a sandboxed frame
+ * in this page is not cross-origin isolated, so there is no `SharedArrayBuffer`
+ * and no `Atomics.wait` to block on either.
+ *
+ * So the decision is made *before* the dialog rather than during it. Installing
+ * a handler arms this policy; the dialog is answered from it and recorded, and
+ * the handler still runs — asynchronously, with the message — so a task can see
+ * what was asked and check that it got the answer it wanted.
+ */
+let dialogPolicy: { action: 'accept' | 'dismiss', promptText?: string } = { action: 'dismiss' }
+
+/** Dialogs this document has raised, newest last, for the task that asked. */
+const dialogLog: { kind: string, message: string, answer: string, at: number }[] = []
+
+/**
+ * Answer one modal from the armed policy and record it.
+ * @param kind - which modal.
+ * @param message - what it asked.
+ * @param fallback - a prompt's default value.
+ * @returns what the page is told.
+ */
+function answerDialog(kind: string, message: string, fallback?: string): boolean | string | null {
+  const accept = dialogPolicy.action === 'accept'
+  const answer = kind === 'prompt'
+    ? (accept ? dialogPolicy.promptText ?? fallback ?? '' : null)
+    : (kind === 'confirm' ? accept : true)
+  dialogLog.push({ kind, message, answer: String(answer), at: Date.now() })
+  if (dialogLog.length > 100) dialogLog.splice(0, dialogLog.length - 100)
+  send({ type: 'dialog', kind, message, answer: String(answer), defaultValue: fallback ?? '' })
+  return answer as boolean | string | null
+}
+
 define('alert', (message?: unknown) => {
-  send({ type: 'dialog', kind: 'alert', message: String(message ?? '') })
+  answerDialog('alert', String(message ?? ''))
 })
-define('confirm', (message?: unknown) => {
-  send({ type: 'dialog', kind: 'confirm', message: String(message ?? '') })
-  return false
-})
-define('prompt', (message?: unknown, fallback?: unknown) => {
-  send({ type: 'dialog', kind: 'prompt', message: String(message ?? '') })
-  return fallback === undefined ? null : String(fallback)
-})
+define('confirm', (message?: unknown) => answerDialog('confirm', String(message ?? '')) === true)
+define('prompt', (message?: unknown, fallback?: unknown) => (
+  answerDialog('prompt', String(message ?? ''), fallback === undefined ? undefined : String(fallback))
+) as string | null)
 define('print', () => {
-  send({ type: 'dialog', kind: 'print', message: '' })
+  send({ type: 'dialog', kind: 'print', message: '', answer: 'dismissed' })
 })
 
 /**
@@ -704,13 +766,60 @@ for (const [name, getter] of [['URL', () => current.href], ['documentURI', () =>
 
 document.addEventListener('click', (event) => {
   if (event.defaultPrevented || event.button !== 0) return
-  const anchor = (event.target as Element | null)?.closest?.('a[href]')
+  const target = event.target as Element | null
+
+  // A file input's click opens a picker this machine has no way to show. The
+  // page is told the click happened and the task is offered the chooser, which
+  // is the only path by which a file can reach a site from here.
+  const chooser = target?.closest?.('input[type=file]')
+  if (chooser !== null && chooser !== undefined) {
+    event.preventDefault()
+    send({
+      type: 'filechooser',
+      selector: fileChooserToken(chooser as HTMLInputElement),
+      multiple: (chooser as HTMLInputElement).multiple,
+      accept: (chooser as HTMLInputElement).accept,
+    })
+    return
+  }
+
+  const anchor = target?.closest?.('a[href]')
   if (anchor === null || anchor === undefined) return
   const href = anchor.getAttribute('href') ?? ''
   if (href.startsWith('#') || href.startsWith('javascript:')) return
   event.preventDefault()
+
+  // `download` means the link is a file rather than a page. Navigating to it
+  // would replace the tab with whatever the bytes render as; a download keeps
+  // the page where it is and hands the bytes to the task, which is what the
+  // attribute asks for and what a person clicking it would get.
+  if (anchor.hasAttribute('download')) {
+    send({
+      type: 'download',
+      url: new URL(href, current.href).href,
+      suggestedFilename: anchor.getAttribute('download') || '',
+    })
+    return
+  }
   navigate(href, 'push')
 }, true)
+
+/** File inputs this document has offered, so a chooser can find one again. */
+const fileChoosers = new Map<string, HTMLInputElement>()
+
+let chooserCounter = 0
+
+/**
+ * Name one file input, so the answer to a chooser can be delivered to it.
+ * @param input - the input.
+ * @returns a token that survives until the document is replaced.
+ */
+function fileChooserToken(input: HTMLInputElement): string {
+  for (const [token, held] of fileChoosers) if (held === input) return token
+  const token = `fc${String(++chooserCounter)}`
+  fileChoosers.set(token, input)
+  return token
+}
 
 document.addEventListener('submit', (event) => {
   if (event.defaultPrevented) return
@@ -816,63 +925,23 @@ function visible(element: Element): boolean {
 /**
  * The name a screen reader would give an element.
  *
- * The order is the accessible-name computation's, shortened to the parts that
- * matter on real pages: an explicit label wins, then a real `<label>`, then a
- * placeholder or an alt, then the element's own text.
+ * The accessible-name computation lives in `src/browser/frame-locate.ts`,
+ * because `getByRole(role, {name})` has to agree with what a snapshot printed
+ * or the two halves of this machine describe different pages.
  * @param element - the element.
  * @returns its name, trimmed and capped.
  */
 function accessibleName(element: Element): string {
-  const aria = element.getAttribute('aria-label')
-  if (aria !== null && aria.trim() !== '') return aria.trim().slice(0, 200)
-  const labelledBy = element.getAttribute('aria-labelledby')
-  if (labelledBy !== null) {
-    const parts = labelledBy.split(/\s+/)
-      .map((id) => document.getElementById(id)?.textContent?.trim() ?? '')
-      .filter((text) => text !== '')
-    if (parts.length > 0) return parts.join(' ').slice(0, 200)
-  }
-  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
-    || element instanceof HTMLSelectElement) {
-    const labels = (element as HTMLInputElement).labels
-    if (labels !== null && labels.length > 0) {
-      const text = [...labels].map((label) => label.textContent?.trim() ?? '').join(' ').trim()
-      if (text !== '') return text.slice(0, 200)
-    }
-    const placeholder = element.getAttribute('placeholder')
-    if (placeholder !== null && placeholder.trim() !== '') return placeholder.trim().slice(0, 200)
-  }
-  const alt = element.getAttribute('alt')
-  if (alt !== null && alt.trim() !== '') return alt.trim().slice(0, 200)
-  const title = element.getAttribute('title')
-  if (title !== null && title.trim() !== '') return title.trim().slice(0, 200)
-  const text = (element as HTMLElement).innerText ?? element.textContent ?? ''
-  return text.replace(/\s+/g, ' ').trim().slice(0, 200)
+  return locate.accessibleName(element).slice(0, 200)
 }
 
 /**
- * The role to report, from the explicit one or from the tag.
+ * The role to report.
  * @param element - the element.
  * @returns the role name.
  */
 function roleOf(element: Element): string {
-  const explicit = element.getAttribute('role')
-  if (explicit !== null && explicit.trim() !== '') return explicit.trim()
-  const tag = element.tagName.toLowerCase()
-  if (tag === 'a') return element.hasAttribute('href') ? 'link' : 'generic'
-  if (tag === 'input') {
-    const type = (element as HTMLInputElement).type
-    if (type === 'submit' || type === 'button' || type === 'reset') return 'button'
-    if (type === 'checkbox') return 'checkbox'
-    if (type === 'radio') return 'radio'
-    return 'textbox'
-  }
-  if (tag === 'textarea') return 'textbox'
-  if (tag === 'select') return 'combobox'
-  if (tag === 'button') return 'button'
-  if (/^h[1-6]$/.test(tag)) return 'heading'
-  if (tag === 'img') return 'image'
-  return tag
+  return locate.ariaRole(element)
 }
 
 /** One node in the snapshot the agent reads. */
@@ -1129,11 +1198,18 @@ function pressKey(key: string, modifiers: string[] = []): void {
  * @returns the PNG as a data URL, with the size it was drawn at.
  */
 async function rasterise(
-  options: { fullPage?: boolean } = {},
+  options: { fullPage?: boolean, clip?: { x: number, y: number, width: number, height: number } } = {},
 ): Promise<{ dataUrl: string, width: number, height: number, scrollX: number, scrollY: number }> {
   const full = options.fullPage === true
-  const width = Math.max(1, Math.min(full ? document.documentElement.scrollWidth : window.innerWidth, 4096))
-  const height = Math.max(1, Math.min(full ? document.documentElement.scrollHeight : window.innerHeight, 8192))
+  const clip = options.clip
+  const width = Math.max(1, Math.min(
+    clip === undefined ? (full ? document.documentElement.scrollWidth : window.innerWidth) : Math.round(clip.width),
+    4096,
+  ))
+  const height = Math.max(1, Math.min(
+    clip === undefined ? (full ? document.documentElement.scrollHeight : window.innerHeight) : Math.round(clip.height),
+    8192,
+  ))
 
   const clone = document.documentElement.cloneNode(true) as HTMLElement
   for (const script of [...clone.querySelectorAll('script,noscript')]) script.remove()
@@ -1170,7 +1246,13 @@ async function rasterise(
     }
   }
 
-  if (!full) {
+  if (clip !== undefined) {
+    // A clip is in page coordinates, and the clone is drawn from the document's
+    // own origin — so shifting it by the clip's offset is what puts the wanted
+    // region under the canvas.
+    clone.style.marginLeft = `${String(-Math.round(clip.x))}px`
+    clone.style.marginTop = `${String(-Math.round(clip.y))}px`
+  } else if (!full) {
     // Shift the document under a viewport-sized window, so what is drawn is
     // what is on screen.
     clone.style.marginLeft = `${String(-window.scrollX)}px`
@@ -1336,7 +1418,10 @@ async function command(kind: string, payload: Record<string, unknown>): Promise<
       return { value: portable(result) }
     }
     case 'screenshot':
-      return rasterise({ fullPage: payload.fullPage === true })
+      return rasterise({
+        fullPage: payload.fullPage === true,
+        ...(payload.clip === undefined ? {} : { clip: payload.clip as { x: number, y: number, width: number, height: number } }),
+      })
     case 'console':
       return { entries: consoleLog.slice(-Number(payload.limit ?? 100)) }
     case 'cookies':
@@ -1375,6 +1460,152 @@ async function command(kind: string, payload: Record<string, unknown>): Promise<
         await new Promise((resolve_) => setTimeout(resolve_, 100))
       }
     }
+
+    // ── what a task space drives the page with ─────────────────────────────
+    //
+    // Everything below takes a locator *chain* rather than a ref: a chain is
+    // re-resolved against the live DOM on every call, so a page that
+    // re-rendered between two of them is simply matched again. See
+    // `src/browser/frame-locate.ts`.
+
+    case 'locator.act':
+      return locate.performAction(
+        payload.chain as locate.LocatorStep[],
+        String(payload.action ?? ''),
+        (payload.args as Record<string, unknown> | undefined) ?? {},
+        { ...(payload.timeoutMs === undefined ? {} : { timeoutMs: Number(payload.timeoutMs) }), force: payload.force === true },
+      )
+    case 'locator.query':
+      return {
+        value: portable(locate.performQuery(
+          payload.chain as locate.LocatorStep[],
+          String(payload.query ?? ''),
+          (payload.args as Record<string, unknown> | undefined) ?? {},
+        )),
+      }
+    case 'locator.wait':
+      return locate.waitForState(
+        payload.chain as locate.LocatorStep[],
+        (payload.state ?? 'visible') as locate.LocatorState,
+        Number(payload.timeoutMs ?? DEFAULT_WAIT_MS),
+      )
+    case 'locator.evaluate': {
+      const element = locate.locateOne(payload.chain as locate.LocatorStep[])
+      const call = (0, eval)(`(${String(payload.source ?? '')})`) as (node: Element, argument: unknown) => unknown
+      return { value: portable(await call(element, payload.argument)) }
+    }
+    case 'locator.evaluateAll': {
+      const elements = locate.locateAll(payload.chain as locate.LocatorStep[])
+      const call = (0, eval)(`(${String(payload.source ?? '')})`) as (nodes: Element[], argument: unknown) => unknown
+      return { value: portable(await call(elements, payload.argument)) }
+    }
+    case 'locator.actionability': {
+      const found = locate.locateAll(payload.chain as locate.LocatorStep[])
+      return locate.checkActionability(found[0])
+    }
+    case 'locator.box': {
+      const element = locate.locateOne(payload.chain as locate.LocatorStep[])
+      const rect = element.getBoundingClientRect()
+      return {
+        x: rect.x + window.scrollX, y: rect.y + window.scrollY, width: rect.width, height: rect.height,
+        viewport: { x: rect.x, y: rect.y },
+      }
+    }
+    case 'aria.snapshot':
+      return locate.ariaSnapshot({
+        ...(payload.depth === undefined ? {} : { depth: Number(payload.depth) }),
+        ...(payload.maxChars === undefined ? {} : { maxChars: Number(payload.maxChars) }),
+        boxes: payload.boxes === true,
+      })
+    case 'observe': {
+      const observation = locate.observe({
+        ...(payload.depth === undefined ? {} : { depth: Number(payload.depth) }),
+        ...(payload.maxChars === undefined ? {} : { maxChars: Number(payload.maxChars) }),
+        focus: payload.focus !== false,
+        frames: (payload.frames ?? 'visible') as 'none' | 'visible' | 'all',
+        boxes: payload.boxes === true,
+      })
+      // The document's real URL is the one the machine gave it, not the
+      // `about:srcdoc` the frame itself reports.
+      return { ...observation, url: current.href, dialogs: dialogLog.slice(-5) }
+    }
+    case 'focus.info':
+      return locate.focusInfo()
+    case 'hit.test':
+      return locate.hitTest(payload as { x?: number, y?: number, chain?: locate.LocatorStep[] })
+    case 'paste':
+      return locate.pasteText(String(payload.text ?? ''), {
+        ...(payload.format === undefined ? {} : { format: payload.format as 'text' | 'tsv' }),
+        requireEditableFocus: payload.requireEditableFocus === true,
+      })
+    case 'mouse':
+      return locate.mouseAction(String(payload.action ?? 'move'), payload)
+    case 'keyboard':
+      return locate.keyboardAction(String(payload.action ?? 'press'), payload)
+    case 'evaluateFn': {
+      const call = (0, eval)(`(${String(payload.source ?? '')})`) as (argument: unknown) => unknown
+      return { value: portable(await call(payload.argument)) }
+    }
+    case 'waitForFunction':
+      return {
+        value: portable(await locate.waitForFunction(
+          String(payload.source ?? ''),
+          payload.argument,
+          Number(payload.timeoutMs ?? DEFAULT_WAIT_MS),
+          Number(payload.pollMs ?? 100),
+        )),
+      }
+    case 'frame.load': {
+      // The frame element is in *this* document, which is the only document
+      // allowed to set its `srcdoc`: the machine cannot reach it, and neither
+      // can the frame itself.
+      const element = document.querySelector(`iframe[data-wb-frame="${String(payload.token ?? '')}"],`
+        + `frame[data-wb-frame="${String(payload.token ?? '')}"]`)
+      if (element === null) throw new Error(`no frame ${String(payload.token ?? '')} in this document`)
+      element.setAttribute('srcdoc', String(payload.html ?? ''))
+      return { ok: true }
+    }
+    case 'frames.list':
+      return { frames: locate.frameDescriptors(), url: current.href }
+    case 'frame.resolve': {
+      const element = locate.locateOne(payload.chain as locate.LocatorStep[])
+      if (!(element instanceof HTMLIFrameElement) && element.tagName.toLowerCase() !== 'frame') {
+        throw new Error(`frameLocator() names <${element.tagName.toLowerCase()}>, which is not a frame`)
+      }
+      const token = element.getAttribute('data-wb-frame')
+      if (token === null || token === '') {
+        throw new Error('that frame has no runtime in it: it was not one this machine fetched, so there is '
+          + 'nothing inside it to drive. Frames are followed to a depth, and one whose source could not be '
+          + 'loaded stays empty.')
+      }
+      return { token, box: element.getBoundingClientRect().toJSON() as unknown }
+    }
+    case 'files.set': {
+      const token = String(payload.chooser ?? '')
+      const input = fileChoosers.get(token)
+      if (input === undefined) throw new Error(`no file chooser ${token} in this document`)
+      const transfer = new DataTransfer()
+      for (const file of (payload.files ?? []) as { name: string, mimeType: string, base64: string }[]) {
+        transfer.items.add(new File([fromBase64(file.base64) as unknown as BlobPart], file.name, { type: file.mimeType }))
+      }
+      input.files = transfer.files
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+      return { ok: true, files: transfer.files.length }
+    }
+    case 'dialog.arm': {
+      dialogPolicy = {
+        action: payload.action === 'accept' ? 'accept' : 'dismiss',
+        ...(payload.promptText === undefined ? {} : { promptText: String(payload.promptText) }),
+      }
+      return { armed: dialogPolicy.action }
+    }
+    case 'dialogs':
+      return { dialogs: dialogLog.slice(-Number(payload.limit ?? 20)) }
+    case 'testId':
+      locate.setTestIdAttribute(String(payload.attribute ?? 'data-testid'))
+      return { ok: true }
+
     default:
       throw new Error(`unknown command ${kind}`)
   }
@@ -1420,7 +1651,7 @@ window.addEventListener('message', (event: MessageEvent) => {
 // command sent to a frame whose bundle has not evaluated is one that vanishes.
 for (const queued of outbox.splice(0)) {
   try {
-    parent.postMessage(queued, '*')
+    ;(window.top ?? parent).postMessage(queued, '*')
   } catch { /* the page has gone */ }
 }
 

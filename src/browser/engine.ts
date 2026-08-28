@@ -51,7 +51,9 @@
 
 import { BrowserProfile } from './profile.ts'
 import { BrowserNetworkError, ResourceCache, load } from './net.ts'
-import { RUNTIME_GLOBAL, decodeDocument, moduleUrl, rewriteDocument, type RewriteContext } from './rewrite.ts'
+import {
+  RUNTIME_GLOBAL, decodeDocument, injectRuntime, moduleUrl, rewriteDocument, type RewriteContext,
+} from './rewrite.ts'
 import { BROWSER_FRAME } from '../generated/browser-frame.ts'
 
 /** The viewport every tab gets, in CSS pixels. */
@@ -96,6 +98,43 @@ export interface RequestEntry {
   status: number
   at: number
   error?: string
+}
+
+/**
+ * One thing a page did that somebody may be waiting for.
+ *
+ * The vocabulary is a browser's rather than this machine's, because what waits
+ * on these is code written against a browser: a popup is a `page`, a modal is
+ * a `dialog`, and a link with a `download` attribute is a `download` even
+ * though nothing here writes to a downloads folder.
+ */
+export interface MachineEvent {
+  kind: 'page' | 'close' | 'navigated' | 'load' | 'console' | 'dialog' | 'download' | 'filechooser' | 'request'
+  /** Which tab it happened in. */
+  tab: string
+  at: number
+  url?: string
+  title?: string
+  /** The tab that opened this one, for a popup. */
+  opener?: string
+  /** A console line, or a dialog's message. */
+  text?: string
+  level?: string
+  /** What a dialog was answered with, since nobody was there to answer it. */
+  answer?: string
+  /** A dialog's kind: alert, confirm, prompt or print. */
+  dialog?: string
+  /** A download's suggested name, and the file chooser's handle. */
+  suggestedFilename?: string
+  chooser?: string
+  multiple?: boolean
+  accept?: string
+  /** A request's outcome, for the network log. */
+  status?: number
+  method?: string
+  error?: string
+  /** Which nested frame it came from, when it was not the top document. */
+  frame?: string
 }
 
 /** What a tab looks like from outside. */
@@ -167,6 +206,19 @@ class Tab {
     timer: ReturnType<typeof setTimeout>
   }>()
 
+  /**
+   * The runtimes of the frames inside this tab's document, by token.
+   *
+   * A window rather than an element, because an element is all the tab's own
+   * document has and this page cannot read that document. The window arrives
+   * as `event.source` on the frame's first message, which is the one handle to
+   * it that crossing an opaque origin leaves intact.
+   */
+  readonly frames = new Map<string, { window: Window, url: string, at: number }>()
+
+  /** Whoever opened this tab, when something did. */
+  opener: string | undefined
+
   constructor() {
     this.container = document.createElement('div')
     this.container.style.cssText = `width:${String(VIEWPORT.width)}px;height:${String(VIEWPORT.height)}px;`
@@ -235,6 +287,30 @@ export class BrowserMachine {
   readonly #watchers = new Set<() => void>()
 
   /**
+   * Told about everything a page does that somebody might be waiting for.
+   *
+   * Separate from the watchers, which are about redrawing: a panel wants to
+   * know that *something* changed, and a task space waiting on a popup wants
+   * to know exactly what happened and in what order. Merging the two would
+   * make every redraw a wake-up for every waiter.
+   */
+  readonly #listeners = new Set<(event: MachineEvent) => void>()
+
+  /**
+   * This run of the machine.
+   *
+   * Task spaces are held in this page's memory, and so are their pages. A
+   * reload is therefore not a restart, it is a different machine that happens
+   * to share a profile — so a task handle from before it names something that
+   * no longer exists. The generation is what lets that be said clearly rather
+   * than reported as a task that mysteriously has no pages.
+   */
+  readonly generation = `g-${token().slice(0, 8)}`
+
+  /** Names the next nested frame; only has to be unique within a tab. */
+  #frameCounter = 0
+
+  /**
    * Start the machine: read the profile, put the frame host on the page.
    *
    * Called on first use rather than at composition time. A session that never
@@ -282,6 +358,30 @@ export class BrowserMachine {
     }
   }
 
+  /**
+   * Watch everything the pages do.
+   * @param listener - called with each event.
+   * @returns a function that stops listening.
+   */
+  onEvent(listener: (event: MachineEvent) => void): () => void {
+    this.#listeners.add(listener)
+    return () => { this.#listeners.delete(listener) }
+  }
+
+  /**
+   * Tell the listeners about one thing a page did.
+   * @param event - what happened.
+   */
+  emit(event: MachineEvent): void {
+    for (const listener of this.#listeners) {
+      try {
+        listener(event)
+      } catch {
+        // A listener that throws must not stop the page it is listening to.
+      }
+    }
+  }
+
   /** Every tab, in the order they were opened. */
   tabs(): TabInfo[] {
     return this.#order
@@ -318,17 +418,22 @@ export class BrowserMachine {
    * @param url - where to send it, or undefined for a blank one.
    * @returns the new tab's id.
    */
-  async newTab(url?: string): Promise<string> {
+  async newTab(url?: string, options: { background?: boolean, opener?: string } = {}): Promise<string> {
     await this.open()
     if (this.#tabs.size >= MAX_TABS) {
       throw new Error(`this machine holds ${String(MAX_TABS)} tabs at once; close one first`)
     }
     const tab = new Tab()
+    tab.opener = options.opener
     this.#tabs.set(tab.id, tab)
     this.#order.push(tab.id)
     ;(this.#screen ?? this.#host)?.append(tab.container)
-    this.#active = tab.id
+    // A tab a task opened in the background stays where it was put: the user
+    // may be watching this machine in the panel, and a script that opens six
+    // pages should not take the view six times.
+    if (options.background !== true || this.#active === undefined) this.#active = tab.id
     this.#showActive()
+    this.emit({ kind: 'page', tab: tab.id, at: Date.now(), ...(options.opener === undefined ? {} : { opener: options.opener }) })
     if (url !== undefined && url !== '') await this.navigate(url, tab.id)
     else {
       await this.#install(tab, '<!doctype html><html><head><title>New tab</title></head><body></body></html>', 'about:blank')
@@ -343,6 +448,7 @@ export class BrowserMachine {
    */
   closeTab(id: string): void {
     const tab = this.#tab(id)
+    this.emit({ kind: 'close', tab: tab.id, at: Date.now(), url: tab.url })
     tab.container.remove()
     this.#tabs.delete(tab.id)
     this.#order = this.#order.filter((held) => held !== tab.id)
@@ -422,7 +528,7 @@ export class BrowserMachine {
     this.#changed()
     try {
       const resource = await load(target)
-      tab.note({ url: resource.url, method: 'GET', status: resource.status, at: Date.now() })
+      this.#note(tab, { url: resource.url, method: 'GET', status: resource.status, at: Date.now() })
       await this.#render(tab, resource.url, resource.type, resource.contentType, resource.bytes, resource.status)
       if (mode === 'replace' && tab.index >= 0) {
         tab.history[tab.index] = { url: tab.url, title: tab.title }
@@ -436,7 +542,7 @@ export class BrowserMachine {
         ? error.message
         : String(error)
       tab.error = detail
-      tab.note({ url: target, method: 'GET', status: 0, at: Date.now(), error: detail })
+      this.#note(tab, { url: target, method: 'GET', status: 0, at: Date.now(), error: detail })
       await this.#install(
         tab,
         `<!doctype html><html><head><title>Cannot load</title></head><body style="font:14px system-ui;padding:2rem">`
@@ -447,6 +553,10 @@ export class BrowserMachine {
       tab.url = target
     } finally {
       tab.loading = false
+      this.emit({
+        kind: 'navigated', tab: tab.id, at: Date.now(), url: tab.url, title: tab.title,
+        ...(tab.error === undefined ? {} : { error: tab.error }),
+      })
       this.#changed()
     }
     return tab.info(tab.id === this.#active)
@@ -475,7 +585,7 @@ export class BrowserMachine {
     status: number,
   ): Promise<void> {
     if (type.includes('html') || type === '') {
-      const context: RewriteContext = { cache: this.cache, depth: 0, modules: new Map() }
+      const context: RewriteContext = this.#rewriteContext(tab)
       const rewritten = await rewriteDocument(decodeDocument(bytes, contentType), url, context)
       tab.title = rewritten.title === '' ? url : rewritten.title
       await this.#install(tab, rewritten.html, url)
@@ -524,6 +634,23 @@ export class BrowserMachine {
    * @param url - what the document should believe its URL is.
    */
   async #install(tab: Tab, html: string, url: string): Promise<void> {
+    tab.frames.clear()
+    tab.expectReady()
+    tab.frame.srcdoc = injectRuntime(html, this.#preamble(tab, url))
+    await Promise.race([
+      tab.ready,
+      new Promise<void>((resolve) => setTimeout(resolve, NAVIGATION_TIMEOUT_MS)),
+    ])
+  }
+
+  /**
+   * The runtime a document is given, as the script tags to inject.
+   * @param tab - the tab the document belongs to.
+   * @param url - what the document should believe its URL is.
+   * @param frame - the nested frame's token, when the document is one.
+   * @returns the script text.
+   */
+  #preamble(tab: Tab, url: string, frame?: string): string {
     let origin = 'null'
     try {
       origin = new URL(url).origin
@@ -537,28 +664,30 @@ export class BrowserMachine {
       local: Object.fromEntries(origin === 'null' ? [] : this.profile.localStore(origin)),
       session: Object.fromEntries(tab.session),
       userAgent: USER_AGENT,
+      ...(frame === undefined ? {} : { frame }),
     }
-    const preamble = `<script>window.__WB_INIT__=${JSON.stringify(init).replace(/</g, '\\u003c')}</script>`
+    return `<script>window.__WB_INIT__=${JSON.stringify(init).replace(/</g, '\\u003c')}</script>`
       + `<script>${BROWSER_FRAME}</script>`
+  }
 
-    // Ahead of `<head>`'s contents, but behind `<base>` where the rewrite put
-    // one. Matching on the tag the rewriter itself wrote keeps this from
-    // depending on how the site spelled its own head.
-    const marker = /<base\b[^>]*>/i.exec(html)
-    const withRuntime = marker === null
-      ? html.replace(/<head[^>]*>/i, (head) => `${head}${preamble}`)
-      : html.slice(0, marker.index + marker[0].length) + preamble + html.slice(marker.index + marker[0].length)
-
-    tab.expectReady()
-    tab.frame.srcdoc = withRuntime === html && !/<head/i.test(html)
-      // A document with no head at all — the parser will make one, but there is
-      // nowhere to inject ahead of it, so the runtime leads the document.
-      ? `<!doctype html><html><head>${preamble}</head>${html.replace(/^[\s\S]*?<html[^>]*>/i, '')}`
-      : withRuntime
-    await Promise.race([
-      tab.ready,
-      new Promise<void>((resolve) => setTimeout(resolve, NAVIGATION_TIMEOUT_MS)),
-    ])
+  /**
+   * The context a document is rewritten in, including what its frames get.
+   *
+   * Nested frames are given the same runtime the tab's own document has, with
+   * their own token. Without it a framed page is a rectangle nothing can look
+   * inside: each frame is its own opaque origin, so neither this page nor the
+   * document holding it can reach the DOM in there.
+   * @param tab - the tab being rendered into.
+   * @returns the rewrite context.
+   */
+  #rewriteContext(tab: Tab): RewriteContext {
+    return {
+      cache: this.cache,
+      depth: 0,
+      modules: new Map(),
+      frameToken: () => `f${String(++this.#frameCounter)}`,
+      frameRuntime: (url: string, token: string) => this.#preamble(tab, url, token),
+    }
   }
 
   /**
@@ -568,21 +697,123 @@ export class BrowserMachine {
    * @param id - which tab, or undefined for the active one.
    * @returns whatever the frame produced.
    */
-  async run(kind: string, payload: Record<string, unknown> = {}, id?: string): Promise<unknown> {
+  async run(
+    kind: string,
+    payload: Record<string, unknown> = {},
+    id?: string,
+    options: { frame?: string, timeoutMs?: number } = {},
+  ): Promise<unknown> {
     await this.open()
     const tab = this.#tab(id)
     await tab.ready
-    const window_ = tab.frame.contentWindow
-    if (window_ === null) throw new Error('that tab has no live frame')
+    const frame = options.frame === undefined || options.frame === '' ? undefined : tab.frames.get(options.frame)
+    if (options.frame !== undefined && options.frame !== '' && frame === undefined) {
+      throw new Error(`frame ${options.frame} is not in this tab any more — the page replaced it. `
+        + 'Resolve the frame again from the current document.')
+    }
+    const window_ = frame?.window ?? tab.frame.contentWindow
+    if (window_ === null || window_ === undefined) throw new Error('that tab has no live frame')
+    const limit = options.timeoutMs ?? COMMAND_TIMEOUT_MS
     const commandId = token()
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         tab.waiting.delete(commandId)
         reject(new Error(`the page did not answer ${kind} within `
-          + `${String(Math.round(COMMAND_TIMEOUT_MS / 1000))}s — it may be busy in a script`))
-      }, COMMAND_TIMEOUT_MS)
+          + `${String(Math.round(limit / 1000))}s — it may be busy in a script`))
+      }, limit)
       tab.waiting.set(commandId, { resolve, reject, timer })
       window_.postMessage({ wb: true, nonce: tab.nonce, type: 'command', id: commandId, kind, payload }, '*')
+    })
+  }
+
+  /**
+   * Fetch a URL the way a page's own `fetch` would, through the same policy.
+   *
+   * What backs `context.request` in a task space, and the only way bytes reach
+   * a task without a document being made out of them: a PDF behind a link, a
+   * CSV an export button produces, the JSON an API answers. It is the machine's
+   * own request rather than the page's, so it carries no cookies — the same
+   * limit everything else here has.
+   * @param url - where to.
+   * @param init - method, headers and body.
+   * @returns the response.
+   */
+  async fetch(url: string, init: { method?: string, headers?: Record<string, string>, body?: string } = {}): Promise<{
+    status: number
+    url: string
+    contentType: string
+    bytes: Uint8Array
+  }> {
+    await this.open()
+    const resource = await load(url, {
+      method: init.method ?? 'GET',
+      headers: init.headers ?? {},
+      ...(init.body === undefined ? {} : { body: init.body }),
+    })
+    return { status: resource.status, url: resource.url, contentType: resource.contentType, bytes: resource.bytes }
+  }
+
+  /**
+   * Reload one nested frame, in place, without touching the tab around it.
+   *
+   * A link inside a frame navigates the frame — that is what a frame is — and
+   * this page cannot set the `srcdoc` of an element it is not allowed to see.
+   * So the document that holds the frame is asked to do it, which is a command
+   * to the tab's own runtime, and the token is what identifies which of its
+   * frames is meant.
+   * @param tab - the tab.
+   * @param frameToken - which frame.
+   * @param url - where the frame is going.
+   * @param init - method and body, for a form that posts.
+   */
+  async #renderFrame(
+    tab: Tab,
+    frameToken: string,
+    url: string,
+    init: { method?: string, body?: string, headers?: Record<string, string> } = {},
+  ): Promise<void> {
+    try {
+      const resource = await load(url, {
+        method: init.method ?? 'GET',
+        headers: init.headers ?? {},
+        ...(init.body === undefined ? {} : { body: init.body }),
+      })
+      this.#note(tab, { url: resource.url, method: init.method ?? 'GET', status: resource.status, at: Date.now() })
+      if (!resource.type.includes('html') && resource.type !== '') return
+      const rewritten = await rewriteDocument(
+        decodeDocument(resource.bytes, resource.contentType),
+        resource.url,
+        { ...this.#rewriteContext(tab), depth: 1 },
+      )
+      tab.frames.delete(frameToken)
+      await this.run('frame.load', {
+        token: frameToken,
+        html: injectRuntime(rewritten.html, this.#preamble(tab, resource.url, frameToken)),
+      }, tab.id)
+      this.emit({ kind: 'navigated', tab: tab.id, at: Date.now(), url: resource.url, frame: frameToken })
+    } catch (error) {
+      this.emit({
+        kind: 'navigated', tab: tab.id, at: Date.now(), url, frame: frameToken,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  /**
+   * Note one request against a tab, and tell whoever is listening.
+   * @param tab - the tab.
+   * @param entry - the request.
+   */
+  #note(tab: Tab, entry: RequestEntry): void {
+    tab.note(entry)
+    this.emit({
+      kind: 'request',
+      tab: tab.id,
+      at: entry.at,
+      url: entry.url,
+      method: entry.method,
+      status: entry.status,
+      ...(entry.error === undefined ? {} : { error: entry.error }),
     })
   }
 
@@ -639,12 +870,32 @@ export class BrowserMachine {
     if (message === undefined || message.wb !== true || typeof message.nonce !== 'string') return
     const tab = [...this.#tabs.values()].find((held) => held.nonce === message.nonce)
     if (tab === undefined) return
-    if (event.source !== tab.frame.contentWindow) return
+
+    // Which document in the tab sent this. The top one has to be the frame
+    // this machine made; a nested one has to be a window that has already
+    // announced itself under that token, and the announcement itself is
+    // trusted on the nonce — which is this tab's alone and never leaves it.
+    const from = typeof message.frame === 'string' && message.frame !== '' ? message.frame : undefined
+    if (from === undefined) {
+      if (event.source !== tab.frame.contentWindow) return
+    } else if (message.type === 'ready') {
+      if (event.source === null) return
+      // A document announces itself more than once — on parse, on
+      // `DOMContentLoaded`, on `load` — because the machine has to be able to
+      // drive it as early as possible. Only the first is news.
+      const known = tab.frames.get(from)
+      tab.frames.set(from, { window: event.source as Window, url: String(message.url ?? ''), at: Date.now() })
+      if (known?.window !== event.source || known.url !== String(message.url ?? '')) {
+        this.emit({ kind: 'load', tab: tab.id, at: Date.now(), url: String(message.url ?? ''), frame: from })
+      }
+      return
+    } else if (tab.frames.get(from)?.window !== event.source) return
 
     switch (message.type) {
       case 'ready': {
         if (typeof message.title === 'string' && message.title !== '') tab.title = message.title
         tab.markReady()
+        this.emit({ kind: 'load', tab: tab.id, at: Date.now(), url: tab.url, title: tab.title })
         this.#changed()
         return
       }
@@ -657,19 +908,55 @@ export class BrowserMachine {
       }
       case 'console': {
         tab.log({ level: String(message.level ?? 'log'), text: String(message.text ?? ''), at: Date.now() })
+        this.emit({
+          kind: 'console', tab: tab.id, at: Date.now(),
+          level: String(message.level ?? 'log'), text: String(message.text ?? ''),
+        })
         return
       }
       case 'dialog': {
         tab.dialogs.push({ kind: String(message.kind ?? ''), message: String(message.message ?? ''), at: Date.now() })
         tab.log({ level: 'info', text: `${String(message.kind)}: ${String(message.message)}`, at: Date.now() })
+        this.emit({
+          kind: 'dialog', tab: tab.id, at: Date.now(), dialog: String(message.kind ?? ''),
+          text: String(message.message ?? ''), answer: String(message.answer ?? ''),
+          ...(from === undefined ? {} : { frame: from }),
+        })
+        return
+      }
+      case 'download': {
+        this.emit({
+          kind: 'download', tab: tab.id, at: Date.now(), url: String(message.url ?? ''),
+          suggestedFilename: String(message.suggestedFilename ?? '') || (() => {
+            try {
+              return new URL(String(message.url ?? '')).pathname.split('/').pop() ?? 'download'
+            } catch {
+              return 'download'
+            }
+          })(),
+        })
+        return
+      }
+      case 'filechooser': {
+        this.emit({
+          kind: 'filechooser', tab: tab.id, at: Date.now(), chooser: String(message.selector ?? ''),
+          multiple: message.multiple === true, accept: String(message.accept ?? ''),
+          ...(from === undefined ? {} : { frame: from }),
+        })
         return
       }
       case 'navigate': {
+        // A link inside a frame navigates that frame, not the tab: a page whose
+        // content is framed would otherwise lose its chrome on the first click.
+        if (from !== undefined) {
+          void this.#renderFrame(tab, from, String(message.url))
+          return
+        }
         void this.navigate(String(message.url), tab.id, message.mode === 'replace' ? 'replace' : 'push')
         return
       }
       case 'open': {
-        void this.newTab(String(message.url))
+        void this.newTab(String(message.url), { background: true, opener: tab.id })
         return
       }
       case 'submit': {
@@ -679,8 +966,19 @@ export class BrowserMachine {
         if (method === 'GET') {
           const url = new URL(target)
           for (const [name, value] of fields) url.searchParams.set(name, value)
-          void this.navigate(url.href, tab.id)
-        } else void this.#post(tab, target, fields)
+          if (from !== undefined) void this.#renderFrame(tab, from, url.href)
+          else void this.navigate(url.href, tab.id)
+          return
+        }
+        if (from !== undefined) {
+          void this.#renderFrame(tab, from, target, {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams(fields).toString(),
+          })
+          return
+        }
+        void this.#post(tab, target, fields)
         return
       }
       case 'history': {
@@ -765,7 +1063,7 @@ export class BrowserMachine {
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body,
       })
-      tab.note({ url: resource.url, method: 'POST', status: resource.status, at: Date.now() })
+      this.#note(tab, { url: resource.url, method: 'POST', status: resource.status, at: Date.now() })
       await this.#render(tab, resource.url, resource.type, resource.contentType, resource.bytes, resource.status)
       tab.history = tab.history.slice(0, tab.index + 1)
       tab.history.push({ url: tab.url, title: tab.title })
@@ -811,7 +1109,9 @@ export class BrowserMachine {
               headers,
               ...(payload.body === undefined ? {} : { body: String(payload.body) }),
             })
-            tab.note({ url: resource.url, method: String(payload.method ?? 'GET'), status: resource.status, at: Date.now() })
+            this.#note(tab, {
+              url: resource.url, method: String(payload.method ?? 'GET'), status: resource.status, at: Date.now(),
+            })
             reply({
               status: resource.status,
               statusText: '',
@@ -821,7 +1121,7 @@ export class BrowserMachine {
             })
           } catch (error) {
             const detail = error instanceof Error ? error.message : String(error)
-            tab.note({ url, method: String(payload.method ?? 'GET'), status: 0, at: Date.now(), error: detail })
+            this.#note(tab, { url, method: String(payload.method ?? 'GET'), status: 0, at: Date.now(), error: detail })
             reply({ status: 0, statusText: '', headers: {}, body: '', url, error: detail })
           }
           return
