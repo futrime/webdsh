@@ -46,10 +46,10 @@ import * as vmTools from './vm-tools.ts'
  *
  * The union of what the three branches need, because which one applies is not
  * known until it applies. `shell` and `shellEnv` are only read by the container
- * branch; they exist in every composition, so waiting for them costs the
- * emulated and browser sessions nothing.
+ * branch and `skills` only by the browser one; they exist in every
+ * composition, so waiting for all of them costs the other sessions nothing.
  */
-export const inject = ['tools', 'shell', 'shellEnv', 'systemPrompt']
+export const inject = ['tools', 'shell', 'shellEnv', 'systemPrompt', 'skills']
 
 /** The row's id in the composition. */
 export const name = 'web-machine-tools'

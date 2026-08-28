@@ -55,9 +55,13 @@ import { proxyConfig } from '../net/cors-proxy.ts'
 import { fitToBudget, routeSeesImages, type Attachments } from './vision.ts'
 import { keepScreenshots } from '../runtime/screenshots.ts'
 import { routedToRuntime, runtimeWriteFile } from '../runtime/fs-bridge.ts'
+import {
+  DEFAULT_WAIT_MS, claimTab, findTaskSpace, observePage, taskSpace, taskSpaces, type Receipt,
+} from '../browser/task.ts'
+import { registerBrowserSkill } from './browser-skill.ts'
 
 /** Services this row waits for before it applies. */
-export const inject = ['tools', 'systemPrompt']
+export const inject = ['tools', 'systemPrompt', 'skills']
 
 /** The row's id in the composition. */
 export const name = 'web-browser'
@@ -175,6 +179,13 @@ function machinePrompt(): string {
     + '`browser_eval` runs JavaScript in the page itself, which is the escape hatch when the other two '
     + 'cannot express what you need.',
 
+    'For anything with a loop or a wait in it, use `browser_task` instead of those one at a time. It runs '
+    + 'JavaScript that drives the browser — `page.getByRole(...).click()`, `await expect(...).toHaveText(...)`, '
+    + '`context.waitForEvent("page")` — in a named space that keeps its pages and its variables between '
+    + 'calls. Twenty rows of a table is one call there and twenty turns here. `browser_inspect` is the look '
+    + 'to take first when a page has frames in it, and the `browser` skill has the recipes: popups, dialogs, '
+    + 'frames, downloads, uploads, pagination, and what to do when a call is interrupted.',
+
     'Two filesystems, and only one of them is yours. Your `read`, `write`, `edit`, `grep` and `glob` '
     + 'tools operate on this browser\'s own workspace — your notes, your reports, and anything the user '
     + 'gave you. The pages you browse have no filesystem at all, and nothing you do in a tab touches the '
@@ -206,9 +217,18 @@ function machinePrompt(): string {
 
     'What does not work, so you do not spend a turn proving it: WebSockets (there is no relay), '
     + '`indexedDB` and the Cache API (removed rather than faked, so sites fall back to `localStorage`, '
-    + 'which does work), file downloads and uploads, and anything needing a real user gesture such as a '
-    + 'permission prompt. Modal dialogs — `alert`, `confirm`, `prompt` — are answered with their dismissed '
-    + 'default and recorded; `browser_console` shows them.',
+    + 'which does work), and anything needing a real user gesture such as a permission prompt.',
+
+    'Modal dialogs are answered before they are raised, not while they are up. A page\'s `confirm()` is '
+    + 'synchronous and nothing here can pause one, so the answer comes from a policy: dismissed by default, '
+    + 'and accepted if you armed it — `page.on("dialog", d => d.accept())` in a task arms it, and so does '
+    + '`page.setDialogPolicy({action: "accept"})`. Every dialog is recorded either way; `browser_console` '
+    + 'and `browser_inspect` show them.',
+
+    'Files do move both ways, inside a task. A link with a `download` attribute raises a download event, '
+    + 'and `download.saveAs(path)` writes the bytes into your workspace; `setInputFiles(path)` and the '
+    + '`filechooser` event send a file from your workspace to a page. Both go through this machine\'s own '
+    + 'network, so neither carries a cookie.',
   ].join('\n\n')
 }
 
@@ -240,6 +260,11 @@ export function apply(ctx: Context): void {
   registerWait(ctx)
   registerHistory(ctx)
   registerStorage(ctx)
+  registerTask(ctx)
+  registerTaskControl(ctx)
+  registerInspect(ctx)
+  registerPaste(ctx)
+  registerBrowserSkill(ctx)
 }
 
 /** The schema every tool returning a tab's state validates against. */
@@ -1355,6 +1380,759 @@ function registerStorage(ctx: Context): void {
     presentCall: (args: { action: string }) => ({
       card: 'generic' as const, title: `storage: ${String(args.action)}`, kind: 'read' as const,
     }),
+  }))
+}
+
+/** What one run of a task body reports. */
+interface TaskResult {
+  task: string
+  requestId: string
+  state: string
+  mutation: string
+  ms?: number
+  /** The returned value, as JSON text: a schema cannot say "whatever it returned". */
+  result?: string
+  resultType?: string
+  error?: string
+  stack?: string
+  log?: string[]
+  resource?: { id: string, bytes: number, preview: string }
+  screenshots?: { path?: string, width: number, height: number, bytes: number }[]
+  images?: {
+    attachmentId: string
+    mediaType: 'image/png'
+    bytes: number
+    width: number
+    height: number
+    name?: string
+  }[]
+  pages?: { tab: string, url: string }[]
+  focus?: string
+}
+
+/** The schema every task-running tool validates its result against. */
+const TASK_OUTPUT = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    task: { type: 'string', required: true },
+    requestId: { type: 'string', required: true },
+    state: { type: 'string', required: true },
+    mutation: { type: 'string', required: true },
+    ms: { type: 'integer' },
+    result: { type: 'string' },
+    resultType: { type: 'string' },
+    error: { type: 'string' },
+    stack: { type: 'string' },
+    log: { type: 'array', items: { type: 'string' } },
+    resource: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', required: true },
+        bytes: { type: 'integer', required: true },
+        preview: { type: 'string', required: true },
+      },
+    },
+    screenshots: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          path: { type: 'string' },
+          width: { type: 'integer', required: true },
+          height: { type: 'integer', required: true },
+          bytes: { type: 'integer', required: true },
+        },
+      },
+    },
+    images: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          attachmentId: { type: 'string', required: true },
+          mediaType: { type: 'string', required: true, enum: ['image/png'] },
+          bytes: { type: 'integer', required: true },
+          width: { type: 'integer', required: true },
+          height: { type: 'integer', required: true },
+          name: { type: 'string' },
+        },
+      },
+    },
+    pages: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { tab: { type: 'string', required: true }, url: { type: 'string', required: true } },
+      },
+    },
+    focus: { type: 'string' },
+  },
+} as const
+
+/**
+ * Turn a receipt into the tool's result, attaching any pictures it took.
+ * @param ctx - the plugin context, for the attachment store.
+ * @param exec - the tool call, for the route's modalities.
+ * @param receipt - what the run left behind.
+ * @returns the result the model is shown.
+ */
+async function presentReceipt(ctx: Context, exec: { signal: AbortSignal }, receipt: Receipt): Promise<TaskResult> {
+  const result: TaskResult = {
+    task: receipt.task,
+    requestId: receipt.requestId,
+    state: receipt.state,
+    mutation: receipt.mutation,
+    ...(receipt.ms === undefined ? {} : { ms: receipt.ms }),
+    ...(receipt.error === undefined ? {} : { error: receipt.error }),
+    ...(receipt.stack === undefined ? {} : { stack: receipt.stack }),
+    ...(receipt.log === undefined || receipt.log.length === 0 ? {} : { log: receipt.log.slice(-40) }),
+    ...(receipt.resource === undefined ? {} : { resource: receipt.resource }),
+    ...(receipt.screenshots === undefined ? {} : { screenshots: receipt.screenshots }),
+    ...(receipt.pages === undefined ? {} : { pages: receipt.pages }),
+    ...(receipt.focus === undefined
+      ? {}
+      : {
+          focus: `before: ${describeFocus(receipt.focus.before)}\nafter:  ${describeFocus(receipt.focus.after)}`,
+        }),
+  }
+  if (receipt.value !== undefined) {
+    result.result = typeof receipt.value === 'string'
+      ? receipt.value
+      : JSON.stringify(receipt.value, null, 2) ?? String(receipt.value)
+    result.resultType = receipt.value === null
+      ? 'null'
+      : Array.isArray(receipt.value) ? 'array' : typeof receipt.value
+  }
+
+  // The pictures a run took, handed over the way `browser_screenshot` hands
+  // one over: the file is written either way, and the model is shown the
+  // image itself when the route it is on can carry one.
+  const shots = (receipt.screenshots ?? []).filter((shot) => shot.path !== undefined).slice(-2)
+  if (shots.length === 0) return result
+  const attachments = ctx.get('attachments') as Attachments | undefined
+  if (attachments === undefined || !await routeSeesImages(ctx, exec)) return result
+  const images: NonNullable<TaskResult['images']> = []
+  for (const shot of shots) {
+    try {
+      const path = shot.path ?? ''
+      const raw = await (await routedToRuntime(path)
+        ? (await import('../runtime/fs-bridge.ts')).runtimeReadFile(path)
+        : Promise.resolve(volume.readFile(path)))
+      const fitted = await fitToBudget(raw, shot.width, shot.height)
+      const saved = await attachments.saveImage({
+        data: fitted.bytes,
+        mediaType: 'image/png',
+        name: path.slice(path.lastIndexOf('/') + 1),
+      })
+      images.push({ ...saved, mediaType: 'image/png' })
+    } catch {
+      // A picture that will not fit this deployment's limits is still on disk,
+      // and the path above is what is left of it.
+    }
+  }
+  if (images.length > 0) result.images = images
+  return result
+}
+
+/**
+ * Say what had focus, in one line.
+ * @param focus - what the realm reported, or nothing.
+ * @returns a short description.
+ */
+function describeFocus(focus: unknown): string {
+  const held = focus as { tag?: string, role?: string, name?: string, editable?: boolean } | undefined
+  if (held?.tag === undefined) return 'nothing'
+  return `<${held.tag}> ${held.role ?? ''}${held.name === undefined || held.name === '' ? '' : ` ${JSON.stringify(held.name)}`}`
+    + `${held.editable === true ? ' (editable)' : ''}`
+}
+
+/** Render a task result the way it is cheapest to read. */
+function renderTask(value: TaskResult): ContentBlock[] {
+  const lines: string[] = []
+  const state = value.state === 'succeeded'
+    ? `succeeded in ${String(Math.round((value.ms ?? 0) / 100) / 10)}s`
+    : value.state === 'running'
+      ? 'STILL RUNNING'
+      : value.state
+  lines.push(`task "${value.task}" · ${state} · request ${value.requestId}`)
+
+  if (value.state === 'running') {
+    lines.push('', 'The body has not finished and is still going in its task space. Do NOT run it again — that '
+      + 'would do the work twice. Read it with `browser_tasks {action: "receipt", task, request}`.')
+  }
+  if (value.error !== undefined) {
+    lines.push('', value.error)
+    if (value.mutation === 'possible') {
+      lines.push('', 'It failed *after* acting on the page, so the page may already have changed. Check what '
+        + 'actually happened — `browser_tasks {action: "checkpoint"}` and a read-only look — before repeating '
+        + 'anything.')
+    }
+  }
+  if (value.log !== undefined && value.log.length > 0) lines.push('', value.log.map((line) => `· ${line}`).join('\n'))
+  if (value.result !== undefined) lines.push('', value.result)
+  if (value.resource !== undefined) {
+    lines.push('', `The result is ${String(value.resource.bytes)} bytes, too large to return whole. `
+      + `It is held as ${value.resource.id}; read it with `
+      + `\`browser_tasks {action: "resource", task: "${value.task}", resource: "${value.resource.id}", offset: 0}\`.`
+      + `\n\nThe first of it:\n${value.resource.preview}`)
+  }
+  if (value.screenshots !== undefined && value.screenshots.length > 0) {
+    lines.push('', value.screenshots.map((shot) => `screenshot ${String(shot.width)}×${String(shot.height)}`
+      + `${shot.path === undefined ? '' : ` saved ${shot.path}`}`).join('\n'))
+    // The same rule `browser_screenshot` follows: the picture reaches the
+    // model when the route can carry one, and when it cannot the file is what
+    // is left — said plainly rather than left as a result that quietly has no
+    // image in it.
+    if (value.images === undefined || value.images.length === 0) {
+      lines.push('The picture itself is not attached — this model is registered as accepting text only. '
+        + 'The file above is the whole of it; `read_image` opens one on a model that does take images.')
+    }
+  }
+  if (value.focus !== undefined) lines.push('', value.focus)
+  if (value.pages !== undefined && value.pages.length > 0) {
+    lines.push('', `pages in this task: ${value.pages.map((page) => `${page.tab} ${page.url}`).join(', ')}`)
+  }
+  const blocks: ContentBlock[] = [{ type: 'text', text: lines.join('\n') }]
+  for (const image of value.images ?? []) {
+    blocks.push({ type: 'image', attachment: image as unknown as ImageBlock['attachment'] })
+  }
+  return blocks
+}
+
+/** The task space: a program, rather than one action at a time. */
+function registerTask(ctx: Context): void {
+  ctx.tools.register(defineTool({
+    name: 'browser_task',
+    description: [
+      'Run JavaScript that drives the browser, in a named task space that keeps its pages and its variables',
+      'between calls. This is the tool for anything with a loop, a wait, or more than about three steps in it.',
+      '',
+      'The code is an **async function body** — use `await` and `return` at the top level, do not wrap it in a',
+      'function. It runs in a sandbox of its own, not in the page: `document` and `window` belong to the site',
+      'and are reached through `page.evaluate()`.',
+      '',
+      'What is in scope:',
+      '',
+      '  `page`      the current page. `goto`, `title()`, `url()`, `locator()`, `getByRole()`, `getByLabel()`,',
+      '              `getByText()`, `getByPlaceholder()`, `getByTestId()`, `frameLocator()`, `keyboard`,',
+      '              `mouse`, `screenshot()`, `evaluate()`, `waitForURL()`, `waitForEvent()`, `on()`.',
+      '  `context`   the task\'s pages: `pages()`, `newPage()`, `waitForEvent("page")`, and `context.request`',
+      '              for fetching a URL without a page.',
+      '  `pages()`   the same list; `usePage(p)` makes one of them the `page` above.',
+      '  `expect`    retrying assertions — `await expect(locator).toHaveText(/done/)`.',
+      '  `assert`    node:assert/strict, for facts that are true immediately.',
+      '  `tabbit`    the extras: `observe()`, `focusInfo()`, `actionability()`, `safeClick()`, `hitTest()`,',
+      '              `pasteText()`, `triggerAndWait()`, `triggerAndObserve()`.',
+      '  `artifactPath(name)`  a path in this task\'s own folder, for files you want to keep.',
+      '',
+      'Locators are descriptions, not handles: they are resolved again on every call, so a page that',
+      're-rendered does not invalidate them, and actions wait for their target to be visible, stable and',
+      'actually clickable before acting. Prefer `getByRole(role, {name})`, then a label, then text.',
+      '',
+      'THE FIVE RULES THAT DECIDE WHETHER THIS WORKS:',
+      '',
+      '  1. Return small, JSON-safe values. Never return a `page` or a `locator` — return what you read.',
+      '  2. `page.evaluate(fn, argument)` runs `fn` in the site\'s own realm. It captures nothing from your',
+      '     code; everything it needs goes through `argument`.',
+      '  3. Install a waiter BEFORE the action that triggers it:',
+      '     `const [popup] = await Promise.all([context.waitForEvent("page"), link.click()])`.',
+      '  4. A resolved `click()` is not proof of anything. Verify with the URL, a visible element, or data.',
+      '  5. Bound every loop, and stop when an iteration adds nothing.',
+      '',
+      'Use one task name for a whole job and its follow-ups — the pages, the login state and anything you put',
+      'on `globalThis` are still there next call. Finish it with `browser_tasks {action: "finish"}` when the',
+      'job is done. Read the `browser` skill for recipes: popups, dialogs, frames, downloads, uploads,',
+      'pagination, and what to do when a call is interrupted.',
+      '',
+      'If the call comes back STILL RUNNING, the body is still going — do not run it again, read the receipt.',
+    ].join('\n'),
+    parameters: {
+      task: {
+        type: 'string',
+        required: true,
+        description: 'The task space to run in, created on first use. Name it after the job — "book a flight", '
+          + 'not "google" — and keep using the same one for every step of that job.',
+      },
+      code: {
+        type: 'string',
+        required: true,
+        description: 'The async function body to run.',
+      },
+      requestId: {
+        type: 'string',
+        description: 'A stable id for this operation, such as `submit-order-03`. Calling again with the same id '
+          + 'and the same code returns the first result instead of doing it twice — which is what makes an '
+          + 'interrupted form submission safe to ask about. Give changed code a new id.',
+      },
+      readOnly: {
+        type: 'boolean',
+        description: 'Refuse anything that would change the page — clicks, typing, pastes, uploads. Use it when '
+          + 'inspecting after something went wrong, so the inspection cannot make it worse.',
+      },
+      claimTab: {
+        type: 'string',
+        description: 'Give this task a tab it did not open, by id. Only for a tab the user pointed at; a claimed '
+          + 'tab is never closed by `finish`.',
+      },
+      foreground: {
+        type: 'boolean',
+        description: 'Bring this task\'s page to the front of the machine panel. Only when the user asked to '
+          + 'see it — a page in this machine is something they may be watching.',
+      },
+      diagnostics: {
+        type: 'string',
+        enum: ['focus'],
+        description: '`focus` reports what had keyboard focus before and after the body ran, which is the '
+          + 'question behind almost every "I typed and nothing happened".',
+      },
+      compact: {
+        type: 'boolean',
+        description: 'Leave out the bookkeeping — the page list and all but the last few log lines — when you '
+          + 'are running many small steps in a task you already know the shape of.',
+      },
+      waitMs: {
+        type: 'integer',
+        description: 'How long to wait for the body before returning a receipt that says it is still running. '
+          + 'Defaults to 55000. The body keeps going either way.',
+      },
+    },
+    output: { schema: TASK_OUTPUT, render: (_args, value) => renderTask(value as unknown as TaskResult) },
+    async execute(
+      args: {
+        task: string, code: string, requestId?: string, readOnly?: boolean, claimTab?: string,
+        foreground?: boolean, diagnostics?: string, compact?: boolean, waitMs?: number,
+      },
+      exec,
+    ): Promise<TaskResult> {
+      if (exec.signal.aborted) aborted()
+      const name = String(args.task ?? '').trim()
+      if (name === '') throw new Error('invalid task: expected a name for the task space')
+      const code = String(args.code ?? '')
+      if (code.trim() === '') throw new Error('invalid code: expected a non-empty async function body')
+      await machine().open()
+      const space = taskSpace(name)
+      if (args.claimTab !== undefined && args.claimTab !== '') claimTab(space, args.claimTab)
+      const receipt = await space.run(code, {
+        ...(args.requestId === undefined ? {} : { requestId: args.requestId }),
+        readOnly: args.readOnly === true,
+        foreground: args.foreground === true,
+        ...(args.diagnostics === undefined ? {} : { diagnostics: args.diagnostics }),
+        waitMs: Math.max(1000, Math.min(args.waitMs ?? DEFAULT_WAIT_MS, 120_000)),
+      })
+      const presented = await presentReceipt(ctx, exec, receipt)
+      if (args.compact !== true) return presented
+      const { pages: _pages, ...rest } = presented
+      return { ...rest, ...(presented.log === undefined ? {} : { log: presented.log.slice(-5) }) }
+    },
+    presentCall: (args: { task: string }) => ({
+      card: 'generic' as const, title: `task: ${String(args.task)}`, kind: 'execute' as const,
+    }),
+  }))
+}
+
+/** The lifecycle of a task space: what exists, what happened, and cleaning up. */
+function registerTaskControl(ctx: Context): void {
+  ctx.tools.register(defineTool({
+    name: 'browser_tasks',
+    description: [
+      'Look after the task spaces `browser_task` runs in: list them, read what a run did, check the live state,',
+      'read a large result, or finish one.',
+      '',
+      '`list` — every task space this machine has, with its pages and its last run.',
+      '',
+      '`receipt` — what one run did, by request id. Read this rather than running the body again when a call',
+      'came back STILL RUNNING: the code is still going in its task space, and running it a second time does',
+      'the work twice.',
+      '',
+      '`checkpoint` — the task\'s live state right now: URL, how many pages, whether the document is still',
+      'there. This is the thing to look at when a run was interrupted and you do not know whether its last',
+      'action landed. Follow it with a `readOnly` run that inspects the application itself; repeat the action',
+      'only once you can see it did not happen.',
+      '',
+      '`resource` — a slice of a result too large to return whole. Continue from the `nextOffset` it gives you',
+      'until `eof`.',
+      '',
+      '`finish` — close the task space and, unless you pass `keep`, the pages it opened. Do this when the job',
+      'is done. Keep pages only when they are something to show the user or a starting point for the next',
+      'step; a search results page that has already been read is not.',
+      '',
+      'There is nothing to install: the browser is this page, and a task space exists the moment it is named.',
+      'What can go stale is the machine itself — reloading the harness starts a new generation, and a task',
+      'from the previous one is gone with its pages. `list` says which generation is current.',
+    ].join('\n'),
+    parameters: {
+      action: {
+        type: 'string',
+        required: true,
+        enum: ['list', 'receipt', 'checkpoint', 'resource', 'finish'],
+        description: 'What to do.',
+      },
+      task: { type: 'string', description: 'Which task space. Required for everything except `list`.' },
+      request: { type: 'string', description: 'Which run, for `receipt`. Defaults to the most recent one.' },
+      resource: { type: 'string', description: 'Which resource, for `resource`.' },
+      offset: { type: 'integer', description: 'Where to continue reading a resource from. Defaults to 0.' },
+      maxBytes: {
+        type: 'integer',
+        description: 'How much of a resource to read at once, 1024 to 65536. Defaults to 8192.',
+      },
+      keep: {
+        type: 'boolean',
+        description: 'For `finish`: leave the task\'s pages open. Defaults to false, which closes them.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          action: { type: 'string', required: true },
+          generation: { type: 'string', required: true },
+          text: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text' as const, text: (value as { text: string }).text }],
+    },
+    async execute(
+      args: {
+        action: string, task?: string, request?: string, resource?: string, offset?: number,
+        maxBytes?: number, keep?: boolean,
+      },
+      exec,
+    ): Promise<{ action: string, generation: string, text: string }> {
+      if (exec.signal.aborted) aborted()
+      const browser = machine()
+      await browser.open()
+      const generation = browser.generation
+      const named = (): ReturnType<typeof taskSpace> => {
+        const name = String(args.task ?? '').trim()
+        if (name === '') throw new Error(`${args.action} needs a task name`)
+        const space = findTaskSpace(name)
+        if (space === undefined) {
+          const open = taskSpaces().map((entry) => entry.name)
+          throw new Error(`no task space named "${name}"`
+            + (open.length === 0 ? '; none is open' : `; open ones are ${open.map((entry) => `"${entry}"`).join(', ')}`))
+        }
+        return space
+      }
+
+      switch (args.action) {
+        case 'list': {
+          const spaces = taskSpaces()
+          const text = spaces.length === 0
+            ? `No task space is open. Generation ${generation}.`
+            : spaces.map((space) => {
+                const last = [...space.receipts.values()].pop()
+                return `"${space.name}"  ${space.id}\n`
+                  + `    pages: ${space.pages().length === 0
+                    ? 'none'
+                    : space.pages().map((tab) => `${tab.id} ${tab.url}`).join(', ')}\n`
+                  + `    artifacts: ${space.artifacts}\n`
+                  + `    last run: ${last === undefined
+                    ? 'none'
+                    : `${last.requestId} ${last.state} (mutation: ${last.mutation})`}`
+              }).join('\n\n') + `\n\nGeneration ${generation}.`
+          return { action: args.action, generation, text }
+        }
+        case 'receipt': {
+          const space = named()
+          const receipts = [...space.receipts.values()]
+          const wanted = args.request === undefined || args.request === ''
+            ? receipts[receipts.length - 1]
+            : space.receipts.get(args.request)
+          if (wanted === undefined) {
+            throw new Error(`no run ${String(args.request)} in task "${space.name}"; it has run `
+              + `${receipts.map((entry) => entry.requestId).join(', ') || 'nothing'}`)
+          }
+          const presented = await presentReceipt(ctx, exec, wanted)
+          const rendered = renderTask(presented)
+          const first = rendered[0]
+          return {
+            action: args.action,
+            generation,
+            text: first !== undefined && first.type === 'text' ? first.text : JSON.stringify(presented),
+          }
+        }
+        case 'checkpoint': {
+          const space = named()
+          const state = await space.checkpoint()
+          return {
+            action: args.action,
+            generation,
+            text: [
+              `task "${state.task}" (generation ${state.generation})`,
+              `url: ${state.url === '' ? '(no page)' : state.url}`,
+              `title: ${state.title}`,
+              `pages: ${String(state.pageCount)} (${String(state.claimedPages)} claimed)`,
+              `runs so far: ${String(state.targetEpoch)}`,
+              `document: ${state.mainFrameAttached
+                ? `${String(state.documentGeneration)} elements, answering`
+                : 'not answering'}`,
+              state.dialogs === 0 ? '' : `dialogs raised on this page: ${String(state.dialogs)}`,
+              state.lastReceipt === undefined
+                ? 'last run: none'
+                : `last run: ${state.lastReceipt.requestId} ${state.lastReceipt.state} `
+                  + `(mutation: ${state.lastReceipt.mutation})`,
+              state.generation === generation
+                ? ''
+                : 'This task belongs to an earlier generation of the machine — the page was reloaded, so its '
+                  + 'pages and globals are gone. Start a new task and inspect before repeating anything.',
+            ].filter((line) => line !== '').join('\n'),
+          }
+        }
+        case 'resource': {
+          const space = named()
+          const id = String(args.resource ?? '')
+          if (id === '') throw new Error('resource needs the handle from the receipt, such as `res-1a2b3c`')
+          const slice = space.resource(id, Number(args.offset ?? 0),
+            args.maxBytes === undefined ? undefined : Number(args.maxBytes))
+          return {
+            action: args.action,
+            generation,
+            text: `${slice.text}\n\n[${String(slice.nextOffset)} of ${String(slice.bytes)} bytes`
+              + `${slice.eof ? '; that is all of it' : `; continue with offset ${String(slice.nextOffset)}`}]`,
+          }
+        }
+        case 'finish': {
+          const space = named()
+          const done = space.finish(args.keep === true)
+          return {
+            action: args.action,
+            generation,
+            text: `Finished task "${done.task}"${done.keep
+              ? ', leaving its pages open.'
+              : `, closing ${String(done.closed)} page(s).`}`,
+          }
+        }
+        default:
+          throw new Error(`invalid action: ${String(args.action)}`)
+      }
+    },
+    presentCall: (args: { action: string, task?: string }) => ({
+      card: 'generic' as const,
+      title: `tasks: ${String(args.action)}${args.task === undefined ? '' : ` ${args.task}`}`,
+      kind: args.action === 'finish' ? 'execute' as const : 'read' as const,
+    }),
+  }))
+}
+
+/** One bounded look at a page, frames and focus included. */
+function registerInspect(ctx: Context): void {
+  ctx.tools.register(defineTool({
+    name: 'browser_inspect',
+    description: [
+      'Look at a page the way something about to act on it needs to: the accessibility tree with a handle on',
+      'every node, what has keyboard focus, and every frame with the state of the element that holds it.',
+      '',
+      'This is `browser_snapshot` grown up, and the difference is the frames. A page whose content is in an',
+      '`<iframe>` — a payment form, an embedded editor, a comment widget — is a snapshot of an empty rectangle',
+      'here and a real tree there, because each frame is a separate document that has to be asked separately.',
+      'Every node comes back with `ref=e12`, and in a task those go straight into',
+      '`page.locator("aria-ref=e12")`.',
+      '',
+      'It is bounded on purpose: caps on depth, on characters, and on how many frames are followed. Ask for',
+      'more only when the answer was truncated.',
+      '',
+      'Reach for this when a click did nothing and you want to know why, when you cannot find a control you',
+      'can see in a screenshot, or before typing — `focus` says where the keystrokes would actually land.',
+    ].join('\n'),
+    parameters: {
+      frames: {
+        type: 'string',
+        enum: ['none', 'visible', 'all'],
+        description: 'Which nested frames to look inside. Defaults to the visible ones.',
+      },
+      focus: { type: 'boolean', description: 'Include what has keyboard focus. Defaults to true.' },
+      depth: { type: 'integer', description: 'How deep the tree goes, 1 to 30. Defaults to 20.' },
+      maxChars: { type: 'integer', description: 'How much tree to return, 256 to 20000. Defaults to 6000.' },
+      frameMaxChars: { type: 'integer', description: 'How much of each frame, 256 to 6000. Defaults to 2000.' },
+      maxFrames: { type: 'integer', description: 'How many frames to follow, 1 to 32. Defaults to 8.' },
+      boxes: { type: 'boolean', description: 'Include each node\'s rectangle, for coordinate work.' },
+      task: {
+        type: 'string',
+        description: 'Look at a task space\'s current page instead of the active tab.',
+      },
+      tab: TAB_PARAMETER,
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          url: { type: 'string', required: true },
+          title: { type: 'string', required: true },
+          text: { type: 'string', required: true },
+          truncated: { type: 'boolean', required: true },
+          frames: { type: 'integer', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text' as const, text: (value as { text: string }).text }],
+    },
+    async execute(
+      args: {
+        frames?: string, focus?: boolean, depth?: number, maxChars?: number, frameMaxChars?: number,
+        maxFrames?: number, boxes?: boolean, task?: string, tab?: string,
+      },
+      exec,
+    ): Promise<{ url: string, title: string, text: string, truncated: boolean, frames: number }> {
+      if (exec.signal.aborted) aborted()
+      const browser = machine()
+      await browser.open()
+      const space = args.task === undefined || args.task === '' ? undefined : findTaskSpace(args.task)
+      if (args.task !== undefined && args.task !== '' && space === undefined) {
+        throw new Error(`no task space named "${args.task}"; browser_tasks lists them`)
+      }
+      const tab = args.tab ?? space?.activeTab() ?? browser.tabs().find((entry) => entry.active)?.id
+      if (tab === undefined) throw new Error('no tab is open — open one with browser_navigate')
+      const options: Record<string, unknown> = {
+        frames: args.frames ?? 'visible',
+        focus: args.focus !== false,
+        ...(args.depth === undefined ? {} : { depth: args.depth }),
+        ...(args.maxChars === undefined ? {} : { maxChars: args.maxChars }),
+        ...(args.frameMaxChars === undefined ? {} : { frameMaxChars: args.frameMaxChars }),
+        ...(args.maxFrames === undefined ? {} : { maxFrames: args.maxFrames }),
+        ...(args.boxes === undefined ? {} : { boxes: args.boxes }),
+      }
+      const observation = await observePage(tab, options) as {
+        url: string
+        title: string
+        snapshot: string
+        truncated: boolean
+        scroll: { x: number, y: number }
+        size: { width: number, height: number }
+        focus?: { tag: string, role: string, name: string, editable: boolean, inFrame?: string }
+        frames?: {
+          token: string, name: string, src: string, visible: boolean, actionable: boolean,
+          occludedBy?: string, viewportIntersection: number, url?: string, snapshot?: string, error?: string,
+        }[]
+        dialogs?: { kind: string, message: string, answer: string }[]
+      }
+
+      const lines: string[] = [`${observation.title}\n${observation.url}`]
+      if (observation.focus !== undefined) {
+        const focus = observation.focus
+        lines.push(`focus: <${focus.tag}> ${focus.role}${focus.name === '' ? '' : ` ${JSON.stringify(focus.name)}`}`
+          + `${focus.editable ? ' (editable)' : ''}${focus.inFrame === undefined ? '' : ` inside frame ${focus.inFrame}`}`)
+      }
+      lines.push('', observation.snapshot === '' ? '(nothing visible on this page)' : observation.snapshot)
+      if (observation.truncated) {
+        lines.push('', '[the tree was cut short here — raise maxChars or depth, or inspect a smaller part]')
+      }
+      for (const frame of observation.frames ?? []) {
+        lines.push('', `frame ${frame.token === '' ? '(no runtime — this machine did not load it)' : frame.token}`
+          + `${frame.name === '' ? '' : ` ${JSON.stringify(frame.name)}`} ${frame.url ?? frame.src}`
+          + `\n  ${frame.visible ? 'visible' : 'not visible'}, `
+          + `${frame.actionable ? 'actionable' : `NOT actionable${frame.occludedBy === undefined
+            ? '' : ` — ${frame.occludedBy} is over it`}`}`
+          + `, ${String(Math.round(frame.viewportIntersection * 100))}% on screen`)
+        if (frame.error !== undefined) lines.push(`  could not be read: ${frame.error}`)
+        else if (frame.snapshot !== undefined && frame.snapshot !== '') {
+          lines.push(frame.snapshot.split('\n').map((line) => `  ${line}`).join('\n'))
+        }
+      }
+      for (const dialog of observation.dialogs ?? []) {
+        lines.push('', `dialog: ${dialog.kind} ${JSON.stringify(dialog.message)} — answered ${dialog.answer}`)
+      }
+      return {
+        url: observation.url,
+        title: observation.title,
+        text: lines.join('\n'),
+        truncated: observation.truncated,
+        frames: (observation.frames ?? []).length,
+      }
+    },
+    presentCall: () => ({ card: 'generic' as const, title: 'inspect page', kind: 'read' as const }),
+  }))
+}
+
+/** Pasting, which is how long or tabular text gets into a real editor. */
+function registerPaste(ctx: Context): void {
+  ctx.tools.register(defineTool({
+    name: 'browser_paste',
+    description: [
+      'Paste text into whatever has focus, as one event rather than as keystrokes.',
+      '',
+      'Use this instead of `browser_type` for anything long, multi-line, or tabular, and for any editor that is',
+      'not a plain `<input>` or `<textarea>` — a code editor, a rich-text field, a spreadsheet cell. Those are',
+      'built out of a hidden input and a re-render per keystroke, and typing a hundred characters into one is a',
+      'hundred chances for the focus to move somewhere else.',
+      '',
+      'Click the field first: this pastes at the caret, and if nothing is focused it says so rather than',
+      'guessing. The event is synthetic, so a site is entitled to ignore it — the result says which strategy',
+      'landed, and you should check what the application shows afterwards.',
+      '',
+      'The user\'s own clipboard is never read and never written. This is a paste of text you supplied.',
+    ].join('\n'),
+    parameters: {
+      text: { type: 'string', required: true, description: 'What to paste.' },
+      format: {
+        type: 'string',
+        enum: ['text', 'tsv'],
+        description: '`tsv` also offers the text as an HTML table, which is what a spreadsheet or a rich editor '
+          + 'reads when you paste rows into it. Defaults to plain text.',
+      },
+      requireEditableFocus: {
+        type: 'boolean',
+        description: 'Refuse unless what is focused can actually be typed into. Worth setting when the paste '
+          + 'matters, so it fails rather than vanishing.',
+      },
+      ...TARGET_PARAMETERS,
+      tab: TAB_PARAMETER,
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          strategy: { type: 'string', required: true },
+          characters: { type: 'integer', required: true },
+          bytes: { type: 'integer', required: true },
+          accepted: { type: 'boolean', required: true },
+          focusBefore: { type: 'string', required: true },
+          focusAfter: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => {
+        const paste = value as unknown as {
+          strategy: string, characters: number, accepted: boolean, focusBefore: string, focusAfter: string
+        }
+        return [{
+          type: 'text' as const,
+          text: `Pasted ${String(paste.characters)} characters into ${paste.focusBefore} (${paste.strategy}).`
+            + `${paste.accepted ? '' : ' The page did not visibly take it — check what the field shows.'}`
+            + (paste.focusAfter === paste.focusBefore ? '' : `\nFocus is now on ${paste.focusAfter}.`),
+        }]
+      },
+    },
+    async execute(
+      args: { text: string, format?: string, requireEditableFocus?: boolean, ref?: string, selector?: string, tab?: string },
+      exec,
+    ): Promise<{
+      strategy: string, characters: number, bytes: number, accepted: boolean, focusBefore: string, focusAfter: string
+    }> {
+      if (exec.signal.aborted) aborted()
+      const browser = machine()
+      // Naming a target is the same as clicking it first, which is what a
+      // person pasting into a field does and what the caret needs.
+      if ((args.ref !== undefined && args.ref !== '') || (args.selector !== undefined && args.selector !== '')) {
+        await browser.run('click', {
+          ...(args.ref === undefined ? {} : { ref: args.ref }),
+          ...(args.selector === undefined ? {} : { selector: args.selector }),
+        }, args.tab)
+      }
+      return await browser.run('paste', {
+        text: String(args.text ?? ''),
+        ...(args.format === undefined ? {} : { format: args.format }),
+        requireEditableFocus: args.requireEditableFocus === true,
+      }, args.tab) as {
+        strategy: string, characters: number, bytes: number, accepted: boolean, focusBefore: string, focusAfter: string
+      }
+    },
+    presentCall: () => ({ card: 'generic' as const, title: 'paste', kind: 'execute' as const }),
   }))
 }
 
