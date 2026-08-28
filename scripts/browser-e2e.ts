@@ -173,6 +173,10 @@ const PAGES: Record<string, { type: string, body: string | Buffer }> = {
 <input id="file" type="file">
 <p id="uploaded">no file</p>
 <button id="choose" type="button">Choose a file</button>
+<div id="drag" draggable="true">drag me</div>
+<div id="drop">drop here</div>
+<canvas id="pad" width="200" height="100"></canvas>
+<p id="hit">no click</p>
 <iframe src="/inner-form" title="Payment" width="360" height="160"></iframe>
 <script>
   document.getElementById('go').addEventListener('click', function () {
@@ -186,6 +190,11 @@ const PAGES: Record<string, { type: string, body: string | Buffer }> = {
   document.getElementById('file').addEventListener('change', function (event) {
     var file = event.target.files[0]
     document.getElementById('uploaded').textContent = file ? 'uploaded ' + file.name : 'none'
+  })
+  document.getElementById('drop').addEventListener('dragover', function (event) { event.preventDefault() })
+  document.getElementById('drop').addEventListener('drop', function () { this.textContent = 'dropped' })
+  document.getElementById('pad').addEventListener('click', function (event) {
+    document.getElementById('hit').textContent = 'clicked at ' + Math.round(event.offsetX) + ',' + Math.round(event.offsetY)
   })
 </script>
 </body></html>`,
@@ -1156,6 +1165,51 @@ const scenarios: Scenario[] = [
       `)
       expect(upload.state === 'succeeded', `the upload failed: ${String(upload.error)}`)
       process.stdout.write('  popup, dialog, download and upload all landed\n')
+    },
+  },
+
+  {
+    // The ways in that are not a locator and a click: a modal answered from a
+    // policy set outright, a drag, and a pointer at a coordinate on a canvas —
+    // which is the only way into a surface whose DOM describes nothing. All
+    // three are documented in the skill, so all three are checked here; a
+    // recipe that names a method this machine does not have is worse than a
+    // method it never had.
+    name: 'task-input',
+    async run(page, site) {
+      await open(page)
+      await drive.task(page, 'input', `await page.goto(${JSON.stringify(`${site}/records`)});`)
+
+      const answered = await drive.task(page, 'input', `
+        await page.setDialogPolicy({action: 'accept'});
+        await page.getByRole('button', {name: 'Delete'}).click();
+        const accepted = await page.locator('#deleted').innerText();
+        await page.setDialogPolicy({action: 'dismiss'});
+        await page.evaluate(() => { document.getElementById('deleted').textContent = 'not deleted' });
+        await page.getByRole('button', {name: 'Delete'}).click();
+        return {accepted, afterDismiss: await page.locator('#deleted').innerText()};
+      `)
+      expect(answered.state === 'succeeded', `the dialog policy failed: ${String(answered.error)}`)
+      const policy = answered.value as { accepted: string, afterDismiss: string }
+      expect(policy.accepted === 'deleted', `accepting left the page saying ${JSON.stringify(policy.accepted)}`)
+      expect(policy.afterDismiss === 'not deleted',
+        `dismissing left the page saying ${JSON.stringify(policy.afterDismiss)}`)
+
+      const dragged = await drive.task(page, 'input', `
+        await page.locator('#drag').dragTo(page.locator('#drop'));
+        const box = await page.locator('#pad').boundingBox();
+        await page.mouse.click(box.x + 30, box.y + 20);
+        const shot = await page.locator('#pad').screenshot({path: artifactPath('pad.png')});
+        return {drop: await page.locator('#drop').innerText(), hit: await page.locator('#hit').innerText(), shot};
+      `)
+      expect(dragged.state === 'succeeded', `the pointer work failed: ${String(dragged.error)}`)
+      const input = dragged.value as { drop: string, hit: string, shot: { width: number, height: number } }
+      expect(input.drop === 'dropped', `the drop target says ${JSON.stringify(input.drop)}`)
+      expect(input.hit === 'clicked at 30,20',
+        `the canvas received ${JSON.stringify(input.hit)} — a coordinate click landed somewhere else`)
+      expect(input.shot.width === 200 && input.shot.height === 100,
+        `an element screenshot came back ${String(input.shot.width)}×${String(input.shot.height)}, not the canvas`)
+      process.stdout.write('  dialogs by policy, a drag, and a pointer at a coordinate\n')
     },
   },
 
