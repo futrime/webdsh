@@ -151,6 +151,57 @@ export function proxiedUrl(url: string, template = proxyConfig().template): stri
   return template.replaceAll('{encoded}', encodeURIComponent(url)).replaceAll('{url}', url)
 }
 
+/**
+ * The URL a proxied response really came from.
+ *
+ * When a host refuses cross-origin reads the request is retried through the
+ * configured proxy, and what comes back reports itself as
+ * `https://proxy.example/https://news.example/` — which is then what the tab
+ * calls itself, what `<base>` is set to, and what every relative link on the
+ * page resolves against. That was tolerable while the machine only showed
+ * pages; it stopped being tolerable once a task could wait on a URL, because
+ * `page.waitForURL(/news\.example/)` would be waiting for a string the machine
+ * had decided not to use.
+ *
+ * So the proxy is stripped back off. Only when what is left is an absolute URL
+ * of its own: a template with something other than a prefix, or a proxy that
+ * answers from its own origin, leaves the URL exactly as it arrived.
+ *
+ * And only when what is left is the *same origin the caller asked for*. What
+ * this name becomes is not cosmetic — it is what `<base>` resolves against,
+ * and it is the origin whose cookies and `localStorage` the engine seeds the
+ * document from. Without the check, anything that can choose a URL could ask
+ * for `https://proxy.example/https://bank.example/…`, get bytes from wherever
+ * that resolved, and have the tab call itself `bank.example` — arriving with
+ * `bank.example`'s stored cookies in `document.cookie`. Stripping is therefore
+ * allowed to *reveal* the origin that was requested and never to change it.
+ * @param finalUrl - the URL the response reported.
+ * @param requested - the URL this machine asked for.
+ * @param template - the proxy template it would have gone through.
+ * @returns the URL the page should believe it is at.
+ */
+export function unproxiedUrl(finalUrl: string, requested: string, template = proxyConfig().template): string {
+  const prefix = template.split('{')[0] ?? ''
+  if (prefix === '' || !finalUrl.startsWith(prefix)) return finalUrl
+  const tail = finalUrl.slice(prefix.length)
+  let decoded = tail
+  if (!/^https?:\/\//i.test(tail)) {
+    try {
+      decoded = decodeURIComponent(tail)
+    } catch {
+      // A stray `%` is not an escape, and a URL is not worth throwing over:
+      // what came back is then simply not something this can see through.
+      return finalUrl
+    }
+  }
+  if (!/^https?:\/\//i.test(decoded)) return finalUrl
+  try {
+    return new URL(decoded).origin === new URL(requested).origin ? decoded : finalUrl
+  } catch {
+    return finalUrl
+  }
+}
+
 /** Whether a URL is the proxy itself, which must never be proxied again. */
 function isProxyTarget(url: URL, template: string): boolean {
   try {

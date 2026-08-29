@@ -189,7 +189,12 @@ const PAGES: Record<string, { type: string, body: string | Buffer }> = {
   document.getElementById('choose').addEventListener('click', function () { document.getElementById('file').click() })
   document.getElementById('file').addEventListener('change', function (event) {
     var file = event.target.files[0]
-    document.getElementById('uploaded').textContent = file ? 'uploaded ' + file.name : 'none'
+    // The size as well as the name: it is the only way back to the *bytes* a
+    // file arrived with, and the download half of the suite has no other way
+    // to prove it saved anything but an empty file.
+    document.getElementById('uploaded').textContent = file
+      ? 'uploaded ' + file.name + ' ' + String(file.size) + 'B'
+      : 'none'
   })
   document.getElementById('drop').addEventListener('dragover', function (event) { event.preventDefault() })
   document.getElementById('drop').addEventListener('drop', function () { this.textContent = 'dropped' })
@@ -1144,13 +1149,23 @@ const scenarios: Scenario[] = [
       const saved = download.value as { artifact: string, suggested: string, url: string }
       expect(saved.suggested === 'records.csv', `the file offered itself as ${JSON.stringify(saved.suggested)}`)
       expect(saved.url.endsWith('/records'), `the download navigated the tab to ${saved.url}`)
-      const contents = await page.evaluate(async (path) => {
-        const machine = (globalThis as { dsh?: { ctx?: unknown } }).dsh
-        void machine
-        return bridge().tasks.run('events', `return await (await context.request.get('about:blank')).status()`)
-          .then(() => path)
-      }, saved.artifact)
-      expect(typeof contents === 'string', 'the artifact path did not come back')
+      // What is actually in the file. Everything above is the fixture's own
+      // `download` attribute echoed back and a URL that did not change, so a
+      // `saveAs` that wrote nothing at all passed the whole scenario. The only
+      // way back to a workspace file's bytes from here is to send it into a
+      // page, so the download is checked by uploading it again.
+      const expected = String(PAGES['/export.csv']?.body ?? '').length
+      const back = await drive.task(page, 'events', `
+        const [chooser] = await Promise.all([
+          page.waitForEvent('filechooser', {timeout: 15000}),
+          page.getByRole('button', {name: 'Choose a file'}).click(),
+        ]);
+        await chooser.setFiles(${JSON.stringify(saved.artifact)});
+        await expect(page.locator('#uploaded')).toHaveText('uploaded records.csv ${String(expected)}B');
+        return {uploaded: await page.locator('#uploaded').innerText()};
+      `)
+      expect(back.state === 'succeeded',
+        `the saved download did not read back as ${String(expected)} bytes of CSV: ${String(back.error)}`)
 
       // A file going the other way, through the chooser a button opens.
       const upload = await drive.task(page, 'events', `
@@ -1160,7 +1175,7 @@ const scenarios: Scenario[] = [
           page.getByRole('button', {name: 'Choose a file'}).click(),
         ]);
         await chooser.setFiles(artifactPath('note.txt'));
-        await expect(page.locator('#uploaded')).toHaveText('uploaded note.txt');
+        await expect(page.locator('#uploaded')).toHaveText('uploaded note.txt 25B');
         return {uploaded: await page.locator('#uploaded').innerText()};
       `)
       expect(upload.state === 'succeeded', `the upload failed: ${String(upload.error)}`)

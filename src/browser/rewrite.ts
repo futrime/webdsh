@@ -315,7 +315,10 @@ export function injectRuntime(html: string, runtime: string): string {
   if (marker !== null) {
     return html.slice(0, marker.index + marker[0].length) + runtime + html.slice(marker.index + marker[0].length)
   }
-  const withHead = html.replace(/<head[^>]*>/i, (head) => `${head}${runtime}`)
+  // `\b`, or the fallback matches `<header>` and installs the runtime in the
+  // middle of the body — behind the page's own scripts, which is the one thing
+  // this must never do. Same anchoring the `<base>` marker above already has.
+  const withHead = html.replace(/<head\b[^>]*>/i, (head) => `${head}${runtime}`)
   if (withHead !== html) return withHead
   // A document with no head at all — the parser will make one, but there is
   // nowhere to inject ahead of it, so the runtime leads the document.
@@ -582,6 +585,16 @@ export async function rewriteDocument(
   for (const frame of [...parsed.querySelectorAll('iframe,frame')]) {
     const src = frame.getAttribute('src')
     frame.removeAttribute('src')
+    // Whatever the page called these, it is not what they mean. `data-wb-frame`
+    // is the machine's routing key — a document that arrives already wearing
+    // one (on a `srcdoc` frame, or below the depth this follows, either of
+    // which leaves the loop before the attribute is written) names a *live
+    // sibling's* runtime, so `frameLocator()` on the decoy resolves to the real
+    // frame and types into it. `data-wb-src` is only ever reported, but a page
+    // that can choose it can lie to `browser_inspect` about where a frame came
+    // from. Both are re-written below when this machine has fetched the frame.
+    frame.removeAttribute('data-wb-frame')
+    frame.removeAttribute('data-wb-src')
     const resolved = src === null ? undefined : absolute(src, url)
     if (resolved === undefined || context.depth >= MAX_FRAME_DEPTH) continue
     // The frame's real source, kept as data so a snapshot can say where the
@@ -589,7 +602,6 @@ export async function rewriteDocument(
     // it cross-origin and gets nothing.
     frame.setAttribute('data-wb-src', resolved)
     const token = context.frameToken?.() ?? ''
-    if (token !== '') frame.setAttribute('data-wb-frame', token)
     jobs.push((async () => {
       try {
         const resource = await load(resolved)
@@ -601,6 +613,13 @@ export async function rewriteDocument(
         )
         const runtime = token === '' ? '' : context.frameRuntime?.(resource.url, token) ?? ''
         frame.setAttribute('srcdoc', runtime === '' ? inner.html : injectRuntime(inner.html, runtime))
+        // The token goes on only once there is a runtime wearing it. Written
+        // ahead of the fetch, a frame whose source could not be loaded still
+        // advertised one, so `frameLocator()` resolved to a token no document
+        // would ever claim and the caller was told "the page replaced it —
+        // resolve the frame again", which returned the same dead token for
+        // ever. Now it gets the message that says what actually happened.
+        if (runtime !== '') frame.setAttribute('data-wb-frame', token)
       } catch {
         // An unreachable frame stays an empty one.
       }

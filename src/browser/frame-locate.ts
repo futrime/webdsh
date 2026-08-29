@@ -36,8 +36,14 @@
  * channel, this owns the document.
  */
 
+import { bounded, fromBase64 } from './protocol.ts'
+
+// Re-exported because `frame.ts` reaches everything in this module as
+// `locate.*`, and its `fetch` and `XMLHttpRequest` shims decode bodies with it.
+export { fromBase64 }
+
 /** How long an action waits for its target to become actionable. */
-export const DEFAULT_ACTION_TIMEOUT_MS = 15_000
+const DEFAULT_ACTION_TIMEOUT_MS = 15_000
 
 /** How often the actionability loop re-checks. */
 const POLL_MS = 40
@@ -127,8 +133,16 @@ function matches(value: string, match: TextMatch | undefined): boolean {
 // roles and names
 // ---------------------------------------------------------------------------
 
-/** Implicit ARIA roles by tag, for the tags where the mapping is unconditional. */
-const IMPLICIT_ROLES: Record<string, string> = {
+/**
+ * Implicit ARIA roles by tag, for the tags where the mapping is unconditional.
+ *
+ * Prototype-less, because the key comes off the page: `<constructor>` would
+ * otherwise find `Object.prototype.constructor`, `??` would not fall through,
+ * and `ariaRole` would return a function typed as a string — which then fails
+ * `postMessage`'s structured clone on the way back and reads as a page that
+ * stopped answering.
+ */
+const IMPLICIT_ROLES: Record<string, string> = Object.assign(Object.create(null) as Record<string, string>, {
   article: 'article', aside: 'complementary', blockquote: 'blockquote', button: 'button',
   code: 'code', datalist: 'listbox', dd: 'definition', del: 'deletion', details: 'group',
   dfn: 'term', dialog: 'dialog', dt: 'term', em: 'emphasis', fieldset: 'group',
@@ -140,15 +154,15 @@ const IMPLICIT_ROLES: Record<string, string> = {
   summary: 'button', sup: 'superscript', table: 'table', tbody: 'rowgroup',
   textarea: 'textbox', tfoot: 'rowgroup', thead: 'rowgroup', time: 'time',
   tr: 'row', ul: 'list',
-}
+})
 
-/** Input types whose role is not `textbox`. */
-const INPUT_ROLES: Record<string, string> = {
+/** Input types whose role is not `textbox`. Prototype-less; see {@link IMPLICIT_ROLES}. */
+const INPUT_ROLES: Record<string, string> = Object.assign(Object.create(null) as Record<string, string>, {
   button: 'button', checkbox: 'checkbox', image: 'button', number: 'spinbutton',
   radio: 'radio', range: 'slider', reset: 'button', submit: 'button',
   email: 'textbox', tel: 'textbox', text: 'textbox', url: 'textbox',
   search: 'searchbox',
-}
+})
 
 /**
  * The ARIA role an element actually has.
@@ -182,7 +196,11 @@ export function ariaRole(element: Element): string {
   if (/^h[1-6]$/.test(tag)) return 'heading'
   if (tag === 'header') return element.closest('article,aside,main,nav,section') === null ? 'banner' : 'generic'
   if (tag === 'footer') return element.closest('article,aside,main,nav,section') === null ? 'contentinfo' : 'generic'
-  if (tag === 'section') return accessibleName(element) === '' ? 'generic' : 'region'
+  // A `<section>` is a region only when the *author* named it. Asking
+  // `accessibleName` instead fell through to the section's own `innerText`, so
+  // every section with any text in it answered `region` — and every call paid
+  // a forced layout and the text of the whole subtree to find that out.
+  if (tag === 'section') return hasAuthoredName(element) ? 'region' : 'generic'
   if (tag === 'td') return element.closest('table') === null ? 'generic' : 'cell'
   if (tag === 'th') {
     if (element.closest('table') === null) return 'generic'
@@ -191,6 +209,19 @@ export function ariaRole(element: Element): string {
   }
   if (tag === 'div' || tag === 'span') return 'generic'
   return IMPLICIT_ROLES[tag] ?? 'generic'
+}
+
+/**
+ * Whether an element carries a name the author wrote, rather than one derived
+ * from its contents.
+ * @param element - the element.
+ * @returns whether `aria-label`, `aria-labelledby` or `title` names it.
+ */
+function hasAuthoredName(element: Element): boolean {
+  for (const attribute of ['aria-label', 'aria-labelledby', 'title']) {
+    if ((element.getAttribute(attribute) ?? '').trim() !== '') return true
+  }
+  return false
 }
 
 /**
@@ -306,11 +337,39 @@ export function isVisible(element: Element): boolean {
 }
 
 /**
+ * Whether an element renders *or could be holding something that does*.
+ *
+ * Not {@link isVisible}, and the difference is the whole point. Playwright's
+ * rule — a box with both dimensions above zero — is the right one for a
+ * locator, which resolves one element and acts on it. It is the wrong one for
+ * a tree walk, which prunes the subtree of anything it calls hidden: the
+ * portal root a dialog is rendered into is a `<div>` of full width and zero
+ * height, because everything inside it is `position: fixed`, and so is an
+ * uncleared float parent. Requiring both dimensions deleted the dialog from
+ * every snapshot the model could have got a ref out of.
+ *
+ * So a walk asks this instead: genuinely hidden — `display: none`,
+ * `visibility`, the `hidden` attribute, a collapsed box in both directions —
+ * prunes; a box that is flat in one direction does not.
+ * @param element - the element.
+ * @returns whether the walk should look inside it.
+ */
+export function isRendered(element: Element): boolean {
+  if (!element.isConnected) return false
+  const style = element.ownerDocument.defaultView?.getComputedStyle(element)
+  if (style === undefined) return false
+  if (style.visibility === 'hidden' || style.visibility === 'collapse') return false
+  if (element.hasAttribute('hidden')) return false
+  const rect = element.getBoundingClientRect()
+  return rect.width > 0 || rect.height > 0
+}
+
+/**
  * Whether an element is hidden from the accessibility tree.
  * @param element - the element.
  * @returns whether a screen reader would skip it.
  */
-function isAriaHidden(element: Element): boolean {
+export function isAriaHidden(element: Element): boolean {
   for (let node: Element | null = element; node !== null; node = node.parentElement) {
     if (node.getAttribute('aria-hidden') === 'true') return true
     if (node.hasAttribute('inert')) return true
@@ -367,8 +426,69 @@ export function isChecked(element: Element): boolean {
 // resolving a chain
 // ---------------------------------------------------------------------------
 
-/** Elements the last ARIA snapshot named, keyed by the ref it handed out. */
+/**
+ * Elements the last look at this document named, keyed by the ref it handed out.
+ *
+ * One registry, not one per kind of look. `browser_snapshot` and
+ * `browser_inspect` both hand the model `e12`, and while each kept a map of its
+ * own the same spelling named two different elements in the same document — so
+ * a ref read off one and given to the other silently acted on whatever the
+ * other had numbered twelfth.
+ */
 const ariaRefs = new Map<string, Element>()
+
+/** How many refs one document may have outstanding. See {@link noteAriaRef}. */
+const MAX_ARIA_REFS = 20_000
+
+/**
+ * Start a fresh set of refs, which is what taking a look means.
+ *
+ * Refs are minted per look and replaced by the next one: one that outlived a
+ * re-render would name an element the page had already thrown away.
+ *
+ * The counter is deliberately *not* reset with the map. Two looks number the
+ * same document differently — `snapshot()` walks `children` through its own
+ * filter, `ariaSnapshot()` folds transparent roles and descends shadow roots —
+ * so restarting at one meant `e12` from the earlier look was a live element in
+ * the later look's map, and a command given it acted on the wrong node and
+ * reported success. Counting on means a ref from a previous look is simply
+ * absent, which is the error every caller already handles.
+ */
+export function resetAriaRefs(): void {
+  ariaRefs.clear()
+}
+
+/**
+ * Name one element, so a later command can be told to act on it.
+ * @param element - the element being reported.
+ * @returns the ref, in the `e12` spelling every look uses.
+ */
+export function noteAriaRef(element: Element): string {
+  const ref = `e${String(++refCounter)}`
+  ariaRefs.set(ref, element)
+  // Bounded, because not every look clears it: a scoped `locator.ariaSnapshot()`
+  // must *not* reset the registry — the caller is still holding the handles
+  // from the look before it — so a body that snapshots one row per iteration
+  // added entries for ever, each one a strong reference to a node the page had
+  // since re-rendered away. The oldest go first; they are the ones nobody can
+  // still be holding. The cap is far above any single snapshot's own refs.
+  if (ariaRefs.size > MAX_ARIA_REFS) {
+    for (const held of ariaRefs.keys()) {
+      ariaRefs.delete(held)
+      if (ariaRefs.size <= MAX_ARIA_REFS) break
+    }
+  }
+  return ref
+}
+
+/**
+ * The element a ref names, if this document still has it.
+ * @param ref - the handle a look handed out.
+ * @returns the element, or undefined when the ref is unknown.
+ */
+export function ariaRefElement(ref: string): Element | undefined {
+  return ariaRefs.get(ref)
+}
 
 /**
  * Every element in a root, including through open shadow roots.
@@ -376,17 +496,20 @@ const ariaRefs = new Map<string, Element>()
  * Shadow DOM is not a curiosity here: a page built with web components keeps
  * every control inside one, and a locator engine that stops at the boundary
  * reports such a page as empty.
+ *
+ * A generator because every caller walks the result once and throws it away.
+ * Materialising it first cost an array the size of the document on every
+ * locator resolution — including the `css` step, which only wants the handful
+ * of elements that turn out to have a shadow root.
  * @param root - where to start.
- * @param into - collected elements.
- * @returns every descendant element.
+ * @yields every descendant element, in document order.
  */
-function descendants(root: ParentNode, into: Element[] = []): Element[] {
+function* descendants(root: ParentNode): Generator<Element> {
   for (const element of root.querySelectorAll('*')) {
-    into.push(element)
+    yield element
     const shadow = (element as HTMLElement).shadowRoot
-    if (shadow !== null && shadow !== undefined) descendants(shadow, into)
+    if (shadow !== null && shadow !== undefined) yield* descendants(shadow)
   }
-  return into
 }
 
 /**
@@ -410,6 +533,9 @@ function containsDeep(ancestor: Node, node: Node): boolean {
   return false
 }
 
+/** The steps that are one attribute lookup, and the attribute each reads. */
+const STEP_ATTRIBUTES = { placeholder: 'placeholder', altText: 'alt', title: 'title' } as const
+
 /**
  * Matches for one step, searched inside a set of roots.
  * @param step - the step.
@@ -418,7 +544,14 @@ function containsDeep(ancestor: Node, node: Node): boolean {
  */
 function stepMatches(step: LocatorStep, roots: (ParentNode | Element)[]): Element[] {
   const found: Element[] = []
-  const add = (element: Element): void => { if (!found.includes(element)) found.push(element) }
+  // A set beside the array, purely for the membership test: `found.includes`
+  // would make a step that matches most of the page quadratic in its size.
+  const seen = new Set<Element>()
+  const add = (element: Element): void => {
+    if (seen.has(element)) return
+    seen.add(element)
+    found.push(element)
+  }
 
   for (const root of roots) {
     switch (step.kind) {
@@ -434,8 +567,15 @@ function stepMatches(step: LocatorStep, roots: (ParentNode | Element)[]): Elemen
       }
       case 'xpath': {
         const document_ = (root as Element).ownerDocument ?? (root as Document)
+        // `//tr` is absolute from the document root even when it is evaluated
+        // with an element as the context node, so a chained XPath escaped the
+        // locator it was chained onto and matched the whole page. Inside a
+        // scope it means what it reads as: `.//tr`.
+        const selector = root instanceof Element && step.selector.startsWith('/')
+          ? `.${step.selector}`
+          : step.selector
         const result = document_.evaluate(
-          step.selector,
+          selector,
           root as Node,
           null,
           XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
@@ -453,10 +593,13 @@ function stepMatches(step: LocatorStep, roots: (ParentNode | Element)[]): Elemen
           throw new Error(`no element ${step.ref}: aria refs come from the most recent snapshot of this page `
             + 'and are replaced by the next one. Take a fresh snapshot.')
         }
-        if (!element.isConnected) {
-          throw new Error(`${step.ref} is no longer in the page — it was replaced after the snapshot was taken. `
-            + 'Take a fresh one.')
-        }
+        // Gone is a *result*, not a failure. `waitFor({state: 'detached'})`,
+        // `count()` and `expect(...).not.toBeVisible()` are the ways of asking
+        // whether an element has been taken away, and throwing here failed
+        // every one of them at the moment they should have succeeded. An
+        // action on a ref that has gone still fails — as no match, which
+        // `strictlyOne` explains.
+        if (!element.isConnected) break
         if (containsDeep(root as Node, element) || root === element.ownerDocument) add(element)
         break
       }
@@ -482,9 +625,28 @@ function stepMatches(step: LocatorStep, roots: (ParentNode | Element)[]): Elemen
       case 'text': {
         // The smallest element whose own text matches, which is what
         // `getByText` means: a match on `<body>` is never what was wanted.
+        //
+        // Every element is asked for its text twice — once as itself and once
+        // as its parent's child — and `textOf` reads `innerText`, which forces
+        // layout. The walk is synchronous, so the page cannot change under it
+        // and one answer per element is the same answer.
+        const text = new Map<Element, string>()
+        const textFor = (element: Element): string => {
+          let held = text.get(element)
+          if (held === undefined) {
+            held = textOf(element)
+            text.set(element, held)
+          }
+          return held
+        }
         for (const element of descendants(root as ParentNode)) {
-          if (!matches(textOf(element), step.match)) continue
-          const inner = [...element.children].some((child) => matches(textOf(child), step.match))
+          if (!matches(textFor(element), step.match)) continue
+          let inner = false
+          for (const child of element.children) {
+            if (!matches(textFor(child), step.match)) continue
+            inner = true
+            break
+          }
           if (inner) continue
           add(element)
         }
@@ -504,24 +666,13 @@ function stepMatches(step: LocatorStep, roots: (ParentNode | Element)[]): Elemen
         }
         break
       }
-      case 'placeholder': {
-        for (const element of descendants(root as ParentNode)) {
-          const placeholder = element.getAttribute('placeholder')
-          if (placeholder !== null && matches(placeholder, step.match)) add(element)
-        }
-        break
-      }
-      case 'altText': {
-        for (const element of descendants(root as ParentNode)) {
-          const alt = element.getAttribute('alt')
-          if (alt !== null && matches(alt, step.match)) add(element)
-        }
-        break
-      }
+      case 'placeholder':
+      case 'altText':
       case 'title': {
+        const attribute = STEP_ATTRIBUTES[step.kind]
         for (const element of descendants(root as ParentNode)) {
-          const title = element.getAttribute('title')
-          if (title !== null && matches(title, step.match)) add(element)
+          const value = element.getAttribute(attribute)
+          if (value !== null && matches(value, step.match)) add(element)
         }
         break
       }
@@ -575,14 +726,24 @@ export function locateAll(chain: LocatorStep[], root: ParentNode = document): El
     }
     if (step.kind === 'and') {
       const list = current ?? []
-      const other = locateAll(step.chain, root)
-      current = list.filter((element) => other.includes(element))
+      const other = new Set(locateAll(step.chain, root))
+      current = list.filter((element) => other.has(element))
       continue
     }
     if (step.kind === 'or') {
       const list = current ?? []
-      const other = locateAll(step.chain, root)
-      current = [...list, ...other.filter((element) => !list.includes(element))]
+      const held = new Set(list)
+      // Document order, not this-side-then-that: `.first()` on an `or()` means
+      // the first of them on the page, and appending the second chain's
+      // matches made `getByRole('button').or(getByRole('link')).first()` answer
+      // a button below a link that came first.
+      current = [...list, ...locateAll(step.chain, root).filter((element) => !held.has(element))]
+        .sort((left, right) => {
+          const relation = left.compareDocumentPosition(right)
+          if ((relation & Node.DOCUMENT_POSITION_FOLLOWING) !== 0) return -1
+          if ((relation & Node.DOCUMENT_POSITION_PRECEDING) !== 0) return 1
+          return 0
+        })
       continue
     }
     current = stepMatches(step, current ?? [root])
@@ -595,7 +756,7 @@ export function locateAll(chain: LocatorStep[], root: ParentNode = document): El
  * @param chain - the steps.
  * @returns a short human-readable form.
  */
-export function describeChain(chain: LocatorStep[]): string {
+function describeChain(chain: LocatorStep[]): string {
   return chain.map((step) => {
     switch (step.kind) {
       case 'css': return `locator(${JSON.stringify(step.selector)})`
@@ -636,12 +797,36 @@ function describeElement(element: Element): string {
  * @returns the element.
  */
 export function locateOne(chain: LocatorStep[]): Element {
-  const found = locateAll(chain)
+  return strictlyOne(locateAll(chain), chain)
+}
+
+/**
+ * The same strictness, for a caller that has already resolved the chain.
+ *
+ * Split out because `performQuery` needs the matches *and* the strict answer,
+ * and calling `locateOne` after `locateAll` walked the document twice for
+ * every `textContent()` — on a chain with a text step, twice the forced
+ * layout, forty times a second while an `expect` retries.
+ * @param found - what the chain matched.
+ * @param chain - the steps, for the message.
+ * @returns the one element.
+ */
+function strictlyOne(found: Element[], chain: LocatorStep[]): Element {
   if (found.length === 1) {
     const only = found[0]
     if (only !== undefined) return only
   }
-  if (found.length === 0) throw new Error(`no element matches ${describeChain(chain)}`)
+  if (found.length === 0) {
+    // A ref is the one selector that goes stale rather than simply not
+    // matching yet, and it is the likeliest reason for an empty result — the
+    // handles are re-minted by every look at the page.
+    const stale = chain.some((step) => step.kind === 'ariaRef')
+    throw new Error(`no element matches ${describeChain(chain)}`
+      + (stale
+        ? ' — aria refs come from the most recent look at this page, are replaced by the next one, and name'
+          + ' nothing once the page has re-rendered. Take a fresh snapshot.'
+        : ''))
+  }
   throw new Error(
     `${describeChain(chain)} matches ${String(found.length)} elements, and an action needs exactly one. `
     + `Narrow it with .filter(), .nth(), .first(), or a more specific name. They are: `
@@ -671,6 +856,26 @@ export interface Actionability {
 }
 
 /**
+ * Whether one element is the other, or holds it — through shadow roots.
+ *
+ * `Node.contains` stops at a shadow boundary, so a custom element whose whole
+ * appearance lives in its own shadow root was reported as occluded by its own
+ * content: the point test landed on the inner button, and the host did not
+ * "contain" it.
+ * @param target - the element being asked about.
+ * @param hit - what the point test found.
+ * @returns whether a click at that point reaches the target.
+ */
+function reaches(target: Element, hit: Element): boolean {
+  let node: Node | null = hit
+  while (node !== null) {
+    if (node === target) return true
+    node = node.parentNode ?? (node instanceof ShadowRoot ? node.host : null)
+  }
+  return false
+}
+
+/**
  * The element the browser would deliver a click at a point to.
  * @param document_ - the document to ask.
  * @param x - viewport x.
@@ -691,12 +896,13 @@ function topmostAt(document_: Document, x: number, y: number): Element | null {
 /**
  * Check everything that has to be true before an element can be clicked.
  * @param element - the target.
- * @param options - whether the element must also receive events.
+ * @param options - whether the element must also receive events, and whether
+ *   the answer needs the element described.
  * @returns what was found.
  */
 export function checkActionability(
   element: Element | undefined,
-  options: { requireEvents?: boolean, previous?: DOMRect } = {},
+  options: { requireEvents?: boolean, previous?: DOMRect, describe?: boolean } = {},
 ): Actionability {
   if (element === undefined) {
     return { found: false, attached: false, visible: false, stable: false, enabled: false, receivesEvents: false, inViewport: false, reason: 'no element matches' }
@@ -720,7 +926,7 @@ export function checkActionability(
     const y = rect.y + rect.height / 2
     const hit = topmostAt(element.ownerDocument, x, y)
     if (hit !== null) {
-      receivesEvents = hit === element || element.contains(hit) || hit.contains(element)
+      receivesEvents = reaches(element, hit) || hit.contains(element)
       if (!receivesEvents) occludedBy = describeElement(hit)
     }
   }
@@ -734,8 +940,10 @@ export function checkActionability(
     inViewport,
     rect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
     ...(occludedBy === undefined ? {} : { occludedBy }),
-    role: ariaRole(element),
-    name: accessibleName(element).slice(0, 80),
+    // `accessibleName` reads `innerText`, which forces layout. A poll that
+    // asks forty times a second does not need the element described until it
+    // gives up, so the caller that polls asks for it then instead.
+    ...(options.describe === false ? {} : { role: ariaRole(element), name: accessibleName(element).slice(0, 80) }),
   }
 }
 
@@ -750,11 +958,17 @@ export function checkActionability(
  * @param options - timeout, and whether occlusion matters.
  * @returns the element, once it is ready.
  */
-export async function waitForActionable(
+async function waitForActionable(
   chain: LocatorStep[],
-  options: { timeoutMs?: number, requireEvents?: boolean, force?: boolean, scroll?: boolean } = {},
+  options: {
+    timeoutMs?: number, requireEvents?: boolean, requireVisible?: boolean, force?: boolean, scroll?: boolean
+  } = {},
 ): Promise<Element> {
-  const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS)
+  // `bounded`, because a deadline of `Date.now() + NaN` is `NaN` and
+  // `Date.now() > NaN` is false for ever: one unreadable `timeout` turned this
+  // into a poll of the document that no timer could end.
+  const waitMs = bounded(options.timeoutMs, DEFAULT_ACTION_TIMEOUT_MS, 0, 600_000)
+  const deadline = Date.now() + waitMs
   let previous: DOMRect | undefined
   let last: Actionability | undefined
   for (;;) {
@@ -776,23 +990,32 @@ export async function waitForActionable(
       const state = checkActionability(element, {
         ...(options.requireEvents === undefined ? {} : { requireEvents: options.requireEvents }),
         ...(previous === undefined ? {} : { previous }),
+        describe: false,
       })
       last = state
-      if (state.attached && state.visible && state.enabled && state.stable && state.receivesEvents) return element
+      // `stable` is only an answer once there is something to compare against:
+      // with `previous` unset it is `true` by default, so acting on the first
+      // poll meant never comparing two rectangles at all and clicking a modal
+      // half way through sliding in. One more tick is what the guarantee costs.
+      const settled = previous !== undefined && state.stable
       previous = element.getBoundingClientRect()
+      if (state.attached && (state.visible || options.requireVisible === false)
+        && state.enabled && settled && state.receivesEvents) {
+        return element
+      }
     } else last = { found: false, attached: false, visible: false, stable: false, enabled: false, receivesEvents: false, inViewport: false, ...(error === undefined ? {} : { reason: error }) }
 
     if (Date.now() > deadline) {
       const detail = last?.reason ?? [
         last?.attached === false ? 'it is not attached to the document' : '',
-        last?.visible === false ? 'it is not visible' : '',
+        last?.visible === false && options.requireVisible !== false ? 'it is not visible' : '',
         last?.enabled === false ? 'it is disabled' : '',
         last?.stable === false ? 'it is still moving' : '',
         last?.receivesEvents === false
           ? `it does not receive pointer events${last.occludedBy === undefined ? '' : ` — ${last.occludedBy} is on top of it`}`
           : '',
       ].filter((part) => part !== '').join(', ')
-      throw new Error(`timed out after ${String(options.timeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS)}ms waiting for `
+      throw new Error(`timed out after ${String(waitMs)}ms waiting for `
         + `${describeChain(chain)}: ${detail === '' ? 'it never became actionable' : detail}`)
     }
     await new Promise((resolve) => setTimeout(resolve, POLL_MS))
@@ -896,27 +1119,91 @@ function setValue(element: HTMLInputElement | HTMLTextAreaElement, value: string
  */
 function dispatchKey(element: Element, key: string, modifiers: string[] = []): boolean {
   const flags = modifierFlags(modifiers)
-  const code = KEY_CODES[key] ?? (key.length === 1
-    ? (/[a-zA-Z]/.test(key) ? `Key${key.toUpperCase()}` : /[0-9]/.test(key) ? `Digit${key}` : key)
-    : key)
-  const init: KeyboardEventInit = { key, code, bubbles: true, cancelable: true, composed: true, ...flags }
+  const init: KeyboardEventInit = {
+    key, code: keyCodeFor(key), bubbles: true, cancelable: true, composed: true, ...flags,
+  }
   const down = new KeyboardEvent('keydown', init)
   const delivered = element.dispatchEvent(down)
-  if (delivered && key.length === 1 && !flags.ctrlKey && !flags.metaKey) {
-    insertText(element, key)
+  // The default action, which no synthetic keydown performs on its own. While
+  // only printable characters had one, `press('Backspace')` fired a keydown, a
+  // keyup and nothing else, and reported `{ok: true}` — so a body that cleared
+  // a field one press at a time was told twenty times that it had worked.
+  if (delivered && !flags.ctrlKey && !flags.metaKey) {
+    if (key.length === 1) insertText(element, key)
+    else editByKey(element, key)
   }
   element.dispatchEvent(new KeyboardEvent('keyup', init))
   return !delivered
 }
 
-/** Keys whose `code` is not derivable from the key name. */
-const KEY_CODES: Record<string, string> = {
+/**
+ * The editing a named key does to a field, for the keys that do any.
+ *
+ * Only the ones whose effect is unambiguous and local: the two deletions and
+ * the four caret moves. Everything else — `Tab`, `Escape`, `PageUp` — belongs
+ * to the page, which has had the keydown and can act on it.
+ * @param element - what has focus.
+ * @param key - the key name.
+ */
+function editByKey(element: Element, key: string): void {
+  if (!(element instanceof HTMLInputElement) && !(element instanceof HTMLTextAreaElement)) return
+  const length = element.value.length
+  const start = element.selectionStart ?? length
+  const end = element.selectionEnd ?? length
+  const caret = (at: number): void => {
+    try {
+      element.setSelectionRange(at, at)
+    } catch {
+      // An input type with no selection — `number` and `email` among them.
+    }
+  }
+  const cut = (from: number, to: number, inputType: string): void => {
+    if (from >= to) return
+    setValue(element, element.value.slice(0, from) + element.value.slice(to))
+    caret(from)
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType }))
+  }
+  switch (key) {
+    case 'Backspace':
+      cut(start === end ? Math.max(0, start - 1) : start, end, 'deleteContentBackward')
+      return
+    case 'Delete':
+      cut(start, start === end ? Math.min(length, end + 1) : end, 'deleteContentForward')
+      return
+    case 'ArrowLeft': caret(Math.max(0, start - 1)); return
+    case 'ArrowRight': caret(Math.min(length, end + 1)); return
+    case 'Home': caret(0); return
+    case 'End': caret(length); return
+    default:
+  }
+}
+
+/** Keys whose `code` is not derivable from the key name. Prototype-less; see {@link IMPLICIT_ROLES}. */
+const KEY_CODES: Record<string, string> = Object.assign(Object.create(null) as Record<string, string>, {
   Enter: 'Enter', Tab: 'Tab', Escape: 'Escape', Backspace: 'Backspace', Delete: 'Delete',
   ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight',
   Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', ' ': 'Space', Space: 'Space',
   Control: 'ControlLeft', Shift: 'ShiftLeft', Alt: 'AltLeft', Meta: 'MetaLeft',
   F1: 'F1', F2: 'F2', F3: 'F3', F4: 'F4', F5: 'F5', F6: 'F6', F7: 'F7', F8: 'F8',
   F9: 'F9', F10: 'F10', F11: 'F11', F12: 'F12',
+})
+
+/**
+ * The `code` a key press should carry.
+ *
+ * Exported because `src/browser/frame.ts` presses keys too, for the one-shot
+ * `browser_key` tool. While it kept its own shorter table the two halves of
+ * this machine disagreed about the same keystroke — a digit arrived as
+ * `Key1` from one and `Digit1` from the other, and `Shift` was in neither.
+ * @param key - the key name, as `KeyboardEvent.key` spells it.
+ * @returns what `KeyboardEvent.code` should be.
+ */
+export function keyCodeFor(key: string): string {
+  const known = KEY_CODES[key]
+  if (known !== undefined) return known
+  if (key.length !== 1) return key
+  if (/[a-zA-Z]/.test(key)) return `Key${key.toUpperCase()}`
+  return /[0-9]/.test(key) ? `Digit${key}` : key
 }
 
 /**
@@ -970,15 +1257,24 @@ export interface WireFile {
 }
 
 /**
- * Decode base64 into bytes.
- * @param text - the encoded bytes.
- * @returns the bytes.
+ * Put files into a file input and tell the page they arrived.
+ *
+ * Shared because there are two ways in and they have to be the same one: a
+ * task calling `setInputFiles()` on a locator, and the host answering a file
+ * chooser the page itself opened.
+ * @param input - the `<input type="file">`.
+ * @param files - what to put in it.
+ * @returns how many files it now holds.
  */
-function fromBase64(text: string): Uint8Array<ArrayBuffer> {
-  const binary = atob(text)
-  const bytes = new Uint8Array(new ArrayBuffer(binary.length))
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
-  return bytes
+export function setFiles(input: HTMLInputElement, files: WireFile[]): number {
+  const transfer = new DataTransfer()
+  for (const file of files) {
+    transfer.items.add(new File([fromBase64(file.base64) as unknown as BlobPart], file.name, { type: file.mimeType }))
+  }
+  input.files = transfer.files
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  input.dispatchEvent(new Event('change', { bubbles: true }))
+  return transfer.files.length
 }
 
 /** What an action reports back. */
@@ -988,9 +1284,35 @@ export interface ActionResult {
   name?: string
   tag?: string
   value?: string
+  /**
+   * The values a `<select>` ended up with, as values rather than as one
+   * string: an option whose own value contains `, ` is an ordinary option, and
+   * the caller used to have to split the joined form back apart.
+   */
+  values?: string[]
   /** Set when a page's own handler cancelled the action's default. */
   prevented?: boolean
 }
+
+/**
+ * Actions that read or set state without delivering a pointer, and so do not
+ * need the element to be on top of the stack.
+ */
+const WITHOUT_POINTER = new Set(['focus', 'blur', 'selectOption', 'scrollIntoView', 'setInputFiles',
+  // `clear` is `fill('')` and takes the same branch of `performAction`, so a
+  // field under a transparent overlay could be written to and not emptied.
+  'fill', 'clear'])
+
+/**
+ * Actions that do not need the element rendered at all.
+ *
+ * The upload control almost every real page has is
+ * `<input type="file" style="display:none">` behind a styled label, so
+ * requiring visibility here meant `setInputFiles()` — the way this machine
+ * documents uploading a file — timed out on the ordinary case with "it is not
+ * visible". Playwright does not check it either.
+ */
+const WITHOUT_VISIBILITY = new Set(['setInputFiles', 'focus', 'blur'])
 
 /**
  * Perform one action on the element a chain names.
@@ -1011,10 +1333,8 @@ export async function performAction(
   const wait = {
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     force,
-    // Reading state does not need the element to be on top of the stack; only
-    // the actions that deliver a pointer do.
-    requireEvents: action !== 'focus' && action !== 'blur' && action !== 'selectOption'
-      && action !== 'scrollIntoView' && action !== 'setInputFiles' && action !== 'fill',
+    requireEvents: !WITHOUT_POINTER.has(action),
+    requireVisible: !WITHOUT_VISIBILITY.has(action),
   }
   const element = await waitForActionable(chain, wait)
   const described = { role: ariaRole(element), name: accessibleName(element).slice(0, 80), tag: element.tagName.toLowerCase() }
@@ -1043,9 +1363,17 @@ export async function performAction(
       element.dispatchEvent(new MouseEvent('mousemove', shared))
       return { ok: true, ...described }
     }
+    // `clear` is `fill('')`, and this is the branch that says so. Written out
+    // twice they had already drifted: the copy skipped the read-only guard, so
+    // `clear()` emptied a field `fill('')` refuses, and it fired `input`
+    // without `change` on a contenteditable where `fill` fired `change`
+    // without `input` — two event streams for one operation.
+    case 'clear':
     case 'fill': {
-      const value = String(args.value ?? '')
-      if (element instanceof HTMLSelectElement) throw new Error('fill() does not work on a <select>; use selectOption()')
+      const value = action === 'clear' ? '' : String(args.value ?? '')
+      if (element instanceof HTMLSelectElement) {
+        throw new Error(`${action}() does not work on a <select>; use selectOption()`)
+      }
       if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
         if (element.readOnly) throw new Error('that field is read-only')
         element.focus({ preventScroll: true })
@@ -1064,22 +1392,8 @@ export async function performAction(
         editable.dispatchEvent(new Event('change', { bubbles: true }))
         return { ok: true, ...described, value: (editable.innerText ?? '').slice(0, 200) }
       }
-      throw new Error(`${described.tag} is not a field that accepts text; fill() needs an input, a textarea or a contenteditable`)
-    }
-    case 'clear': {
-      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-        element.focus({ preventScroll: true })
-        setValue(element, '')
-        element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'deleteContentBackward' }))
-        element.dispatchEvent(new Event('change', { bubbles: true }))
-        return { ok: true, ...described, value: '' }
-      }
-      if ((element as HTMLElement).isContentEditable) {
-        ;(element as HTMLElement).textContent = ''
-        element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'deleteContentBackward' }))
-        return { ok: true, ...described, value: '' }
-      }
-      throw new Error(`${described.tag} holds no value to clear`)
+      throw new Error(`${described.tag} is not a field that accepts text; `
+        + `${action}() needs an input, a textarea or a contenteditable`)
     }
     case 'type':
     case 'pressSequentially': {
@@ -1115,9 +1429,18 @@ export async function performAction(
     case 'uncheck':
     case 'setChecked': {
       const wanted = action === 'check' ? true : action === 'uncheck' ? false : args.checked === true
-      const before = isChecked(element)
-      if (before !== wanted) dispatchClick(element)
-      const after = isChecked(element)
+      if (isChecked(element) !== wanted) dispatchClick(element)
+      // Polled, not read on the next line. A native `<input type=checkbox>`
+      // flips synchronously, but a `<div role="checkbox">` whose handler awaits
+      // a save before setting `aria-checked` does not — and reading once meant
+      // a click that had landed was reported as one the page cancelled, which
+      // invites a retry that toggles it back.
+      let after = isChecked(element)
+      const deadline = Date.now() + (typeof args.timeout === 'number' ? args.timeout : DEFAULT_ACTION_TIMEOUT_MS)
+      while (after !== wanted && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS))
+        after = isChecked(element)
+      }
       if (after !== wanted) {
         // The page took the click and did not change the state, which for a
         // checkbox means a handler cancelled it. Setting the property directly
@@ -1130,8 +1453,10 @@ export async function performAction(
     case 'selectOption': {
       if (!(element instanceof HTMLSelectElement)) throw new Error('selectOption() needs a <select>')
       const wanted = (Array.isArray(args.values) ? args.values : [args.values]) as (string | { value?: string, label?: string, index?: number })[]
-      const chosen: string[] = []
-      for (const option of element.options) option.selected = false
+      // Every option is resolved before anything is selected. Clearing first
+      // and then throwing on the third of four names left the `<select>` with
+      // nothing chosen — a page changed by a call that reported failure.
+      const picked: HTMLOptionElement[] = []
       for (const entry of wanted) {
         if (entry === undefined || entry === null) continue
         const option = typeof entry === 'string'
@@ -1144,12 +1469,20 @@ export async function performAction(
           throw new Error(`no option ${JSON.stringify(entry)}; the <select> offers `
             + [...element.options].map((candidate) => candidate.value).join(', '))
         }
+        picked.push(option)
+      }
+      const chosen: string[] = []
+      for (const option of element.options) option.selected = false
+      for (const option of picked) {
         option.selected = true
         chosen.push(option.value)
       }
       element.dispatchEvent(new Event('input', { bubbles: true }))
       element.dispatchEvent(new Event('change', { bubbles: true }))
-      return { ok: true, ...described, value: chosen.join(', ') }
+      // The values as an array, not joined: `<option value="Smith, John">` is
+      // an ordinary option, and a caller splitting a joined string on `', '`
+      // turned one selection into two.
+      return { ok: true, ...described, values: chosen, value: chosen.join(', ') }
     }
     case 'focus': {
       if (element instanceof HTMLElement) element.focus({ preventScroll: true })
@@ -1179,13 +1512,7 @@ export async function performAction(
       if (!(element instanceof HTMLInputElement) || element.type !== 'file') {
         throw new Error('setInputFiles() needs an <input type="file">')
       }
-      const transfer = new DataTransfer()
-      for (const file of files) {
-        transfer.items.add(new File([fromBase64(file.base64) as unknown as BlobPart], file.name, { type: file.mimeType }))
-      }
-      element.files = transfer.files
-      element.dispatchEvent(new Event('input', { bubbles: true }))
-      element.dispatchEvent(new Event('change', { bubbles: true }))
+      setFiles(element, files)
       return { ok: true, ...described, value: files.map((file) => file.name).join(', ') }
     }
     case 'dragTo': {
@@ -1216,6 +1543,13 @@ export async function performAction(
 // ---------------------------------------------------------------------------
 
 /**
+ * The state queries that answer for a missing element rather than throwing: a
+ * page where the error banner is gone should report `isVisible() === false`,
+ * which is what a check written against it expects.
+ */
+const ANSWERED_WHEN_MISSING = new Set(['isVisible', 'isHidden'])
+
+/**
  * Read something from the element or elements a chain names.
  *
  * The queries that return one value resolve strictly; the ones that are about
@@ -1241,13 +1575,9 @@ export function performQuery(chain: LocatorStep[], query: string, args: Record<s
     default: break
   }
 
-  // The state queries answer for a missing element rather than throwing: a
-  // page where the error banner is gone should report `isVisible() === false`,
-  // which is what a check written against it expects.
-  const optional = new Set(['isVisible', 'isHidden'])
   const found = locateAll(chain)
-  if (found.length === 0 && optional.has(query)) return query === 'isHidden'
-  const element = locateOne(chain)
+  if (found.length === 0 && ANSWERED_WHEN_MISSING.has(query)) return query === 'isHidden'
+  const element = strictlyOne(found, chain)
 
   switch (query) {
     case 'textContent': return element.textContent
@@ -1267,7 +1597,11 @@ export function performQuery(chain: LocatorStep[], query: string, args: Record<s
     case 'isDisabled': return isDisabled(element)
     case 'isEditable': return isEditable(element)
     case 'isChecked': return isChecked(element)
-    case 'isFocused': return element.ownerDocument.activeElement === element
+    // `activeDeep`, not `ownerDocument.activeElement`: the document only ever
+    // names the outermost shadow host, so a field inside a web component that
+    // had just been clicked reported `isFocused()` false and `toBeFocused()`
+    // retried to its timeout — while `focusInfo` named the same element.
+    case 'isFocused': return activeDeep() === element
     case 'boundingBox': {
       const rect = element.getBoundingClientRect()
       if (rect.width === 0 && rect.height === 0) return null
@@ -1276,7 +1610,10 @@ export function performQuery(chain: LocatorStep[], query: string, args: Record<s
     case 'describe': return {
       tag: element.tagName.toLowerCase(),
       role: ariaRole(element),
-      name: accessibleName(element),
+      // Capped like every other name that reaches the model: an `aria-label`
+      // is whatever the page wrote in it, and one element's name should not be
+      // able to be the whole of a tool result.
+      name: accessibleName(element).slice(0, 120),
       visible: isVisible(element),
       enabled: !isDisabled(element),
     }
@@ -1301,7 +1638,7 @@ export type LocatorState = 'attached' | 'detached' | 'visible' | 'hidden'
  */
 export async function waitForState(chain: LocatorStep[], state: LocatorState, timeoutMs: number): Promise<{ waitedMs: number }> {
   const started = Date.now()
-  const deadline = started + timeoutMs
+  const deadline = started + bounded(timeoutMs, DEFAULT_ACTION_TIMEOUT_MS, 0, 600_000)
   for (;;) {
     const found = locateAll(chain)
     const first = found[0]
@@ -1335,11 +1672,26 @@ export async function waitForFunction(
   timeoutMs: number,
   pollMs = 100,
 ): Promise<unknown> {
-  const deadline = Date.now() + timeoutMs
-  const predicate = (0, eval)(`(${source})`) as (value: unknown) => unknown
+  const deadline = Date.now() + bounded(timeoutMs, DEFAULT_ACTION_TIMEOUT_MS, 0, 600_000)
+  // A function is called; anything else is an expression, and an expression is
+  // re-evaluated on every poll — which is the whole point of one, and is what
+  // the API this imitates does. Calling the *result* meant
+  // `waitForFunction('window.__ready === true')` threw "predicate is not a
+  // function" on the first pass instead of waiting for anything.
+  const compiled: unknown = (0, eval)(`(${source})`)
+  // Compiled once, called each poll. Re-*evaluating* the expression is the
+  // point of a wait; re-*parsing* it is not, and `(0, eval)` on every pass of a
+  // 30s wait is three hundred fresh scripts the engine cannot reuse.
+  const predicate = typeof compiled === 'function'
+    ? compiled as (value: unknown) => unknown
+    : new Function(`return (${source})`) as () => unknown
   for (;;) {
     const value: unknown = await predicate(argument)
-    if (value !== false && value !== null && value !== undefined && value !== 0 && value !== '') return value
+    // Truthiness, not a list of the falsy values somebody remembered: `NaN`
+    // is what `Number(cell)` gives for a total that has not arrived, and it
+    // passed every one of those comparisons — so the wait returned at once
+    // and the body read a page that had not updated.
+    if (value) return value
     if (Date.now() > deadline) throw new Error(`timed out after ${String(timeoutMs)}ms waiting for the predicate to pass`)
     await new Promise((resolve) => setTimeout(resolve, pollMs))
   }
@@ -1348,6 +1700,16 @@ export async function waitForFunction(
 // ---------------------------------------------------------------------------
 // the ARIA snapshot
 // ---------------------------------------------------------------------------
+
+/**
+ * How far into the DOM the tree walk goes, whatever the reported depth says.
+ *
+ * The `depth` option counts levels of the *answer*, and a folded-away wrapper
+ * does not add one — so on a document that is a thousand nested `<div>`s the
+ * option bounds nothing, and the recursion is bounded by the stack. This is
+ * the other bound: past it the branch is pruned and the answer says it was.
+ */
+const MAX_TREE_HOPS = 200
 
 /** Roles that carry no information on their own and are folded away. */
 const TRANSPARENT_ROLES = new Set(['generic', 'presentation', 'none', 'paragraph', 'document'])
@@ -1367,7 +1729,7 @@ function stateOf(element: Element): string[] {
     flags.push('checked')
   }
   if (isDisabled(element)) flags.push('disabled')
-  if (element.ownerDocument.activeElement === element) flags.push('active')
+  if (activeDeep() === element) flags.push('active')
   return flags
 }
 
@@ -1400,24 +1762,41 @@ export function ariaSnapshot(options: {
   refs?: boolean
   interestingOnly?: boolean
 } = {}): AriaSnapshot {
-  const maxDepth = Math.max(1, Math.min(options.depth ?? 20, 30))
-  const maxChars = Math.max(256, Math.min(options.maxChars ?? 20_000, 200_000))
+  const maxDepth = bounded(options.depth, 20, 1, 30)
+  const maxChars = bounded(options.maxChars, 20_000, 256, 200_000)
   const wantRefs = options.refs !== false
-  if (wantRefs && options.root === undefined) {
-    ariaRefs.clear()
-    refCounter = 0
-  }
+  if (wantRefs && options.root === undefined) resetAriaRefs()
   const lines: string[] = []
+  /** Whether anything was left out, for whichever reason. */
   let truncated = false
+  /** Whether the *budget* ran out, which is the only reason to stop walking. */
+  let stopped = false
   let used = 0
 
-  const walk = (element: Element, depth: number): void => {
-    if (truncated) return
+  // `isAriaHidden` climbs to the root of the tree, and this walk returns at the
+  // first hidden element it meets — so below the snapshot's own root, an
+  // element's own two attributes are the whole question. The climb is done
+  // once, for the root, rather than once per element at O(depth) each.
+  const hiddenHere = (element: Element): boolean =>
+    element.getAttribute('aria-hidden') === 'true' || element.hasAttribute('inert')
+
+  const walk = (element: Element, depth: number, hops: number): void => {
+    if (stopped) return
+    // Too deep prunes this branch and nothing else. Sharing the flag with the
+    // budget below meant the first over-deep node abandoned every sibling
+    // after it — so a page with one deep menu reported almost nothing.
     if (depth > maxDepth) { truncated = true; return }
-    if (isAriaHidden(element)) return
-    if (!isVisible(element) && options.interestingOnly !== false) {
+    // `depth` counts what is *reported*, and a folded-away wrapper is not — so
+    // a chain of plain `<div>`s advances `hops` and not `depth`, and without
+    // this bound the walk of a deeply nested layout was limited by the JS
+    // stack rather than by anything the caller asked for.
+    if (hops > MAX_TREE_HOPS) { truncated = true; return }
+    if (hiddenHere(element)) return
+    if (!isRendered(element) && options.interestingOnly !== false) {
       // Invisible subtrees are skipped rather than reported: a menu that is not
       // open is not on the page, and a model told about it will try to click it.
+      // `isRendered` rather than `isVisible`, because this prunes a subtree and
+      // a flat container is not an empty one — see {@link isRendered}.
       return
     }
     const role = ariaRole(element)
@@ -1446,27 +1825,26 @@ export function ariaSnapshot(options: {
       }
       let ref = ''
       if (wantRefs) {
-        ref = `e${String(++refCounter)}`
-        ariaRefs.set(ref, element)
+        ref = noteAriaRef(element)
         state.push(`ref=${ref}`)
       }
       const label = plain ? 'text' : role
       const line = `${'  '.repeat(Math.max(0, depth))}- ${label}${name === '' ? '' : ` ${JSON.stringify(name.slice(0, 120))}`}`
         + (state.length === 0 ? '' : ` [${state.join('] [')}]`)
       used += line.length + 1
-      if (used > maxChars) { truncated = true; return }
+      if (used > maxChars) { truncated = true; stopped = true; return }
       lines.push(line)
     }
     const shadow = (element as HTMLElement).shadowRoot
     if (shadow !== null && shadow !== undefined) {
-      for (const child of shadow.children) walk(child, transparent ? depth : depth + 1)
+      for (const child of shadow.children) walk(child, transparent ? depth : depth + 1, hops + 1)
     }
-    for (const child of children) walk(child, transparent ? depth : depth + 1)
+    for (const child of children) walk(child, transparent ? depth : depth + 1, hops + 1)
   }
 
   const root = options.root ?? document.body
-  if (root !== null && root !== undefined) walk(root, 0)
-  return { text: lines.join('\n'), refs: refCounter, truncated }
+  if (root !== null && root !== undefined && !isAriaHidden(root)) walk(root, 0, 0)
+  return { text: lines.join('\n'), refs: ariaRefs.size, truncated }
 }
 
 /** Counter behind the refs an ARIA snapshot hands out. */
@@ -1518,9 +1896,9 @@ function pathTo(element: Element): string {
  * about to type needs to know it is really the textbox three roots down. When
  * focus is in an iframe this says so and names it, because this document
  * cannot see inside one.
- * @returns the focused element's identity and selection.
+ * @returns the focused element, which is not always `document.activeElement`.
  */
-export function focusInfo(): FocusInfo {
+export function activeDeep(): Element {
   let element: Element = document.activeElement ?? document.body
   for (;;) {
     const shadow = (element as HTMLElement).shadowRoot
@@ -1528,6 +1906,15 @@ export function focusInfo(): FocusInfo {
     if (inner === null || inner === undefined) break
     element = inner
   }
+  return element
+}
+
+/**
+ * What is focused, followed through open shadow roots.
+ * @returns the focused element's identity and selection.
+ */
+export function focusInfo(): FocusInfo {
+  const element = activeDeep()
   const info: FocusInfo = {
     tag: element.tagName.toLowerCase(),
     role: ariaRole(element),
@@ -1639,7 +2026,11 @@ export function hitTest(at: { x?: number, y?: number, chain?: LocatorStep[] }): 
     role: ariaRole(element),
     name: accessibleName(element).slice(0, 120),
     path: pathTo(element),
-    ...(wanted === undefined ? {} : { matches: element === wanted || wanted.contains(element) || element.contains(wanted) }),
+    // `reaches`, not `Node.contains`: the latter stops at a shadow boundary, so
+    // a web component whose button lives in its own shadow root reported
+    // `matches: false` for a point `checkActionability` calls actionable — two
+    // helpers contradicting each other about the same element.
+    ...(wanted === undefined ? {} : { matches: reaches(wanted, element) || reaches(element, wanted) }),
     ...(element instanceof HTMLIFrameElement ? { inFrame: element.getAttribute('data-wb-frame') ?? 'unknown' } : {}),
   }
 }
@@ -1653,6 +2044,13 @@ export interface PasteResult {
   focusBefore: string
   focusAfter: string
   accepted: boolean
+}
+
+/** Escape one cell for the HTML flavour of a paste. */
+function escapeCell(text: string): string {
+  return text.replace(/[&<>"]/g, (character) => (
+    character === '&' ? '&amp;' : character === '<' ? '&lt;' : character === '>' ? '&gt;' : '&quot;'
+  ))
 }
 
 /**
@@ -1674,8 +2072,11 @@ export interface PasteResult {
  */
 export function pasteText(text: string, options: { format?: 'text' | 'tsv', requireEditableFocus?: boolean } = {}): PasteResult {
   const before = focusInfo()
-  const target = document.activeElement
-  if (target === null || target === document.body) {
+  // The same descent `focusInfo` makes, or a field inside a web component is
+  // pasted into the component that hosts it — which handles nothing, and then
+  // `requireEditableFocus` refuses a field that was just clicked.
+  const target = activeDeep()
+  if (target === document.body) {
     throw new Error('nothing is focused; click the field first, then paste')
   }
   if (options.requireEditableFocus === true && !isEditable(target)) {
@@ -1684,8 +2085,12 @@ export function pasteText(text: string, options: { format?: 'text' | 'tsv', requ
   const transfer = new DataTransfer()
   transfer.setData('text/plain', text)
   if (options.format === 'tsv') {
+    // Escaped, because this is markup and the text is not: a cell holding
+    // `a<b` closed nothing and swallowed the rest of the row, and one holding
+    // `</td></tr></table><img src=x onerror=…>` put whatever it liked into the
+    // editor that reads the HTML flavour.
     transfer.setData('text/html', `<table><tr>${text.split('\n')
-      .map((row) => `<td>${row.split('\t').join('</td><td>')}</td>`).join('</tr><tr>')}</tr></table>`)
+      .map((row) => `<td>${row.split('\t').map(escapeCell).join('</td><td>')}</td>`).join('</tr><tr>')}</tr></table>`)
   }
   const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true, clipboardData: transfer })
   const delivered = target.dispatchEvent(event)
@@ -1773,12 +2178,17 @@ export function mouseAction(action: string, args: Record<string, unknown>): HitT
         })(),
       })
       break
-    case 'wheel':
-      element.dispatchEvent(new WheelEvent('wheel', {
+    case 'wheel': {
+      const wheel = new WheelEvent('wheel', {
         ...shared, deltaX: Number(args.deltaX ?? 0), deltaY: Number(args.deltaY ?? 0),
-      }))
-      window.scrollBy(Number(args.deltaX ?? 0), Number(args.deltaY ?? 0))
+      })
+      // The document scrolls only where the page did not do the scrolling
+      // itself. A map or a canvas that calls `preventDefault()` on `wheel` was
+      // being zoomed *and* scrolled out from under the coordinates the body had
+      // just measured. `dispatchClick` and `dispatchKey` read the same answer.
+      if (element.dispatchEvent(wheel)) window.scrollBy(wheel.deltaX, wheel.deltaY)
       break
+    }
     default:
       throw new Error(`unknown mouse action ${action}`)
   }
@@ -1801,7 +2211,10 @@ export function mouseAction(action: string, args: Record<string, unknown>): HitT
  * @returns where the keys went.
  */
 export async function keyboardAction(action: string, args: Record<string, unknown>): Promise<{ focus: string, action: string }> {
-  const target = document.activeElement ?? document.body
+  // Through open shadow roots, the way `focusInfo` reports it: a keystroke
+  // dispatched at the component hosting the field never reaches the field, and
+  // the result named the field anyway.
+  const target = activeDeep()
   switch (action) {
     case 'press': {
       const parts = String(args.key ?? '').split('+')
@@ -1813,7 +2226,11 @@ export async function keyboardAction(action: string, args: Record<string, unknow
     case 'up': {
       const key = String(args.key ?? '')
       target.dispatchEvent(new KeyboardEvent(action === 'down' ? 'keydown' : 'keyup', {
-        key, code: KEY_CODES[key] ?? key, bubbles: true, cancelable: true, composed: true,
+        // `keyCodeFor`, which is what `press` and `browser_key` both use: the
+        // bare table answers `code: 'a'` where every other path answers
+        // `'KeyA'`, so a page switching on `event.code` saw the press and not
+        // the hold, and a down/press/up sequence silently did nothing.
+        key, code: keyCodeFor(key), bubbles: true, cancelable: true, composed: true,
       }))
       break
     }
@@ -1824,7 +2241,7 @@ export async function keyboardAction(action: string, args: Record<string, unknow
       const text = String(args.text ?? '')
       const delay = Number(args.delay ?? 0)
       for (const character of [...text]) {
-        dispatchKey(document.activeElement ?? target, character)
+        dispatchKey(activeDeep(), character)
         if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
       }
       break
@@ -1872,7 +2289,7 @@ export function observe(options: {
 } = {}): Observation {
   const snapshot = ariaSnapshot({
     ...(options.depth === undefined ? {} : { depth: options.depth }),
-    maxChars: Math.max(256, Math.min(options.maxChars ?? 6000, 20_000)),
+    maxChars: bounded(options.maxChars, 6000, 256, 20_000),
     ...(options.boxes === undefined ? {} : { boxes: options.boxes }),
   })
   const observation: Observation = {

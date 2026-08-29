@@ -28,7 +28,7 @@ import { forgetDisk, forgetLegacyDisk, storeDisk, storedDisks } from '../runtime
 import { isBrowser, isEmulated, runtimeSelection, setRuntimeSelection, type RuntimeSelection } from '../runtime/selection.ts'
 import { keepScreenshots, setKeepScreenshots } from '../runtime/screenshots.ts'
 import { VIEWPORT, browserMachine, type MachineEvent } from '../browser/engine.ts'
-import { claimTab, findTaskSpace, taskSpace, taskSpaces } from '../browser/task.ts'
+import { claimTab, findTaskSpace, observationTab, observePage, taskSpace, taskSpaces } from '../browser/task.ts'
 import { ripgrep } from '../runtime/ripgrep.ts'
 import type { PluginManager } from '../plugins/manager.ts'
 import { volume } from '../vfs/volume.ts'
@@ -411,10 +411,13 @@ export function publishMachineBridge(): void {
           findTaskSpace(name)?.resource(id, offset ?? 0, maxBytes),
         finish: (name: string, keep?: boolean) => findTaskSpace(name)?.finish(keep === true),
         observe: async (name: string, options?: Record<string, unknown>) => {
-          const space = findTaskSpace(name) ?? taskSpace(name)
-          const tab = space.activeTab() ?? browserMachine().tabs().find((entry) => entry.active)?.id
-          if (tab === undefined) throw new Error('no tab is open')
-          return space.observe(tab, options ?? {})
+          // Never minted here. `observePage` is a free function precisely so a
+          // look costs no task space; creating one would put a task nobody
+          // started into `list`, write its name into the ledger, and spend one
+          // of the eight slots on a read. `observationTab` is `browser_inspect`'s
+          // own resolution, so a suite driving this bridge takes the path the
+          // tool takes — including its refusals, which this had lost.
+          return observePage(observationTab(name), options ?? {})
         },
       },
     },

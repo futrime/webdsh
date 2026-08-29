@@ -39,20 +39,25 @@ const REFERENCES: Record<string, string> = {
   'references/machine.md': machineSource,
 }
 
-/** The one-line description discovery routes on. */
-const DESCRIPTION = 'Drive this session\'s browser machine with programs rather than one action at a time: '
-  + 'persistent task spaces, locators and retrying assertions, frames, popups, dialogs, downloads, uploads, '
-  + 'extraction and recovery. Use for any browsing job with a loop, a wait, or more than about three steps.'
-
 /**
- * Strip the frontmatter, which the registry takes as fields rather than text.
+ * Split a skill file into the fields its frontmatter states and the body.
+ *
+ * The registry takes the description as a field rather than as text, and the
+ * file states it once, at the top. Restating it here as a constant gave the
+ * same sentence two homes — and they had already drifted apart by the time
+ * anybody looked.
  * @param source - the markdown file.
- * @returns the body.
+ * @returns the description the frontmatter gives, and the body below it.
  */
-function body(source: string): string {
-  if (!source.startsWith('---\n')) return source
-  const end = source.indexOf('\n---\n', 4)
-  return end === -1 ? source : source.slice(end + 5)
+function parseSkill(source: string): { description: string, body: string } {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(source)
+  if (match === null) return { description: '', body: source }
+  const stated = /^description:[ \t]*(.*)$/m.exec(match[1] ?? '')?.[1]?.trim() ?? ''
+  // Unquoted, because YAML's quotes are not part of the value and the registry
+  // shows this string to the model: a `description: "Drive the browser"` was
+  // being offered with the quote characters still in it.
+  const description = /^(['"]).*\1$/s.test(stated) ? stated.slice(1, -1) : stated
+  return { description, body: source.slice(match[0].length) }
 }
 
 /**
@@ -65,10 +70,11 @@ export function registerBrowserSkill(ctx: Context): void {
   for (const [name, source] of Object.entries(REFERENCES)) {
     volume.writeFile(`${SKILL_ROOT}/${name}`, toBytes(source))
   }
+  const skill = parseSkill(skillSource)
   ctx.skills.register({
     name: 'browser',
-    description: DESCRIPTION,
-    content: body(skillSource),
+    description: skill.description,
+    content: skill.body,
     source: 'bundled',
     resourceBase: { kind: 'directory', path: SKILL_ROOT },
     path: `${SKILL_ROOT}/SKILL.md`,

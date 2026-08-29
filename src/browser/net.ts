@@ -46,7 +46,8 @@
  * page can do today.
  */
 
-import { proxyConfig } from '../net/cors-proxy.ts'
+import { proxyConfig, unproxiedUrl } from '../net/cors-proxy.ts'
+import { base64 } from './protocol.ts'
 
 /** A fetched resource, as the rewriter and the frame see it. */
 export interface Fetched {
@@ -122,33 +123,6 @@ function explain(url: URL, error: unknown): string {
 }
 
 /**
- * The URL a proxied response really came from.
- *
- * When a host refuses cross-origin reads the request is retried through the
- * configured proxy, and what comes back reports itself as
- * `https://proxy.example/https://news.example/` — which is then what the tab
- * calls itself, what `<base>` is set to, and what every relative link on the
- * page resolves against. That was tolerable while the machine only showed
- * pages; it stopped being tolerable once a task could wait on a URL, because
- * `page.waitForURL(/news\.example/)` would be waiting for a string the machine
- * had decided not to use.
- *
- * So the proxy is stripped back off. Only when what is left is an absolute URL
- * of its own: a template with something other than a prefix, or a proxy that
- * answers from its own origin, leaves the URL exactly as it arrived.
- * @param finalUrl - the URL the response reported.
- * @returns the URL the page should believe it is at.
- */
-function unproxied(finalUrl: string): string {
-  const template = proxyConfig().template
-  const prefix = template.split('{')[0] ?? ''
-  if (prefix === '' || !finalUrl.startsWith(prefix)) return finalUrl
-  const tail = finalUrl.slice(prefix.length)
-  const decoded = /^https?:\/\//i.test(tail) ? tail : decodeURIComponent(tail)
-  return /^https?:\/\//i.test(decoded) ? decoded : finalUrl
-}
-
-/**
  * Fetch one URL as the browser machine.
  *
  * Redirects are followed by `fetch` itself, so `response.url` is where the
@@ -192,7 +166,7 @@ export async function load(
     const contentType = response.headers.get('content-type') ?? ''
     const buffer = await response.arrayBuffer()
     return {
-      url: unproxied(response.url === '' ? url.href : response.url),
+      url: unproxiedUrl(response.url === '' ? url.href : response.url, url.href),
       status: response.status,
       type: contentType.split(';')[0]?.trim().toLowerCase() ?? '',
       contentType,
@@ -208,15 +182,10 @@ export async function load(
   }
 }
 
-/** Base64 for bytes, in chunks so a large resource does not blow the argument limit. */
-function base64(bytes: Uint8Array): string {
-  let binary = ''
-  const step = 0x8000
-  for (let offset = 0; offset < bytes.length; offset += step) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + step))
-  }
-  return btoa(binary)
-}
+// The codec both directions of every message channel here use. It lives in
+// `./protocol.ts` because the frame and the realm bundles need it too and
+// cannot import this module, which pulls in the whole fetch stack.
+export { base64, fromBase64 } from './protocol.ts'
 
 /**
  * A resource as a `data:` URL, which is the only shape the frame can use.

@@ -28,7 +28,9 @@ have happened. The procedure:
 1. `browser_tasks {action: "checkpoint", task}` — the live URL, how many pages,
    whether the document is answering.
 2. A `readOnly: true` run that inspects the application's own state: the order
-   list, the row count, the confirmation banner.
+   list, the row count, the confirmation banner. Read it with `innerText()`,
+   `getAttribute()` and `count()` — `evaluate` is refused in a read-only run,
+   because code you supply cannot be checked for whether it acts.
 3. Continue from what you observed. Repeat the action only when the evidence
    shows it did not happen.
 
@@ -53,13 +55,24 @@ operation.
 ## Generations
 
 Task spaces live in this page's memory. Reloading the harness starts a new
-generation: the previous generation's tasks, pages and globals are gone, and a
-call naming one fails with `GENERATION_MISMATCH` rather than quietly starting
-over. `browser_tasks {action: "list"}` prints the current generation.
+generation: the previous generation's tasks, pages and globals are gone. Naming
+one of them again gets a task space that is new and empty, and the result
+carries a `note` saying so — the machine writes the names down before the
+reload so that it can tell you rather than let you find out halfway through the
+next body. `browser_tasks {action: "list"}` prints the current generation.
 
 If that happens while a mutation was outstanding, treat it exactly as
-`mutation: possible`: inspect first, in a new task, read-only, and repeat only
-against evidence.
+`mutation: possible` — but note that a new task space has no page, and a
+`readOnly` run cannot open one, because `goto()` changes what the tab is
+showing. So the look comes first and separately:
+
+1. `browser_navigate {url}` to put the page back on screen. This opens a tab;
+   it does not act on the application.
+2. `browser_inspect` — no task space, no slot spent — or, if you need a loop,
+   `browser_task {task, readOnly: true, claimTab: "<the tab id>", code}`.
+   `claimTab` is what gives a read-only run a page to read.
+
+Repeat the action only against evidence.
 
 ## Large results
 

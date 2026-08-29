@@ -21,10 +21,14 @@ Two ways to drive it, and the second is the one this skill is about:
 ## Task spaces
 
 Every `browser_task` call names a task space. The first call creates it; later
-calls with the same name reuse its pages, its variables, its cookies and its
-login state. Use one short stable name for a whole job and its follow-ups —
-name it after the job, not the website, and keep every page of that job in it
-even when the flow crosses sites.
+calls with the same name reuse its pages and its variables. Cookies and stored
+data are the machine's, not the space's — one profile shared by every task —
+and nothing here can log in to anything; see "What differs from a desktop
+browser, and why".
+
+Use one short stable name for a whole job and its follow-ups — name it after
+the job, not the website, and keep every page of that job in it even when the
+flow crosses sites.
 
 ```
 browser_task {task: "check the changelog", code: "
@@ -193,3 +197,5 @@ running inside another page, not a decision that could have gone the other way.
   `triggerAndObserve`.
 - `references/recovery.md` — receipts, interrupted mutations, generations, and
   large results.
+- `references/machine.md` — what this browser is and is not: where its bytes
+  come from, what it cannot do, and which limits are the machine's own.

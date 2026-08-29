@@ -48,16 +48,15 @@ import { TOOL_ABORTED, defineTool } from '@deepseek-ai/dsh-tools'
 import { HarnessError, type ContentBlock, type ImageBlock } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import { VIEWPORT, browserMachine, type TabInfo } from '../browser/engine.ts'
-import { volume } from '../vfs/volume.ts'
 import { WORKSPACE_ROOT } from './seed.ts'
-import { dirname } from '../vfs/path.ts'
 import { proxyConfig } from '../net/cors-proxy.ts'
-import { fitToBudget, routeSeesImages, type Attachments } from './vision.ts'
+import { attachImage, fitToBudget, imagesReachTheModel, type AttachedImage } from './vision.ts'
 import { keepScreenshots } from '../runtime/screenshots.ts'
-import { routedToRuntime, runtimeWriteFile } from '../runtime/fs-bridge.ts'
 import {
-  DEFAULT_WAIT_MS, claimTab, findTaskSpace, observePage, taskSpace, taskSpaces, type Receipt,
+  DEFAULT_WAIT_MS, claimTab, findTaskSpace, observationTab, observePage, readFile, taskSpace, taskSpaces,
+  writeFile, type Receipt,
 } from '../browser/task.ts'
+import { bounded, fromBase64 } from '../browser/protocol.ts'
 import { registerBrowserSkill } from './browser-skill.ts'
 
 /** Services this row waits for before it applies. */
@@ -277,6 +276,11 @@ const TAB_OUTPUT = {
     title: { type: 'string', required: true },
     active: { type: 'boolean', required: true },
     loading: { type: 'boolean', required: true },
+    // Declared, because `TabInfo` always carries it and this schema refuses
+    // anything it has not been told about: an undeclared field on a required
+    // one is every navigation failing output validation rather than reporting
+    // the page it opened.
+    status: { type: 'integer', required: true },
     error: { type: 'string' },
     canGoBack: { type: 'boolean', required: true },
     canGoForward: { type: 'boolean', required: true },
@@ -772,14 +776,7 @@ interface Shot {
   url: string
   scale?: number
   of?: { width: number, height: number }
-  image?: {
-    attachmentId: string
-    mediaType: 'image/png'
-    bytes: number
-    width: number
-    height: number
-    name?: string
-  }
+  image?: AttachedImage
 }
 
 /** The visual mode. */
@@ -884,11 +881,7 @@ function registerScreenshot(ctx: Context): void {
       const taken = await browser.run('screenshot', { fullPage: args.fullPage === true }, args.tab) as {
         dataUrl: string, width: number, height: number
       }
-      const base64 = taken.dataUrl.slice(taken.dataUrl.indexOf(',') + 1)
-      const binary = atob(base64)
-      const raw = new Uint8Array(binary.length)
-      for (let index = 0; index < binary.length; index += 1) raw[index] = binary.charCodeAt(index)
-
+      const raw = fromBase64(taken.dataUrl.slice(taken.dataUrl.indexOf(',') + 1))
       const fitted = await fitToBudget(raw, taken.width, taken.height)
       const relative = args.path ?? `screenshots/page-${String(counter + 1)}.png`
       const path = relative.startsWith('/') ? relative : `${WORKSPACE_ROOT}/${relative}`
@@ -905,39 +898,14 @@ function registerScreenshot(ctx: Context): void {
         ...(fitted.scale === undefined ? {} : { scale: fitted.scale, of: { width: taken.width, height: taken.height } }),
       }
 
-      const attachments = ctx.get('attachments') as Attachments | undefined
-      let image: Shot['image']
-      if (attachments !== undefined && await routeSeesImages(ctx, exec)) {
-        try {
-          const saved = await attachments.saveImage({
-            data: fitted.bytes,
-            mediaType: 'image/png',
-            name: path.slice(path.lastIndexOf('/') + 1),
-          })
-          image = { ...saved, mediaType: 'image/png' }
-        } catch {
-          // A picture this deployment's image limits will not carry is still a
-          // picture worth having; the file below is what is left of it.
-        }
-      }
+      const image = await attachImage(ctx, exec, { bytes: fitted.bytes, path })
 
       // The file, when it is wanted or when it is all there is — the same rule
       // the machine's screen tool follows. See `src/runtime/screenshots.ts`.
       const write = args.path !== undefined || keepScreenshots() || image === undefined
       if (write) {
         if (args.path === undefined) counter += 1
-        // Into the filesystem the workspace actually is. This session's machine
-        // is a browser, so nothing stops the container from being the live one
-        // — and it is: the agent's own `read`, `glob` and the Files panel all
-        // go through it. A picture written to the page's volume instead is a
-        // file the tool names in its result and nobody can open. (The emulated
-        // machine has no container at all, so its screen tool writes where the
-        // workspace is there, which is the page.)
-        if (await routedToRuntime(path)) await runtimeWriteFile(path, fitted.bytes)
-        else {
-          volume.mkdirp(dirname(path))
-          volume.writeFile(path, fitted.bytes)
-        }
+        await writeFile(path, fitted.bytes)
       }
 
       return { ...result, ...(write ? { path } : {}), ...(image === undefined ? {} : { image }) }
@@ -1080,6 +1048,7 @@ function registerConsole(ctx: Context): void {
               properties: {
                 kind: { type: 'string', required: true },
                 message: { type: 'string', required: true },
+                answer: { type: 'string', required: true },
                 at: { type: 'number', required: true },
               },
             },
@@ -1090,7 +1059,7 @@ function registerConsole(ctx: Context): void {
         const logs = value as unknown as {
           console: { level: string, text: string }[]
           requests: { url: string, method: string, status: number, error?: string }[]
-          dialogs: { kind: string, message: string }[]
+          dialogs: { kind: string, message: string, answer: string }[]
         }
         const sections: string[] = []
         if (logs.console.length > 0) {
@@ -1104,7 +1073,8 @@ function registerConsole(ctx: Context): void {
         }
         if (logs.dialogs.length > 0) {
           sections.push(`dialogs (${String(logs.dialogs.length)}):\n`
-            + logs.dialogs.map((entry) => `  ${entry.kind}: ${entry.message}`).join('\n'))
+            + logs.dialogs.map((entry) => `  ${entry.kind}: ${entry.message}`
+              + `${entry.answer === '' ? '' : ` → answered ${entry.answer}`}`).join('\n'))
         }
         return [{ type: 'text' as const, text: sections.length === 0 ? 'Nothing logged.' : sections.join('\n\n') }]
       },
@@ -1112,13 +1082,18 @@ function registerConsole(ctx: Context): void {
     // eslint-disable-next-line @typescript-eslint/require-await
     async execute(args: { limit?: number, include?: string[], tab?: string }, exec) {
       if (exec.signal.aborted) aborted()
-      const limit = args.limit ?? 100
+      // Bounded rather than negated, the same way the frame's own log commands
+      // read it: `slice(-0)` is `slice(0)`, so asking for none returned every
+      // line there was, and a negative limit dropped the oldest entries and
+      // kept the rest.
+      const limit = bounded(args.limit, 100, 0, 1000)
       const wanted = new Set(args.include ?? ['console', 'requests', 'dialogs'])
       const logs = machine().logs(args.tab)
+      const last = <T>(entries: T[]): T[] => (limit === 0 ? [] : entries.slice(-limit))
       return {
-        console: wanted.has('console') ? logs.console.slice(-limit) : [],
-        requests: wanted.has('requests') ? logs.requests.slice(-limit) : [],
-        dialogs: wanted.has('dialogs') ? logs.dialogs.slice(-limit) : [],
+        console: wanted.has('console') ? last(logs.console) : [],
+        requests: wanted.has('requests') ? last(logs.requests) : [],
+        dialogs: wanted.has('dialogs') ? last(logs.dialogs) : [],
       }
     },
     presentCall: () => ({ card: 'generic' as const, title: 'page console', kind: 'read' as const }),
@@ -1398,14 +1373,7 @@ interface TaskResult {
   log?: string[]
   resource?: { id: string, bytes: number, preview: string }
   screenshots?: { path?: string, width: number, height: number, bytes: number }[]
-  images?: {
-    attachmentId: string
-    mediaType: 'image/png'
-    bytes: number
-    width: number
-    height: number
-    name?: string
-  }[]
+  images?: AttachedImage[]
   pages?: { tab: string, url: string }[]
   focus?: string
   note?: string
@@ -1516,27 +1484,33 @@ async function presentReceipt(ctx: Context, exec: { signal: AbortSignal }, recei
   // image itself when the route it is on can carry one.
   const shots = (receipt.screenshots ?? []).filter((shot) => shot.path !== undefined).slice(-2)
   if (shots.length === 0) return result
-  const attachments = ctx.get('attachments') as Attachments | undefined
-  if (attachments === undefined || !await routeSeesImages(ctx, exec)) return result
-  const images: NonNullable<TaskResult['images']> = []
-  for (const shot of shots) {
-    try {
-      const path = shot.path ?? ''
-      const raw = await (await routedToRuntime(path)
-        ? (await import('../runtime/fs-bridge.ts')).runtimeReadFile(path)
-        : Promise.resolve(volume.readFile(path)))
-      const fitted = await fitToBudget(raw, shot.width, shot.height)
-      const saved = await attachments.saveImage({
-        data: fitted.bytes,
-        mediaType: 'image/png',
-        name: path.slice(path.lastIndexOf('/') + 1),
-      })
-      images.push({ ...saved, mediaType: 'image/png' })
-    } catch {
-      // A picture that will not fit this deployment's limits is still on disk,
-      // and the path above is what is left of it.
-    }
+  // Made once. The file on disk does not change, so neither can the resize —
+  // and this runs again on every `browser_tasks {action: "receipt"}`, which is
+  // exactly what the tool tells the model to do while a run is still going.
+  if (receipt.images !== undefined) {
+    if (receipt.images.length > 0) result.images = receipt.images as AttachedImage[]
+    return result
   }
+  // Asked once, ahead of the reads: on a route that takes no images every one
+  // of them would be read back off the workspace and resized only for
+  // `attachImage` to answer that it cannot be shown. Reading a receipt is
+  // exactly what the tool tells the model to do while a run is still going,
+  // so this is a poll loop.
+  if (!await imagesReachTheModel(ctx, exec)) return result
+  // Two independent reads and two independent resizes; `map` keeps them in the
+  // order the run took them in.
+  const images = (await Promise.all(shots.map(async (shot) => {
+    const path = shot.path ?? ''
+    try {
+      const fitted = await fitToBudget(await readFile(path), shot.width, shot.height)
+      return await attachImage(ctx, exec, { bytes: fitted.bytes, path })
+    } catch {
+      // A picture that cannot be read back or resized is still on disk, and
+      // the path in the receipt is what is left of it.
+      return undefined
+    }
+  }))).filter((image): image is AttachedImage => image !== undefined)
+  receipt.images = images
   if (images.length > 0) result.images = images
   return result
 }
@@ -1591,8 +1565,13 @@ function renderTask(value: TaskResult): ContentBlock[] {
     // is left — said plainly rather than left as a result that quietly has no
     // image in it.
     if (value.images === undefined || value.images.length === 0) {
-      lines.push('The picture itself is not attached — this model is registered as accepting text only. '
-        + 'The file above is the whole of it; `read_image` opens one on a model that does take images.')
+      // Said as a possibility rather than a diagnosis: the route taking no
+      // images is one of three ways a picture fails to arrive, and the other
+      // two — no attachment store, and a picture over this deployment's own
+      // attachment limits — were being reported as this one.
+      lines.push('The picture itself is not attached — this route may take no images, or the file may be '
+        + 'over this deployment\'s attachment limits. The file above is the whole of it; `read_image` '
+        + 'opens one on a model that does take images.')
     }
   }
   if (value.note !== undefined) lines.push('', value.note)
@@ -1679,8 +1658,10 @@ function registerTask(ctx: Context): void {
       },
       readOnly: {
         type: 'boolean',
-        description: 'Refuse anything that would change the page — clicks, typing, pastes, uploads. Use it when '
-          + 'inspecting after something went wrong, so the inspection cannot make it worse.',
+        description: 'Refuse anything that would change the page — clicks, typing, pastes, uploads, and '
+          + '`evaluate`, which runs your own code and so cannot be checked. Read with innerText(), '
+          + 'getAttribute() and count(). Use it when inspecting after something went wrong, so the '
+          + 'inspection cannot make it worse.',
       },
       claimTab: {
         type: 'string',
@@ -1730,7 +1711,11 @@ function registerTask(ctx: Context): void {
         readOnly: args.readOnly === true,
         foreground: args.foreground === true,
         ...(args.diagnostics === undefined ? {} : { diagnostics: args.diagnostics }),
-        waitMs: Math.max(1000, Math.min(args.waitMs ?? DEFAULT_WAIT_MS, 120_000)),
+        // `bounded`, not `Math.max(Math.min(...))`: the latter is `NaN` for
+        // anything `Number` cannot read, and `setTimeout(fn, NaN)` fires at
+        // once — a caller that mistyped `waitMs` got a receipt that said
+        // STILL RUNNING before the body had done anything.
+        waitMs: bounded(args.waitMs, DEFAULT_WAIT_MS, 1000, 120_000),
       })
       const presented = await presentReceipt(ctx, exec, receipt)
       // A name that belonged to a task from before the page was reloaded. The
@@ -1811,9 +1796,22 @@ function registerTaskControl(ctx: Context): void {
           action: { type: 'string', required: true },
           generation: { type: 'string', required: true },
           text: { type: 'string', required: true },
+          // `receipt` is the action the tool tells the model to use while a run
+          // is still going, so it is where a task's screenshots are read. The
+          // work of attaching them was already being done and the result thrown
+          // away — and cached on the receipt, so the "not attached" line never
+          // appeared either and the model was told nothing at all.
+          images: TASK_OUTPUT.properties.images,
         },
       },
-      render: (_args, value) => [{ type: 'text' as const, text: (value as { text: string }).text }],
+      render: (_args, value) => {
+        const answer = value as { text: string, images?: AttachedImage[] }
+        const blocks: ContentBlock[] = [{ type: 'text' as const, text: answer.text }]
+        for (const image of answer.images ?? []) {
+          blocks.push({ type: 'image', attachment: image as unknown as ImageBlock['attachment'] })
+        }
+        return blocks
+      },
     },
     async execute(
       args: {
@@ -1821,7 +1819,7 @@ function registerTaskControl(ctx: Context): void {
         maxBytes?: number, keep?: boolean,
       },
       exec,
-    ): Promise<{ action: string, generation: string, text: string }> {
+    ): Promise<{ action: string, generation: string, text: string, images?: AttachedImage[] }> {
       if (exec.signal.aborted) aborted()
       const browser = machine()
       await browser.open()
@@ -1873,6 +1871,7 @@ function registerTaskControl(ctx: Context): void {
             action: args.action,
             generation,
             text: first !== undefined && first.type === 'text' ? first.text : JSON.stringify(presented),
+            ...(presented.images === undefined || presented.images.length === 0 ? {} : { images: presented.images }),
           }
         }
         case 'checkpoint': {
@@ -1906,8 +1905,11 @@ function registerTaskControl(ctx: Context): void {
           const space = named()
           const id = String(args.resource ?? '')
           if (id === '') throw new Error('resource needs the handle from the receipt, such as `res-1a2b3c`')
-          const slice = space.resource(id, Number(args.offset ?? 0),
-            args.maxBytes === undefined ? undefined : Number(args.maxBytes))
+          // Bounded here as well as inside, because a `NaN` offset made
+          // `nextOffset` `NaN` and `eof` false — a read loop the tool tells
+          // the model to run until `eof` that never gets there.
+          const slice = space.resource(id, bounded(args.offset, 0, 0, Number.MAX_SAFE_INTEGER),
+            args.maxBytes === undefined ? undefined : bounded(args.maxBytes, 8192, 1024, 65_536))
           return {
             action: args.action,
             generation,
@@ -2002,12 +2004,10 @@ function registerInspect(ctx: Context): void {
       if (exec.signal.aborted) aborted()
       const browser = machine()
       await browser.open()
-      const space = args.task === undefined || args.task === '' ? undefined : findTaskSpace(args.task)
-      if (args.task !== undefined && args.task !== '' && space === undefined) {
-        throw new Error(`no task space named "${args.task}"; browser_tasks lists them`)
-      }
-      const tab = args.tab ?? space?.activeTab() ?? browser.tabs().find((entry) => entry.active)?.id
-      if (tab === undefined) throw new Error('no tab is open — open one with browser_navigate')
+      // The machine bridge asks the same question for the e2e suites, so both
+      // read the answer from one place; see `observationTab` in
+      // `src/browser/task.ts`.
+      const tab = observationTab(args.task, args.tab)
       const options: Record<string, unknown> = {
         frames: args.frames ?? 'visible',
         focus: args.focus !== false,
@@ -2017,30 +2017,21 @@ function registerInspect(ctx: Context): void {
         ...(args.maxFrames === undefined ? {} : { maxFrames: args.maxFrames }),
         ...(args.boxes === undefined ? {} : { boxes: args.boxes }),
       }
-      const observation = await observePage(tab, options) as {
-        url: string
-        title: string
-        snapshot: string
-        truncated: boolean
-        scroll: { x: number, y: number }
-        size: { width: number, height: number }
-        focus?: { tag: string, role: string, name: string, editable: boolean, inFrame?: string }
-        frames?: {
-          token: string, name: string, src: string, visible: boolean, actionable: boolean,
-          occludedBy?: string, viewportIntersection: number, url?: string, snapshot?: string, error?: string,
-        }[]
-        dialogs?: { kind: string, message: string, answer: string }[]
-      }
+      const observation = await observePage(tab, options)
 
       const lines: string[] = [`${observation.title}\n${observation.url}`]
       if (observation.focus !== undefined) {
         const focus = observation.focus
-        lines.push(`focus: <${focus.tag}> ${focus.role}${focus.name === '' ? '' : ` ${JSON.stringify(focus.name)}`}`
-          + `${focus.editable ? ' (editable)' : ''}${focus.inFrame === undefined ? '' : ` inside frame ${focus.inFrame}`}`)
+        lines.push(`focus: ${describeFocus(focus)}`
+          + `${focus.inFrame === undefined ? '' : ` inside frame ${focus.inFrame}`}`)
       }
       lines.push('', observation.snapshot === '' ? '(nothing visible on this page)' : observation.snapshot)
       if (observation.truncated) {
         lines.push('', '[the tree was cut short here — raise maxChars or depth, or inspect a smaller part]')
+      }
+      if (observation.moreFrames !== undefined && observation.moreFrames > 0) {
+        lines.push('', `[${String(observation.moreFrames)} more frame(s) on this page were not looked inside — `
+          + 'raise maxFrames]')
       }
       for (const frame of observation.frames ?? []) {
         lines.push('', `frame ${frame.token === '' ? '(no runtime — this machine did not load it)' : frame.token}`
@@ -2114,6 +2105,10 @@ function registerPaste(ctx: Context): void {
           accepted: { type: 'boolean', required: true },
           focusBefore: { type: 'string', required: true },
           focusAfter: { type: 'string', required: true },
+          // The frame says so on every paste, and `additionalProperties: false`
+          // makes an undeclared key a refusal — so leaving it out failed the
+          // tool on exactly the calls that worked.
+          trusted: { type: 'boolean' },
         },
       },
       render: (_args, value) => {
@@ -2144,11 +2139,21 @@ function registerPaste(ctx: Context): void {
           ...(args.selector === undefined ? {} : { selector: args.selector }),
         }, args.tab)
       }
+      // Into the document that has focus, which for a framed editor is not the
+      // page around it: a paste dispatched at the outer document lands on the
+      // `<iframe>` element and goes nowhere, or is refused as "focus is on
+      // <iframe>, which is not editable" for a field that was just clicked. The
+      // same hop `tabbit.pasteText` makes, so that the two agree the way the
+      // skill says they do.
+      const focus = await browser.run('focus.info', {}, args.tab).catch(() => undefined) as
+        { inFrame?: unknown } | undefined
+      const inside = focus?.inFrame
+      const frame = typeof inside === 'string' && inside !== '' && inside !== 'unknown' ? inside : undefined
       return await browser.run('paste', {
         text: String(args.text ?? ''),
         ...(args.format === undefined ? {} : { format: args.format }),
         requireEditableFocus: args.requireEditableFocus === true,
-      }, args.tab) as {
+      }, args.tab, frame === undefined ? {} : { frame }) as {
         strategy: string, characters: number, bytes: number, accepted: boolean, focusBefore: string, focusAfter: string
       }
     },

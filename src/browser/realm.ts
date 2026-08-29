@@ -43,6 +43,18 @@
  * the click.
  */
 
+/**
+ * The wire vocabulary, from the module at the other end of it.
+ *
+ * A type-only import, which esbuild erases: this file is bundled on its own
+ * into an opaque origin and imports nothing at run time. What it buys is that
+ * a step this side invents and the other side does not read is a compile
+ * error rather than a locator that silently matches nothing.
+ */
+import type { MachineEvent } from './engine.ts'
+import type { TextMatch } from './frame-locate.ts'
+import { MUTATING_COMMANDS, base64, bounded, fromBase64 } from './protocol.ts'
+
 /** What the host sends when it wants code run. */
 interface RunMessage {
   type: 'run'
@@ -53,7 +65,6 @@ interface RunMessage {
   task: string
   tab?: string
   diagnostics?: string
-  timeoutMs: number
 }
 
 declare global {
@@ -65,10 +76,33 @@ declare global {
 /** The nonce every message in both directions carries. */
 const nonce = window.__REALM_NONCE__ ?? ''
 
-/** Post one message to the host. */
+/**
+ * Post one message to the host.
+ *
+ * To `parent`, which is the page that made this frame. Not `top`: this app can
+ * itself be embedded, and there `top` is somebody else's document.
+ */
 function post(message: Record<string, unknown>): void {
-  ;(window.top ?? parent).postMessage({ realm: true, nonce, ...message }, '*')
+  parent.postMessage({ realm: true, nonce, ...message }, '*')
 }
+
+/**
+ * The least time one call on the host is given before the body is told it will
+ * not be answered. Above the host's own 60s per-operation limit, so its message
+ * — which says what the page was doing — arrives first where there is one; a
+ * call that carries a longer deadline of its own raises this. See
+ * {@link rpcDeadline}.
+ */
+const RPC_TIMEOUT_MS = 90_000
+
+/** What a `waitFor()` with no timeout of its own gets; `frame.ts` agrees. */
+const WAIT_TIMEOUT_MS = 10_000
+
+/** The longest any wait here runs for, and what `{timeout: 0}` is taken to mean. */
+const MAX_TIMEOUT_MS = 600_000
+
+/** What an action waits for actionability by default; `frame-locate.ts` agrees. */
+const ACTION_TIMEOUT_MS = 15_000
 
 /** Calls waiting on the host, by id. */
 const pending = new Map<string, { resolve: (value: unknown) => void, reject: (error: Error) => void }>()
@@ -87,10 +121,67 @@ let abandoned: string | undefined
 async function rpc(op: string, params: Record<string, unknown> = {}): Promise<unknown> {
   if (abandoned !== undefined) throw new Error(abandoned)
   const id = `c${String(++nextCall)}`
+  const limit = rpcDeadline(params)
   return new Promise<unknown>((resolve, reject) => {
-    pending.set(id, { resolve, reject })
+    // Longer than the host's own limit for *this* call, so its message wins
+    // whenever it has one. This is for the case where no answer is coming at
+    // all — a host that went away mid-call otherwise leaves the body awaiting
+    // a promise nobody can settle, which reads to everyone above as a task
+    // that is still running and wedges the space until it is finished.
+    const timer = setTimeout(() => {
+      pending.delete(id)
+      reject(new Error(`the machine did not answer ${op} within ${String(Math.round(limit / 1000))}s. `
+        + 'The page may be busy in a script, or this task space may have been finished while the body '
+        + 'was running.'))
+    }, limit)
+    pending.set(id, {
+      resolve: (value) => { clearTimeout(timer); resolve(value) },
+      reject: (error) => { clearTimeout(timer); reject(error) },
+    })
     post({ type: 'rpc', id, op, params })
   })
+}
+
+/**
+ * How long to wait on the host for one call.
+ *
+ * A flat ninety seconds was below what the host itself was prepared to wait:
+ * `transportTimeout` there extends its own deadline to the operation's plus
+ * five seconds, up to ten minutes — so `locator.click({timeout: 120000})` was
+ * rejected here at ninety with a message about a busy page while the click was
+ * still in flight, and the receipt was written from a run that believed
+ * nothing had happened. The two shapes an operation's own deadline arrives in
+ * are the two the host reads, in the same order.
+ * @param params - the call's arguments.
+ * @returns the milliseconds to wait.
+ */
+function rpcDeadline(params: Record<string, unknown>): number {
+  const args = params.args as Record<string, unknown> | undefined
+  const payload = params.payload as Record<string, unknown> | undefined
+  const asked = Number(args?.timeout ?? params.timeoutMs ?? payload?.timeoutMs ?? 0)
+  // Room above the host's own limit for the same call, so its message — which
+  // says what the element was doing — is the one the body sees.
+  return Number.isFinite(asked) && asked > 0 ? Math.max(RPC_TIMEOUT_MS, asked + 15_000) : RPC_TIMEOUT_MS
+}
+
+/**
+ * A timeout an option asked for, as milliseconds this machine can wait out.
+ *
+ * Every deadline here is `Date.now() + timeout`, and `Date.now() > NaN` is
+ * false for ever — so a body that wrote `{timeout: '15s'}` did not get an
+ * error, it got a `for (;;)` that polls until the space is finished by hand.
+ *
+ * `0` is not zero. In the API this imitates it means "no timeout", and taking
+ * it literally made `waitForURL(pattern, {timeout: 0})` — the idiom for "wait
+ * as long as it takes" — poll once and blame the page. It becomes the longest
+ * this machine will wait instead, which is the nearest thing it has.
+ * @param wanted - what the body asked for.
+ * @param fallback - the default for this wait.
+ * @returns a number of milliseconds.
+ */
+function timeoutOf(wanted: unknown, fallback: number): number {
+  if (wanted === 0) return MAX_TIMEOUT_MS
+  return bounded(wanted, fallback, 0, MAX_TIMEOUT_MS)
 }
 
 /** Whether this run may change anything, and what to say when it may not. */
@@ -101,6 +192,33 @@ let mutated = false
 
 /** Where files this run writes belong. */
 let artifactRoot = '/tmp'
+
+/**
+ * A path inside this task's own folder.
+ *
+ * Sub-folders are allowed — a run that writes a file per page wants them — but
+ * nothing that climbs out of the root this task owns.
+ * @param name - what the body asked to call it.
+ * @returns an absolute path under {@link artifactRoot}.
+ */
+function artifactPath(name: string): string {
+  const cleaned = String(name).replaceAll('\\', '/').replace(/^\/+/, '').replaceAll('..', '')
+  return `${artifactRoot}/${cleaned === '' ? 'file' : cleaned}`
+}
+
+/**
+ * The same folder, for a name that came off a page rather than out of the body.
+ *
+ * A download's suggested name is whatever the site put in its `download`
+ * attribute, and `../../../.claude/settings.json` is a valid one — so a name
+ * this machine did not choose is reduced to a leaf before it names a file.
+ * @param name - the page's suggestion.
+ * @returns an absolute path directly inside {@link artifactRoot}.
+ */
+function artifactLeaf(name: string): string {
+  const flat = String(name).replaceAll('\\', '/')
+  return artifactPath(flat.slice(flat.lastIndexOf('/') + 1) || 'download')
+}
 
 /**
  * Refuse an action that a read-only run is not allowed to take.
@@ -118,14 +236,22 @@ function guard(what: string): void {
 // locators
 // ---------------------------------------------------------------------------
 
-/** A regular expression as it crosses the channel. */
-interface WireRegex { source: string, flags: string }
-
-/** Text to match, either literally or as a pattern. */
-interface TextMatch { text?: string, regex?: WireRegex, exact?: boolean }
-
 /** One step of a locator chain, as `src/browser/frame-locate.ts` reads it. */
 type Step = Record<string, unknown> & { kind: string }
+
+/**
+ * The nested frame a chain names, when one of its steps does.
+ *
+ * A ref minted inside a frame carries that frame's token, and it is not always
+ * the first step: `page.locator('form').locator('aria-ref=f1e12')` puts it
+ * second.
+ * @param chain - the steps.
+ * @returns the frame's token, or nothing for the tab's own document.
+ */
+function framedBy(chain: Step[]): string | undefined {
+  const held = chain.find((step) => typeof step.frame === 'string' && step.frame !== '')?.frame
+  return typeof held === 'string' && held !== '' ? held : undefined
+}
 
 /**
  * Turn what a caller passed into a text match.
@@ -219,6 +345,18 @@ function selectors(make: (steps: Step[]) => Locator): Selectors {
 }
 
 /**
+ * What {@link selectors} installs, told to the type system once.
+ *
+ * All three classes below take these methods from `Object.assign` in their
+ * constructor, which the compiler cannot see. Declaration merging is how it is
+ * told — one line per class, rather than nine restated field declarations that
+ * have to be kept in step with {@link Selectors} by hand.
+ */
+interface Locator extends Selectors {}
+interface FrameLocator extends Selectors {}
+interface Page extends Selectors {}
+
+/**
  * A description of elements, resolved fresh every time it is used.
  *
  * The whole value of the shape is that this object holds no element. It holds
@@ -240,29 +378,28 @@ class Locator implements Selectors {
     Object.assign(this, selectors((steps) => new Locator(this.page, this.framePath, [...this.chain, ...steps])))
   }
 
-  /** The op every call on this locator sends. */
-  async #call(op: string, params: Record<string, unknown>): Promise<unknown> {
-    const framed = this.chain[0]?.frame
-    return rpc(op, {
+  /**
+   * Where this locator lives, as every rpc about it has to say it.
+   *
+   * Stated once because a call that leaves it out is answered by the top
+   * document instead of the frame the locator is in — which does not fail, it
+   * matches something else.
+   * @returns the tab, the frames on the way in, and the chain itself.
+   */
+  address(): Record<string, unknown> {
+    const framed = framedBy(this.chain)
+    return {
       tab: this.page.tabId,
       framePath: this.framePath,
-      ...(typeof framed === 'string' && framed !== '' ? { frameToken: framed } : {}),
+      ...(framed === undefined ? {} : { frameToken: framed }),
       chain: this.chain,
-      ...params,
-    })
+    }
   }
 
-  // -- narrowing ------------------------------------------------------------
-
-  locator!: Selectors['locator']
-  getByRole!: Selectors['getByRole']
-  getByText!: Selectors['getByText']
-  getByLabel!: Selectors['getByLabel']
-  getByPlaceholder!: Selectors['getByPlaceholder']
-  getByAltText!: Selectors['getByAltText']
-  getByTitle!: Selectors['getByTitle']
-  getByTestId!: Selectors['getByTestId']
-  frameLocator!: Selectors['frameLocator']
+  /** The op every call on this locator sends. */
+  async #call(op: string, params: Record<string, unknown>): Promise<unknown> {
+    return rpc(op, { ...this.address(), ...params })
+  }
 
   /** The nth match, counting from zero. */
   nth(index: number): Locator {
@@ -275,63 +412,96 @@ class Locator implements Selectors {
   /** The last match. */
   last(): Locator { return this.nth(-1) }
 
+  /**
+   * A second locator's steps, checked to be answerable in the same document.
+   *
+   * Only the chain crosses to the frame; the frames on the way in do not. So a
+   * locator from another frame, handed to `filter`, `and`, `or` or `dragTo`,
+   * was quietly re-resolved against *this* document — matching nothing after a
+   * fifteen-second wait, or matching something else entirely and reporting
+   * success.
+   * @param other - the locator being combined with this one.
+   * @param what - the method's name, for the message.
+   * @returns the other locator's steps.
+   */
+  #sameDocument(other: Locator, what: string): Step[] {
+    // The token as well as the path. Only the chain crosses to the frame, so a
+    // locator built on `aria-ref=f1e9` and handed to a locator in the page
+    // above shares its (empty) `framePath` and was sent to the top document,
+    // where `e9` is a different element and the action reported success.
+    if (JSON.stringify(other.framePath) !== JSON.stringify(this.framePath)
+      || framedBy(other.chain) !== framedBy(this.chain)) {
+      throw new Error(`${what} was given a locator from a different frame. Both sides are resolved in one `
+        + 'document, so build the other one from the same frameLocator().')
+    }
+    return other.chain
+  }
+
   /** Only the matches that also satisfy this. */
   filter(options: { hasText?: string | RegExp, hasNotText?: string | RegExp, has?: Locator, hasNot?: Locator, visible?: boolean }): Locator {
     const step: Step = { kind: 'filter' }
     if (options.hasText !== undefined) step.hasText = textMatch(options.hasText)
     if (options.hasNotText !== undefined) step.hasNotText = textMatch(options.hasNotText)
-    if (options.has !== undefined) step.has = options.has.chain
-    if (options.hasNot !== undefined) step.hasNot = options.hasNot.chain
+    if (options.has !== undefined) step.has = this.#sameDocument(options.has, 'filter({has})')
+    if (options.hasNot !== undefined) step.hasNot = this.#sameDocument(options.hasNot, 'filter({hasNot})')
     if (options.visible !== undefined) step.visible = options.visible
     return new Locator(this.page, this.framePath, [...this.chain, step])
   }
 
   /** Matches of both this and the other. */
   and(other: Locator): Locator {
-    return new Locator(this.page, this.framePath, [...this.chain, { kind: 'and', chain: other.chain }])
+    return new Locator(this.page, this.framePath,
+      [...this.chain, { kind: 'and', chain: this.#sameDocument(other, 'and()') }])
   }
 
   /** Matches of either. */
   or(other: Locator): Locator {
-    return new Locator(this.page, this.framePath, [...this.chain, { kind: 'or', chain: other.chain }])
+    return new Locator(this.page, this.framePath,
+      [...this.chain, { kind: 'or', chain: this.#sameDocument(other, 'or()') }])
   }
 
   // -- acting ---------------------------------------------------------------
 
-  /** Click it, once it can be clicked. */
-  async click(options: Record<string, unknown> = {}): Promise<void> {
-    guard('click()')
-    await this.#call('act', { action: 'click', args: options })
+  /**
+   * Every acting method: the guard it announces itself with, the op it sends,
+   * and whatever that action's own named argument is.
+   * @param action - what to do, which is also what the guard is told.
+   * @param options - the caller's options.
+   * @param extra - the action's own argument, when it takes one.
+   * @returns what the frame answered.
+   */
+  async #act(action: string, options: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<unknown> {
+    guard(`${action}()`)
+    const args: Record<string, unknown> = { ...options, ...extra }
+    // Through `timeoutOf` like every other wait here. An action's deadline goes
+    // to the frame inside `args` rather than beside it, which is how it came to
+    // be the one that arrived raw: `{timeout: 0}` meant "give up at once" where
+    // the API this imitates means "no timeout", and `{timeout: '30s'}` reached
+    // a `Date.now() + timeout` that never came due.
+    if (args.timeout !== undefined) args.timeout = timeoutOf(args.timeout, ACTION_TIMEOUT_MS)
+    return this.#call('act', { action, args })
   }
+
+  /** Click it, once it can be clicked. */
+  async click(options: Record<string, unknown> = {}): Promise<void> { await this.#act('click', options) }
 
   /** Double-click it. */
-  async dblclick(options: Record<string, unknown> = {}): Promise<void> {
-    guard('dblclick()')
-    await this.#call('act', { action: 'dblclick', args: options })
-  }
+  async dblclick(options: Record<string, unknown> = {}): Promise<void> { await this.#act('dblclick', options) }
 
   /** Tap it, which on a machine with no touchscreen is a click. */
-  async tap(options: Record<string, unknown> = {}): Promise<void> {
-    guard('tap()')
-    await this.#call('act', { action: 'tap', args: options })
-  }
+  async tap(options: Record<string, unknown> = {}): Promise<void> { await this.#act('tap', options) }
 
   /** Replace the field's value. */
   async fill(value: string, options: Record<string, unknown> = {}): Promise<void> {
-    guard('fill()')
-    await this.#call('act', { action: 'fill', args: { ...options, value } })
+    await this.#act('fill', options, { value })
   }
 
   /** Empty the field. */
-  async clear(options: Record<string, unknown> = {}): Promise<void> {
-    guard('clear()')
-    await this.#call('act', { action: 'clear', args: options })
-  }
+  async clear(options: Record<string, unknown> = {}): Promise<void> { await this.#act('clear', options) }
 
   /** Type into it one key at a time, as `pressSequentially` does. */
   async type(text: string, options: Record<string, unknown> = {}): Promise<void> {
-    guard('type()')
-    await this.#call('act', { action: 'type', args: { ...options, text } })
+    await this.#act('type', options, { text })
   }
 
   /** The current name for {@link type}. */
@@ -341,52 +511,50 @@ class Locator implements Selectors {
 
   /** Press a key at it, such as `Enter` or `Control+a`. */
   async press(key: string, options: Record<string, unknown> = {}): Promise<void> {
-    guard('press()')
-    await this.#call('act', { action: 'press', args: { ...options, key } })
+    await this.#act('press', options, { key })
   }
 
   /** Check it, if it is not checked already. */
-  async check(options: Record<string, unknown> = {}): Promise<void> {
-    guard('check()')
-    await this.#call('act', { action: 'check', args: options })
-  }
+  async check(options: Record<string, unknown> = {}): Promise<void> { await this.#act('check', options) }
 
   /** Uncheck it. */
-  async uncheck(options: Record<string, unknown> = {}): Promise<void> {
-    guard('uncheck()')
-    await this.#call('act', { action: 'uncheck', args: options })
-  }
+  async uncheck(options: Record<string, unknown> = {}): Promise<void> { await this.#act('uncheck', options) }
 
   /** Set it to a state. */
   async setChecked(checked: boolean, options: Record<string, unknown> = {}): Promise<void> {
-    guard('setChecked()')
-    await this.#call('act', { action: 'setChecked', args: { ...options, checked } })
+    await this.#act('setChecked', options, { checked })
   }
 
   /** Choose options in a `<select>`. */
   async selectOption(values: unknown, options: Record<string, unknown> = {}): Promise<string[]> {
-    guard('selectOption()')
-    const result = await this.#call('act', { action: 'selectOption', args: { ...options, values } }) as { value?: string }
+    const result = await this.#act('selectOption', options, { values }) as { values?: unknown, value?: string }
+    // The array the frame chose, when it sent one. The joined string is only a
+    // fallback for an older frame runtime, and it cannot survive an option
+    // whose own value contains `, `.
+    if (Array.isArray(result.values)) return result.values.map((entry) => String(entry))
     return (result.value ?? '').split(', ').filter((entry) => entry !== '')
   }
 
   /** Move the pointer over it. */
-  async hover(options: Record<string, unknown> = {}): Promise<void> {
-    guard('hover()')
-    await this.#call('act', { action: 'hover', args: options })
-  }
+  async hover(options: Record<string, unknown> = {}): Promise<void> { await this.#act('hover', options) }
+
+  // These four went straight to `#call` and so skipped `guard()`. The host
+  // refuses them in a read-only run either way, but nothing set `mutated` — so
+  // a body that focused a field, fired the previous one's `blur` into a site's
+  // autosave, and then failed reported `mutation: 'none'`, which the recovery
+  // advice reads as "the body performed no action at all".
 
   /** Give it keyboard focus. */
-  async focus(): Promise<void> { await this.#call('act', { action: 'focus', args: {} }) }
+  async focus(): Promise<void> { await this.#act('focus', {}) }
 
   /** Take focus away from it. */
-  async blur(): Promise<void> { await this.#call('act', { action: 'blur', args: {} }) }
+  async blur(): Promise<void> { await this.#act('blur', {}) }
 
   /** Select its text. */
-  async selectText(): Promise<void> { await this.#call('act', { action: 'selectText', args: {} }) }
+  async selectText(): Promise<void> { await this.#act('selectText', {}) }
 
   /** Scroll it into view. */
-  async scrollIntoViewIfNeeded(): Promise<void> { await this.#call('act', { action: 'scrollIntoView', args: {} }) }
+  async scrollIntoViewIfNeeded(): Promise<void> { await this.#act('scrollIntoView', {}) }
 
   /** Put files into a file input. */
   async setInputFiles(files: string | string[], options: Record<string, unknown> = {}): Promise<void> {
@@ -398,8 +566,7 @@ class Locator implements Selectors {
 
   /** Drag it onto another element. */
   async dragTo(target: Locator, options: Record<string, unknown> = {}): Promise<void> {
-    guard('dragTo()')
-    await this.#call('act', { action: 'dragTo', args: { ...options, target: target.chain } })
+    await this.#act('dragTo', options, { target: this.#sameDocument(target, 'dragTo()') })
   }
 
   // -- asking ---------------------------------------------------------------
@@ -445,9 +612,19 @@ class Locator implements Selectors {
   /** Whether it has keyboard focus. */
   async isFocused(): Promise<boolean> { return await this.#call('query', { query: 'isFocused' }) as boolean }
 
-  /** Where it is, in page coordinates. */
+  /**
+   * Where it is, in page coordinates.
+   *
+   * `null` for an element that is not rendered, which is what the API this
+   * imitates answers and what every caller here branches on. The frame can
+   * only answer with a rectangle, so the zero-area one is turned back into the
+   * `null` it means — otherwise `screenshot()` clips a region of no size and
+   * writes a one-pixel picture that reports itself as a success.
+   */
   async boundingBox(): Promise<{ x: number, y: number, width: number, height: number } | null> {
-    return await this.#call('box', {}) as { x: number, y: number, width: number, height: number } | null
+    const box = await this.#call('box', {}) as { x: number, y: number, width: number, height: number } | null
+    if (box === null || box === undefined) return null
+    return box.width === 0 && box.height === 0 ? null : box
   }
 
   /** The text of every match. */
@@ -471,24 +648,37 @@ class Locator implements Selectors {
 
   /** Wait for it to be attached, detached, visible or hidden. */
   async waitFor(options: { state?: 'attached' | 'detached' | 'visible' | 'hidden', timeout?: number } = {}): Promise<void> {
-    await this.#call('wait', { state: options.state ?? 'visible', ...(options.timeout === undefined ? {} : { timeoutMs: options.timeout }) })
+    // Through `timeoutOf` like every other wait here: the frame reads this with
+    // `Number(...)`, and a `'30s'` that arrived raw made its deadline `NaN` and
+    // its poll loop unterminatable.
+    await this.#call('wait', {
+      state: options.state ?? 'visible',
+      ...(options.timeout === undefined ? {} : { timeoutMs: timeoutOf(options.timeout, WAIT_TIMEOUT_MS) }),
+    })
   }
 
-  /** Run a function against the element, in the page's own realm. */
+  /**
+   * Run a function against the element, in the page's own realm.
+   *
+   * The host already unwrapped the frame's `{value}` envelope for this op —
+   * see `dispatch` in `src/browser/task.ts` — so what arrives here is the
+   * value itself. Unwrapping it a second time turned every result into
+   * `undefined`, and a result of `null` into a `TypeError`.
+   */
   async evaluate(fn: unknown, argument?: unknown): Promise<unknown> {
-    return (await this.#call('evaluate', { source: String(fn), argument }) as { value: unknown }).value
+    guard('evaluate()')
+    return this.#call('evaluate', { source: String(fn), argument })
   }
 
   /** Run a function against every match, in the page's own realm. */
   async evaluateAll(fn: unknown, argument?: unknown): Promise<unknown> {
-    return (await this.#call('evaluateAll', { source: String(fn), argument }) as { value: unknown }).value
+    guard('evaluateAll()')
+    return this.#call('evaluateAll', { source: String(fn), argument })
   }
 
   /** The accessibility tree under it. */
   async ariaSnapshot(options: { depth?: number, maxChars?: number, boxes?: boolean } = {}): Promise<string> {
-    const snapshot = await rpc('aria.snapshot', {
-      tab: this.page.tabId, framePath: this.framePath, chain: this.chain, ...options,
-    }) as { text: string }
+    const snapshot = await rpc('aria.snapshot', { ...this.address(), ...options }) as { text: string }
     return snapshot.text
   }
 
@@ -501,7 +691,18 @@ class Locator implements Selectors {
         ? 'it matches nothing'
         : `<${described.tag}> ${described.role} is not rendered`}`)
     }
-    return this.page.screenshot({ ...options, clip: box })
+    // Photographed by the document the element is in, not by the tab around
+    // it: a clip resolved inside a frame is in that frame's coordinates, and
+    // handing it to the page above would crop whatever happens to sit at those
+    // numbers in the outer document.
+    const address = this.address()
+    return await rpc('page.screenshot', {
+      tab: this.page.tabId,
+      ...(address.framePath === undefined ? {} : { framePath: address.framePath }),
+      ...(address.frameToken === undefined ? {} : { frameToken: address.frameToken }),
+      ...options,
+      clip: box,
+    }) as { path?: string, width: number, height: number, bytes: number }
   }
 
   /** What would stop an action on it right now. */
@@ -529,16 +730,6 @@ class FrameLocator implements Selectors {
       steps,
     )))
   }
-
-  locator!: Selectors['locator']
-  getByRole!: Selectors['getByRole']
-  getByText!: Selectors['getByText']
-  getByLabel!: Selectors['getByLabel']
-  getByPlaceholder!: Selectors['getByPlaceholder']
-  getByAltText!: Selectors['getByAltText']
-  getByTitle!: Selectors['getByTitle']
-  getByTestId!: Selectors['getByTestId']
-  frameLocator!: Selectors['frameLocator']
 
   /** The `<iframe>` element itself, in the document above. */
   owner(): Locator { return this.#owner }
@@ -591,10 +782,11 @@ class APIResponse {
 
   /** The body as bytes. */
   async body(): Promise<Uint8Array> {
-    const binary = atob(this.#body)
-    const bytes = new Uint8Array(binary.length)
-    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
-    return bytes
+    // The shared codec, not a fourth copy of it: `new Uint8Array(number)` is
+    // the shared-memory-capable view `Response` and `Blob` refuse on this
+    // cross-origin-isolated page, so `new Blob([await response.body()])` failed
+    // where the same bytes through `fromBase64` do not. See `./protocol.ts`.
+    return fromBase64(this.#body)
   }
 
   /** How many bytes came back. */
@@ -607,6 +799,7 @@ class Download {
   readonly #suggested: string
   readonly #page: Page
   #saved: string | undefined
+  #failure: string | undefined
 
   constructor(page: Page, url: string, suggested: string) {
     this.#page = page
@@ -629,8 +822,15 @@ class Download {
    * @returns nothing; the file is there afterwards.
    */
   async saveAs(path: string): Promise<void> {
-    const saved = await rpc('download.save', { url: this.#url, path, suggestedFilename: this.#suggested }) as { path: string }
-    this.#saved = saved.path
+    guard('saveAs()')
+    try {
+      const saved = await rpc('download.save', { url: this.#url, path, suggestedFilename: this.#suggested }) as { path: string }
+      this.#saved = saved.path
+      this.#failure = undefined
+    } catch (error) {
+      this.#failure = error instanceof Error ? error.message : String(error)
+      throw error
+    }
   }
 
   /**
@@ -638,19 +838,19 @@ class Download {
    * @returns the path.
    */
   async path(): Promise<string> {
-    if (this.#saved === undefined) await this.saveAs(`${artifactRoot}/${this.#suggested}`)
+    if (this.#saved === undefined) await this.saveAs(artifactLeaf(this.#suggested))
     return this.#saved ?? ''
   }
 
-  /** What went wrong, which for a fetch that has not happened yet is nothing. */
-  async failure(): Promise<string | null> {
-    try {
-      await this.path()
-      return null
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error)
-    }
-  }
+  /**
+   * What went wrong, which for a fetch that has not happened yet is nothing.
+   *
+   * A report, not an attempt: asking used to *perform* the download, so a body
+   * that checked `failure()` before deciding whether it wanted the file wrote
+   * the file by asking.
+   * @returns the error from a save that was tried and failed, or null.
+   */
+  failure(): string | null { return this.#failure ?? null }
 
   /** Forget it, which here means not writing it anywhere. */
   async delete(): Promise<void> { this.#saved = undefined }
@@ -711,12 +911,15 @@ class Dialog {
   readonly #message: string
   readonly #answer: string
   readonly #page: Page
+  /** The frame that raised it, when it was not the top document. */
+  readonly #frame: string | undefined
 
-  constructor(page: Page, kind: string, message: string, answer: string) {
+  constructor(page: Page, kind: string, message: string, answer: string, frame?: string) {
     this.#page = page
     this.#kind = kind
     this.#message = message
     this.#answer = answer
+    this.#frame = frame
   }
 
   /** Which modal it was. */
@@ -739,8 +942,13 @@ class Dialog {
    * @param promptText - what a prompt should answer with.
    */
   async accept(promptText?: string): Promise<void> {
-    // Arm the *next* one too, so a page that asks twice gets the same answer.
-    await this.#page.setDialogPolicy({ action: 'accept', ...(promptText === undefined ? {} : { promptText }) })
+    // Arm the *next* one too, so a page that asks twice gets the same answer —
+    // in the document that raised this one, which for a modal from inside an
+    // iframe is not the page around it. Each document holds its own policy.
+    await this.#page.setDialogPolicy(
+      { action: 'accept', ...(promptText === undefined ? {} : { promptText }) },
+      this.#frame,
+    )
     if (this.#answer === 'false' || this.#answer === 'null') {
       throw new Error(`this ${this.#kind} was already answered "${this.#answer}" before the handler ran: a page's `
         + 'modal is synchronous and this machine cannot pause one. Install the handler before the action that '
@@ -750,8 +958,11 @@ class Dialog {
 
   /** Say the dialog should be dismissed. */
   async dismiss(): Promise<void> {
-    await this.#page.setDialogPolicy({ action: 'dismiss' })
-    if (this.#answer === 'true') {
+    await this.#page.setDialogPolicy({ action: 'dismiss' }, this.#frame)
+    // An `alert` has one button. It is recorded as answered `true` because
+    // that is what the page was told, but there was no other answer to give —
+    // so dismissing one is not a disagreement with anything.
+    if (this.#answer === 'true' && this.#kind !== 'alert') {
       throw new Error(`this ${this.#kind} was already accepted before the handler ran: a page's modal is `
         + 'synchronous and this machine cannot pause one. Call page.setDialogPolicy({action: "dismiss"}) '
         + 'before the action that raises it.')
@@ -813,26 +1024,15 @@ class NetworkRecord {
 // pages
 // ---------------------------------------------------------------------------
 
-/** One thing that happened, as the host reported it. */
-interface HostEvent {
-  kind: string
-  tab: string
-  at: number
-  url?: string
-  title?: string
-  opener?: string
-  text?: string
-  level?: string
-  answer?: string
-  dialog?: string
-  suggestedFilename?: string
-  chooser?: string
-  multiple?: boolean
-  status?: number
-  method?: string
-  error?: string
-  frame?: string
-}
+/**
+ * One thing that happened, as the host reported it.
+ *
+ * The host's own type, not a copy of it. The copy had already drifted — the
+ * engine reports a file chooser's `accept` filter and this side had no field
+ * for it — and a `kind` widened to `string` meant a tenth event kind would
+ * compile clean here and land silently in {@link deliver}'s `default`.
+ */
+type HostEvent = MachineEvent
 
 /** Somebody waiting for one. */
 interface Waiter {
@@ -849,10 +1049,137 @@ interface Waiter {
 const waiters = new Set<Waiter>()
 
 /** Handlers a task installed with `page.on`. */
-const handlers = new Map<string, Set<{ fn: (value: unknown) => unknown, once: boolean }>>()
+const handlers = new Map<string, Set<{ fn: (value: unknown) => unknown, readonly once: boolean }>>()
+
+/**
+ * Register one handler under a key, once.
+ *
+ * The same handler twice is once. A task space outlives the body that ran in
+ * it, and each run compiles a fresh closure, so re-running a body that does
+ * `page.on('dialog', d => d.accept())` would otherwise leave one more listener
+ * behind every time — every dialog then invoking all of them. Identity cannot
+ * see that; the source can.
+ * @param key - the tab-or-context key the event will be dispatched under.
+ * @param fn - the handler.
+ * @param once - whether it is removed after firing.
+ */
+function listen(key: string, fn: (value: unknown) => unknown, once: boolean): void {
+  const set = handlers.get(key) ?? new Set()
+  // The *newest* closure, not the first. Each run compiles its own, and they
+  // capture different variables even where the source is identical — so
+  // keeping the older one meant re-running a body registered nothing and every
+  // event was appended to the previous run's dead arrays, which the receipt
+  // then reported as an event that never happened.
+  const already = [...set].find((entry) => entry.once === once && String(entry.fn) === String(fn))
+  if (already === undefined) set.add({ fn, once })
+  else already.fn = fn
+  handlers.set(key, set)
+}
+
+/**
+ * Take one back off.
+ *
+ * By source as well as by identity, because that is how {@link listen} decides
+ * two handlers are the same one: matching only on identity meant a handler
+ * that was folded into an existing entry could never be removed.
+ * @param key - the key it was registered under.
+ * @param fn - the handler.
+ */
+function unlisten(key: string, fn: (value: unknown) => unknown): void {
+  const set = handlers.get(key)
+  for (const entry of set ?? []) {
+    if (entry.fn === fn || String(entry.fn) === String(fn)) set?.delete(entry)
+  }
+}
+
+/**
+ * Arm the dialog policy a handler plainly implies.
+ *
+ * The answer to a modal has to exist before the modal does; see the note on
+ * {@link Dialog}. Reading the handler is the only way to know what it was
+ * going to say, and it is a good enough guess to make the common recipe work:
+ * a handler that accepts, accepts.
+ *
+ * Only a handler that plainly says which way arms anything. One this cannot
+ * read — `d => respondTo(d)`, or one that branches — leaves whatever is armed
+ * alone: guessing `accept` would mean merely *watching* dialogs confirms the
+ * next `confirm()`, and writing `dismiss` would mean adding a logger after
+ * `setDialogPolicy({action: 'accept'})` silently cancelled it.
+ * @param page - the page to arm, when the task has one.
+ * @param fn - the handler that was just installed.
+ */
+function armFromHandler(page: Page | undefined, fn: (value: unknown) => unknown): void {
+  if (page === undefined) return
+  const source = String(fn)
+  const accepts = /\.accept\s*\(/.test(source)
+  const dismisses = /\.dismiss\s*\(/.test(source)
+  const promptText = /\.accept\s*\(\s*(['"`])([^'"`]*)\1\s*\)/.exec(source)?.[2]
+  const wanted = accepts === dismisses ? undefined : accepts ? 'accept' as const : 'dismiss' as const
+  if (wanted === undefined) return
+  void page.setDialogPolicy({
+    action: wanted,
+    ...(promptText === undefined ? {} : { promptText }),
+  }).catch(() => {
+    // No page to arm yet, or it has gone. The default stands, and the handler
+    // still runs when the dialog is reported.
+  })
+}
 
 /** Every page this task has, by tab id. */
 const pages = new Map<string, Page>()
+
+/**
+ * What `getByTestId` reads, when the task has chosen something other than the
+ * default.
+ *
+ * Remembered here as well as set in the document, because it is module state
+ * inside the frame runtime and a new document starts again from
+ * `data-testid` — so a choice made once silently stopped applying at the next
+ * navigation, and every later `getByTestId()` matched nothing.
+ */
+let testIdAttribute: string | undefined
+
+/**
+ * How this task wants modals answered, for as long as it is running.
+ *
+ * Remembered for the same reason {@link testIdAttribute} is: the policy is
+ * module state inside the browsed document's own runtime, so a fresh document
+ * starts again at `dismiss`. A body that armed `accept` and then navigated —
+ * which is the order the skill teaches, because a handler installed after the
+ * action is a race the action wins — had its `confirm()` answered "no" by a
+ * page that had forgotten, and the handler still ran and reported the message,
+ * so the receipt read as though it had been accepted.
+ *
+ * It is also what a policy armed before there is a page falls back to:
+ * `page.on('dialog', …)` on the first line of a body is a page with no tab
+ * yet, and the arming call had nowhere to go.
+ */
+let dialogPolicy: { action: 'accept' | 'dismiss', promptText?: string } | undefined
+
+/**
+ * The nested frame that has keyboard focus, when one has it.
+ *
+ * A frame is its own document, and focus is a property of a document: after a
+ * click on a field inside an `<iframe>`, the page around it reports its
+ * `activeElement` as the `<iframe>` element. Anything aimed at "whatever has
+ * focus" has to be asked of the document that actually has it, or the event is
+ * dispatched at the frame element and the field never hears about it.
+ * @param tab - the page's tab.
+ * @returns the frame's token, or nothing when focus is in the tab's own
+ * document, in a frame with no runtime, or not answerable at all.
+ */
+async function focusedFrame(tab: string | undefined): Promise<string | undefined> {
+  try {
+    const outer = await rpc('page.command', { tab, kind: 'focus.info', payload: {} }) as { inFrame?: unknown }
+    const inside = outer.inFrame
+    return typeof inside === 'string' && inside !== '' && inside !== 'unknown' ? inside : undefined
+  } catch {
+    // No page, or a document that will not answer. The command below is the
+    // one whose error is worth reporting, so this one keeps quiet and aims at
+    // the tab's own document, which is where it went before.
+    return undefined
+  }
+}
 
 /** The keyboard, which is the page's rather than an element's. */
 class Keyboard {
@@ -860,35 +1187,39 @@ class Keyboard {
 
   constructor(page: Page) { this.#page = page }
 
+  /**
+   * Every keyboard method: the guard, and the command it sends.
+   * @param action - what to do, which is also what the guard is told.
+   * @param payload - the key or the text it acts on.
+   */
+  async #send(action: string, payload: Record<string, unknown>): Promise<void> {
+    guard(`keyboard.${action}()`)
+    // Into the document that has focus, which for a framed field is not the
+    // page around it — the same hop `tabbit.pasteText` makes, and for the same
+    // reason: without it a body that clicked a card number inside a payment
+    // iframe and then typed sent every keystroke to the `<iframe>` element,
+    // and the command still answered `{ok: true}`.
+    await this.#page.command('keyboard', { action, ...payload }, await focusedFrame(this.#page.tabId))
+  }
+
   /** Press a key, or a combination such as `Control+a`. */
   async press(key: string, options: { delay?: number } = {}): Promise<void> {
-    guard('keyboard.press()')
-    await this.#page.command('keyboard', { action: 'press', key, ...options })
+    await this.#send('press', { key, ...options })
   }
 
   /** Hold a key down. */
-  async down(key: string): Promise<void> {
-    guard('keyboard.down()')
-    await this.#page.command('keyboard', { action: 'down', key })
-  }
+  async down(key: string): Promise<void> { await this.#send('down', { key }) }
 
   /** Let it up. */
-  async up(key: string): Promise<void> {
-    guard('keyboard.up()')
-    await this.#page.command('keyboard', { action: 'up', key })
-  }
+  async up(key: string): Promise<void> { await this.#send('up', { key }) }
 
   /** Type text one key at a time. */
   async type(text: string, options: { delay?: number } = {}): Promise<void> {
-    guard('keyboard.type()')
-    await this.#page.command('keyboard', { action: 'type', text, ...options })
+    await this.#send('type', { text, ...options })
   }
 
   /** Put text in without pretending it was typed. */
-  async insertText(text: string): Promise<void> {
-    guard('keyboard.insertText()')
-    await this.#page.command('keyboard', { action: 'insertText', text })
-  }
+  async insertText(text: string): Promise<void> { await this.#send('insertText', { text }) }
 }
 
 /** The mouse, for surfaces that have no elements to name. */
@@ -906,32 +1237,35 @@ class Mouse {
     return this.#page.command('mouse', { action: 'move', x, y })
   }
 
-  /** Press the button. */
-  async down(options: { button?: string } = {}): Promise<unknown> {
-    guard('mouse.down()')
-    return this.#page.command('mouse', { action: 'down', x: this.#x, y: this.#y, ...options })
+  /**
+   * Every guarded mouse method: the guard, and the command at where it is.
+   * @param action - what to do, which is also what the guard is told.
+   * @param options - the button, and whatever else the action takes.
+   * @returns what the frame answered.
+   */
+  async #at(action: string, options: Record<string, unknown>): Promise<unknown> {
+    guard(`mouse.${action}()`)
+    return this.#page.command('mouse', { action, x: this.#x, y: this.#y, ...options })
   }
 
+  /** Press the button. */
+  async down(options: { button?: string } = {}): Promise<unknown> { return this.#at('down', options) }
+
   /** Let it up. */
-  async up(options: { button?: string } = {}): Promise<unknown> {
-    guard('mouse.up()')
-    return this.#page.command('mouse', { action: 'up', x: this.#x, y: this.#y, ...options })
-  }
+  async up(options: { button?: string } = {}): Promise<unknown> { return this.#at('up', options) }
 
   /** Click at a point. */
   async click(x: number, y: number, options: Record<string, unknown> = {}): Promise<unknown> {
-    guard('mouse.click()')
     this.#x = x
     this.#y = y
-    return this.#page.command('mouse', { action: 'click', x, y, ...options })
+    return this.#at('click', options)
   }
 
   /** Double-click at a point. */
   async dblclick(x: number, y: number, options: Record<string, unknown> = {}): Promise<unknown> {
-    guard('mouse.dblclick()')
     this.#x = x
     this.#y = y
-    return this.#page.command('mouse', { action: 'dblclick', x, y, ...options })
+    return this.#at('dblclick', options)
   }
 
   /** Scroll. */
@@ -974,20 +1308,27 @@ class Page implements Selectors {
    */
   adopt(tab: string): void {
     if (this.#tab === tab) return
+    // The handlers go with it. They are keyed by tab id, and a body that
+    // installs one before its first `goto` — which is the documented order,
+    // because a waiter armed after the action is a race the action wins —
+    // registered it under the empty id this page had before the tab existed.
+    for (const [key, set] of [...handlers]) {
+      if (!key.startsWith(`${this.#tab}:`)) continue
+      handlers.delete(key)
+      const moved = `${tab}:${key.slice(this.#tab.length + 1)}`
+      const held = handlers.get(moved)
+      if (held === undefined) handlers.set(moved, set)
+      else for (const entry of set) held.add(entry)
+    }
+    // And the waiters, for the same reason and the same recipe: `Promise.all([
+    // page.waitForEvent('popup'), page.goto(url)])` is the documented order,
+    // and the waiter it installs is scoped to the id this page had before
+    // `goto` gave it one — which nothing would ever match.
+    for (const waiter of waiters) if (waiter.tab === this.#tab) waiter.tab = tab
     pages.delete(this.#tab)
     this.#tab = tab
     pages.set(tab, this)
   }
-
-  locator!: Selectors['locator']
-  getByRole!: Selectors['getByRole']
-  getByText!: Selectors['getByText']
-  getByLabel!: Selectors['getByLabel']
-  getByPlaceholder!: Selectors['getByPlaceholder']
-  getByAltText!: Selectors['getByAltText']
-  getByTitle!: Selectors['getByTitle']
-  getByTestId!: Selectors['getByTestId']
-  frameLocator!: Selectors['frameLocator']
 
   /** Note what the host says this tab is now showing. */
   update(info: { url?: string, title?: string, closed?: boolean }): void {
@@ -1002,8 +1343,18 @@ class Page implements Selectors {
    * @param payload - its arguments.
    * @returns whatever the document produced.
    */
-  async command(kind: string, payload: Record<string, unknown> = {}): Promise<unknown> {
-    return rpc('page.command', { tab: this.tabId, kind, payload })
+  async command(kind: string, payload: Record<string, unknown> = {}, frame?: string): Promise<unknown> {
+    // The escape hatch is still bound by the run's own rules. Every named
+    // method that reaches a command like these calls `guard()` first, and a
+    // read-only run that could get at the same commands by spelling them out
+    // here would be a read-only run that types into the page.
+    if (MUTATING_COMMANDS.has(kind)) guard(`page.command(${JSON.stringify(kind)})`)
+    return rpc('page.command', {
+      tab: this.tabId,
+      ...(frame === undefined || frame === '' ? {} : { frameToken: frame }),
+      kind,
+      payload,
+    })
   }
 
   /** Where it is. */
@@ -1024,8 +1375,16 @@ class Page implements Selectors {
     return (await this.command('html', {}) as { html: string }).html
   }
 
-  /** Its rendered text. */
-  async innerText(): Promise<string> {
+  /**
+   * Its rendered text, or one element's.
+   * @param selector - which element, or nothing for the whole document. The
+   * argument is here because every sibling shortcut takes one and the API this
+   * imitates requires one — dropping it returned the whole page to a caller
+   * that had asked for a single field, with no error to say so.
+   * @returns the text.
+   */
+  async innerText(selector?: string): Promise<string> {
+    if (selector !== undefined && selector !== '') return this.locator(selector).innerText()
     return (await this.command('text', {}) as { text: string }).text
   }
 
@@ -1075,6 +1434,7 @@ class Page implements Selectors {
    * page that is gone.
    */
   async close(): Promise<void> {
+    guard('close()')
     await rpc('tabs.close', { tab: this.tabId })
     this.#closed = true
     pages.delete(this.#tab)
@@ -1111,7 +1471,7 @@ class Page implements Selectors {
     const result = await this.command('waitForFunction', {
       source: String(fn),
       argument,
-      timeoutMs: options.timeout ?? 15_000,
+      timeoutMs: timeoutOf(options.timeout, 15_000),
       ...(options.polling === undefined ? {} : { pollMs: options.polling }),
     }) as { value: unknown }
     return result.value
@@ -1139,11 +1499,18 @@ class Page implements Selectors {
     // wait is on the machine first and on the document afterwards. That order
     // matters for a popup: the page event fires when the tab is made, and its
     // URL is `about:blank` until the navigation it was opened for lands.
-    const deadline = Date.now() + (options.timeout ?? 15_000)
+    const deadline = Date.now() + timeoutOf(options.timeout, 15_000)
+    // A page that is *legitimately* at `about:blank` — `context.newPage()`
+    // with no URL, which is then driven by `evaluate` — is loaded, and waiting
+    // the whole timeout out on it cost fifteen seconds and two hundred round
+    // trips per call. So the blank page gets its own short budget: long enough
+    // for the popup whose navigation has not landed yet, short enough not to
+    // be the answer for a page that is never going anywhere.
+    const blankUntil = Math.min(deadline, Date.now() + 2000)
     for (;;) {
       const info = await rpc('page.info', { tab: this.tabId }) as { url: string, title: string, loading?: boolean }
       this.update(info)
-      if (info.loading !== true && info.url !== 'about:blank') break
+      if (info.loading !== true && (info.url !== 'about:blank' || Date.now() > blankUntil)) break
       if (Date.now() > deadline) break
       await new Promise((resolve) => setTimeout(resolve, 60))
     }
@@ -1153,10 +1520,11 @@ class Page implements Selectors {
 
   /** Wait until the URL matches. */
   async waitForURL(pattern: string | RegExp | ((url: string) => boolean), options: { timeout?: number } = {}): Promise<void> {
-    const deadline = Date.now() + (options.timeout ?? 15_000)
+    const timeout = timeoutOf(options.timeout, 15_000)
+    const deadline = Date.now() + timeout
     const test = (url: string): boolean => {
       if (typeof pattern === 'function') return pattern(url)
-      if (pattern instanceof RegExp) return pattern.test(url)
+      if (pattern instanceof RegExp) return patternMatches(pattern, url)
       return url === pattern || url.includes(pattern)
     }
     for (;;) {
@@ -1164,7 +1532,7 @@ class Page implements Selectors {
       this.update(info)
       if (test(info.url)) return
       if (Date.now() > deadline) {
-        throw new Error(`timed out after ${String(options.timeout ?? 15_000)}ms waiting for the URL to match; `
+        throw new Error(`timed out after ${String(timeout)}ms waiting for the URL to match; `
           + `it is ${info.url}`)
       }
       await new Promise((resolve) => setTimeout(resolve, 100))
@@ -1198,7 +1566,7 @@ class Page implements Selectors {
       predicate: (value) => {
         const record = value as NetworkRecord
         if (typeof matcher === 'function') return matcher(record)
-        if (matcher instanceof RegExp) return matcher.test(record.url())
+        if (matcher instanceof RegExp) return patternMatches(matcher, record.url())
         return record.url().includes(matcher)
       },
     }) as NetworkRecord
@@ -1217,39 +1585,56 @@ class Page implements Selectors {
 
   /** Stop listening. */
   off(kind: string, fn: (value: unknown) => unknown): this {
-    const set = handlers.get(`${this.tabId}:${kind}`)
-    for (const entry of set ?? []) if (entry.fn === fn) set?.delete(entry)
+    unlisten(`${this.tabId}:${kind}`, fn)
     return this
   }
 
   #listen(kind: string, fn: (value: unknown) => unknown, once: boolean): this {
-    const key = `${this.tabId}:${kind}`
-    const set = handlers.get(key) ?? new Set()
-    set.add({ fn, once })
-    handlers.set(key, set)
-    if (kind === 'dialog') {
-      // The answer to a modal has to exist before the modal does; see the note
-      // on {@link Dialog}. Reading the handler is the only way to know what it
-      // was going to say, and it is a good enough guess to make the common
-      // recipe work: a handler that accepts, accepts.
-      const source = String(fn)
-      const accepts = /\.accept\s*\(/.test(source)
-      const dismisses = /\.dismiss\s*\(/.test(source)
-      const promptText = /\.accept\s*\(\s*(['"`])([^'"`]*)\1\s*\)/.exec(source)?.[2]
-      void this.setDialogPolicy({
-        action: accepts && !dismisses ? 'accept' : dismisses ? 'dismiss' : 'accept',
-        ...(promptText === undefined ? {} : { promptText }),
-      })
-    }
+    listen(`${this.tabId}:${kind}`, fn, once)
+    if (kind === 'dialog') armFromHandler(this, fn)
     return this
   }
 
   /**
    * Decide in advance how the page's modals are answered.
+   *
+   * Every document in the page, not only the one on top. A frame keeps its own
+   * policy — it has its own `confirm()` — so arming the page around it left a
+   * modal raised inside a payment iframe answered by the default, and the
+   * handler that was going to accept it then threw "this confirm was already
+   * answered". Naming a frame arms only that one, which is what
+   * {@link Dialog.accept} does for the document that actually raised one.
    * @param policy - accept or dismiss, and what a prompt should say.
+   * @param frame - one frame's document, or undefined for all of them.
    */
-  async setDialogPolicy(policy: { action: 'accept' | 'dismiss', promptText?: string }): Promise<void> {
+  async setDialogPolicy(policy: { action: 'accept' | 'dismiss', promptText?: string }, frame?: string): Promise<void> {
+    // Ahead of the note below. `dialogPolicy` is module state that outlives the
+    // run and is re-armed on every document that loads afterwards, so a
+    // read-only call refused three lines further down had already decided how
+    // the *next* run's `confirm()` would be answered.
+    guard('setDialogPolicy()')
+    // Noted before it is sent, so that a document arriving later is armed the
+    // same way — including the first one, when this was called before `goto`.
+    if (frame === undefined) dialogPolicy = policy
+    if (frame !== undefined) {
+      await rpc('page.command', {
+        tab: this.tabId,
+        frameToken: frame,
+        kind: 'dialog.arm',
+        payload: policy,
+      })
+      return
+    }
     await this.command('dialog.arm', policy as unknown as Record<string, unknown>)
+    // The frames after the page, and best-effort: a frame this machine did not
+    // load has no runtime to arm, and one that has gone since the list was
+    // taken is not a reason to fail the call that armed the page.
+    const listed = await this.frames().catch(() => [])
+    await Promise.all(listed.map(async (frame_) => {
+      const token = frame_.token
+      if (typeof token !== 'string' || token === '') return
+      await this.setDialogPolicy(policy, token).catch(() => undefined)
+    }))
   }
 
   /** Every nested frame in this page, with the state of its host element. */
@@ -1328,7 +1713,7 @@ async function waitForEvent(
   kind: string,
   options: { tab?: string, timeout?: number, predicate?: (value: unknown) => boolean } = {},
 ): Promise<unknown> {
-  const timeout = options.timeout ?? 30_000
+  const timeout = timeoutOf(options.timeout, 30_000)
   return new Promise((resolve, reject) => {
     const waiter: Waiter = {
       ...(options.tab === undefined ? {} : { tab: options.tab }),
@@ -1373,17 +1758,45 @@ function deliver(event: HostEvent): void {
     }
     case 'close':
       page?.update({ closed: true })
+      // The page, like every other branch. Left as the wire event, a body
+      // writing `page.on('close', p => log(p.url()))` got `p.url is not a
+      // function` — thrown inside `dispatch`, which swallows it.
+      if (page !== undefined) value = page
       names.push('close')
       break
     case 'navigated':
-      page?.update({ url: event.url ?? '', ...(event.title === undefined ? {} : { title: event.title }) })
+      // A nested frame moving is not the page moving. Both arrive as
+      // `navigated`; only the one with no `frame` on it is the tab's own
+      // document, and letting a frame's URL become `page.url()` is how
+      // `waitForURL` ends up waiting for an advert's address.
+      if (event.frame === undefined) {
+        page?.update({ url: event.url ?? '', ...(event.title === undefined ? {} : { title: event.title }) })
+      }
       value = page
       names.push('framenavigated')
       break
     case 'load':
-      page?.update(event.url === undefined ? {} : { url: event.url })
+      // Likewise: `load` is the tab's document finishing, not an advert
+      // frame's. A frame's arrival is still a `framenavigated`.
+      if (event.frame === undefined) {
+        page?.update(event.url === undefined ? {} : { url: event.url })
+        names.push('load', 'domcontentloaded')
+      } else names.push('framenavigated')
+      // A fresh document has the default test-id attribute again, and the
+      // default dialog policy again; see the notes on {@link testIdAttribute}
+      // and {@link dialogPolicy}.
+      for (const [kind, payload] of [
+        ...(testIdAttribute === undefined ? [] : [['testId', { attribute: testIdAttribute }] as const]),
+        ...(dialogPolicy === undefined ? [] : [['dialog.arm', dialogPolicy] as const]),
+      ]) {
+        void rpc('page.command', {
+          tab: event.tab,
+          ...(event.frame === undefined ? {} : { frameToken: event.frame }),
+          kind,
+          payload,
+        }).catch(() => undefined)
+      }
       value = page
-      names.push('load', 'domcontentloaded')
       break
     case 'console':
       value = new ConsoleMessage(event.level ?? 'log', event.text ?? '')
@@ -1392,7 +1805,7 @@ function deliver(event: HostEvent): void {
     case 'dialog':
       value = page === undefined
         ? undefined
-        : new Dialog(page, event.dialog ?? 'alert', event.text ?? '', event.answer ?? '')
+        : new Dialog(page, event.dialog ?? 'alert', event.text ?? '', event.answer ?? '', event.frame)
       names.push('dialog')
       break
     case 'download':
@@ -1418,8 +1831,17 @@ function deliver(event: HostEvent): void {
   for (const name of names) {
     dispatch(event.tab, name, value)
     for (const waiter of [...waiters]) {
-      if (waiter.kind !== name) continue
-      if (waiter.tab !== undefined && waiter.tab !== event.tab && name !== 'page') continue
+      // `popup` is the same event as `page` seen from the tab that opened it,
+      // which is how the API this implements spells it — and while only
+      // `dispatch` knew that, `page.waitForEvent('popup')` waited for
+      // something that was never going to be named.
+      if (waiter.kind !== name && !(waiter.kind === 'popup' && name === 'page' && event.opener !== undefined)) continue
+      // A new page belongs to whoever opened it, not to the tab it *is*, so a
+      // waiter armed on one page is scoped to popups from that page — without
+      // that, `pageA.waitForEvent('popup')` was resolved by a popup page B
+      // opened, and the body drove the wrong tab.
+      const scope = name === 'page' ? event.opener ?? event.tab : event.tab
+      if (waiter.tab !== undefined && waiter.tab !== scope) continue
       if (waiter.since > event.at + 50) continue
       try {
         if (waiter.predicate !== undefined && !waiter.predicate(value)) continue
@@ -1429,6 +1851,22 @@ function deliver(event: HostEvent): void {
       waiter.resolve(value)
     }
   }
+
+  // After the handlers have had it, not before: a task's `page.on('close')` is
+  // registered under the tab's own key. Nothing addresses a closed tab again,
+  // and every entry here is a closure compiled by the body that installed it,
+  // so leaving them meant a space that opened and closed a hundred popups held
+  // a hundred bodies' worth of captured scope for as long as the tab was open.
+  if (event.kind === 'close') forgetPage(event.tab)
+}
+
+/**
+ * Drop everything a closed tab was still holding.
+ * @param tab - the tab that has gone.
+ */
+function forgetPage(tab: string): void {
+  pages.delete(tab)
+  for (const key of [...handlers.keys()]) if (key.startsWith(`${tab}:`)) handlers.delete(key)
 }
 
 /**
@@ -1486,14 +1924,59 @@ const request = {
  * @returns the response.
  */
 async function fetchThrough(method: string, url: string, options: Record<string, unknown>): Promise<APIResponse> {
-  const body = options.data === undefined
-    ? options.body
-    : typeof options.data === 'string' ? options.data : JSON.stringify(options.data)
+  // Anything that is not a read is an action, and the host refuses it in a
+  // read-only run for that reason — but only `guard()` sets `mutated`, so a
+  // body that posted an order and then threw reported `mutation: 'none'`,
+  // which the recovery advice reads as "nothing happened; safe to repeat".
+  const verb = method.toUpperCase()
+  if (verb !== 'GET' && verb !== 'HEAD') guard(`context.request.${method.toLowerCase()}()`)
+
+  // `params` go on the URL, the way the API this imitates puts them there.
+  // Silently dropping them fetched page one and reported success.
+  const params = options.params as Record<string, unknown> | undefined
+  let target = url
+  if (params !== undefined) {
+    try {
+      const built = new URL(url)
+      for (const [name, value] of Object.entries(params)) built.searchParams.set(name, String(value))
+      target = built.href
+    } catch {
+      // Not a URL this side can parse. The host resolves it, and dropping the
+      // request over the query string would be worse than sending it without.
+      const query = new URLSearchParams()
+      for (const [name, value] of Object.entries(params)) query.set(name, String(value))
+      target = `${url}${url.includes('?') ? '&' : '?'}${query.toString()}`
+    }
+  }
+
+  // A form is url-encoded, an object `data` is JSON, and a string is whatever
+  // the caller made it. Each one implies a content type that the server needs
+  // and that nothing else here would send.
+  const headers: Record<string, string> = { ...(options.headers as Record<string, string> | undefined ?? {}) }
+  const stated = Object.keys(headers).some((held) => held.toLowerCase() === 'content-type')
+  let body: string | undefined
+  let carries: string | undefined
+  const form = options.form as Record<string, unknown> | undefined
+  if (form !== undefined) {
+    const encoded = new URLSearchParams()
+    for (const [name, value] of Object.entries(form)) encoded.set(name, String(value))
+    body = encoded.toString()
+    carries = 'application/x-www-form-urlencoded'
+  } else if (typeof options.data === 'object' && options.data !== null) {
+    body = JSON.stringify(options.data)
+    carries = 'application/json'
+  } else if (options.data !== undefined) {
+    body = String(options.data)
+  } else if (options.body !== undefined) {
+    body = String(options.body)
+  }
+  if (!stated && carries !== undefined) headers['content-type'] = carries
+
   const raw = await rpc('request.fetch', {
     method,
-    url,
-    headers: options.headers ?? {},
-    ...(body === undefined ? {} : { body: String(body) }),
+    url: target,
+    headers,
+    ...(body === undefined ? {} : { body }),
   }) as { status: number, url: string, headers: Record<string, string>, body: string }
   return new APIResponse(raw)
 }
@@ -1531,35 +2014,65 @@ const context = {
    * which on a machine where no cookie travels the network is mostly
    * `localStorage`.
    */
-  clearCookies: async (): Promise<void> => { await rpc('profile.clear') },
+  clearCookies: async (): Promise<void> => {
+    guard('clearCookies()')
+    await rpc('profile.clear')
+  },
 
-  /** Listen for something on any page. */
+  /**
+   * Listen for something on any page.
+   *
+   * The same registration `page.on` performs, under the context's own key —
+   * including the duplicate guard and the dialog policy a handler implies.
+   * Written out separately, this copy had neither, so `context.on('dialog',
+   * d => d.accept())` accumulated one handler per run and never actually
+   * accepted anything.
+   */
   on: (kind: string, fn: (value: unknown) => unknown): void => {
-    const set = handlers.get(`ctx:${kind}`) ?? new Set()
-    set.add({ fn, once: false })
-    handlers.set(`ctx:${kind}`, set)
+    listen(`ctx:${kind}`, fn, false)
+    if (kind === 'dialog') armFromHandler(state.page, fn)
   },
 
   /** Listen once. */
   once: (kind: string, fn: (value: unknown) => unknown): void => {
-    const set = handlers.get(`ctx:${kind}`) ?? new Set()
-    set.add({ fn, once: true })
-    handlers.set(`ctx:${kind}`, set)
+    listen(`ctx:${kind}`, fn, true)
+    if (kind === 'dialog') armFromHandler(state.page, fn)
   },
 
   /** Stop listening. */
-  off: (kind: string, fn: (value: unknown) => unknown): void => {
-    const set = handlers.get(`ctx:${kind}`)
-    for (const entry of set ?? []) if (entry.fn === fn) set?.delete(entry)
-  },
+  off: (kind: string, fn: (value: unknown) => unknown): void => { unlisten(`ctx:${kind}`, fn) },
 
   /** Wait for one thing to happen anywhere in this task. */
   waitForEvent: async (kind: string, options?: { timeout?: number, predicate?: (value: unknown) => boolean } | ((value: unknown) => boolean)): Promise<unknown> =>
     waitForEvent(kind, typeof options === 'function' ? { predicate: options } : options ?? {}),
 
-  /** What `getByTestId` should read. */
+  /**
+   * What `getByTestId` should read.
+   *
+   * Named against a page, because `page.command` is addressed to a document
+   * and one with no `tab` on it was answered with "this task has no page open"
+   * — for a setting whose whole point is to be made before the first `goto`.
+   * With no page yet the choice is remembered and applied to each document as
+   * it arrives, which is what a caller writing this line first means by it.
+   */
   setDefaultTestIdAttribute: async (attribute: string): Promise<void> => {
-    await rpc('page.command', { kind: 'testId', payload: { attribute } })
+    testIdAttribute = attribute
+    const page = state.page
+    const tab = page?.tabId
+    if (page === undefined || tab === undefined || tab === '') return
+    await rpc('page.command', { tab, kind: 'testId', payload: { attribute } }).catch(() => undefined)
+    // And the frames already in it, the way `setDialogPolicy` does: each is its
+    // own document with its own copy of this setting, and one loaded before
+    // this call is never told — so `frameLocator(…).getByTestId(…)` matched
+    // nothing on a control that was plainly there. Frames that arrive later are
+    // armed by the `load` handler.
+    const listed = await page.frames().catch(() => [])
+    await Promise.all(listed.map(async (frame) => {
+      const token = frame.token
+      if (typeof token !== 'string' || token === '') return
+      await rpc('page.command', { tab, frameToken: token, kind: 'testId', payload: { attribute } })
+        .catch(() => undefined)
+    }))
   },
 
   /** Present so a recipe that calls it does not fail; a task space is closed by finishing it. */
@@ -1601,7 +2114,7 @@ const EXPECT_TIMEOUT_MS = 5000
  * @param timeout - how long to keep trying.
  */
 async function retry(check: () => Promise<void>, timeout: number): Promise<void> {
-  const deadline = Date.now() + timeout
+  const deadline = Date.now() + timeoutOf(timeout, EXPECT_TIMEOUT_MS)
   let last: unknown
   for (;;) {
     try {
@@ -1615,24 +2128,93 @@ async function retry(check: () => Promise<void>, timeout: number): Promise<void>
   }
 }
 
+/**
+ * Test a pattern the body supplied, without letting it remember where it got to.
+ *
+ * `RegExp.prototype.test` on a `/g` or `/y` pattern advances `lastIndex`, and
+ * every one of these runs inside a retry loop — so `expect(…).not.toHaveText(
+ * /row/g)` matched, matched, then found nothing on the third poll and passed
+ * on a page that plainly contained the text. Rebuilt per call, the way
+ * `frame-locate.ts` rebuilds the ones that cross the channel.
+ * @param pattern - the caller's expression.
+ * @param text - what to test it against.
+ * @returns whether it matches.
+ */
+function patternMatches(pattern: RegExp, text: string): boolean {
+  return new RegExp(pattern.source, pattern.flags).test(text)
+}
+
 /** Compare a value against a string or a pattern, the way Playwright does. */
-function textEquals(actual: string, expected: unknown, options: { useInnerText?: boolean } = {}): boolean {
-  void options
-  if (expected instanceof RegExp) return expected.test(actual)
+function textEquals(actual: string, expected: unknown): boolean {
+  if (expected instanceof RegExp) return patternMatches(expected, actual)
   return actual.trim() === String(expected).trim()
 }
 
-/** A deep equality good enough for JSON-shaped data. */
+/**
+ * Structural deep equality, matching `util.isDeepStrictEqual`.
+ *
+ * The same rules as `src/node/misc.ts`, restated because this file is bundled
+ * on its own into an opaque origin and imports nothing at run time. The
+ * branches below are the reason it is not a five-line `Object.keys` walk:
+ * `Object.keys` is empty for a `Date`, a `Map` and a `Set`, so a shorter
+ * version reports two different dates as equal and calls it a passing
+ * assertion.
+ * @param a - one value.
+ * @param b - the other.
+ * @returns whether they are the same structure with the same contents.
+ */
 function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true
-  if (typeof a !== typeof b || a === null || b === null) return false
-  if (typeof a !== 'object') return Number.isNaN(a) && Number.isNaN(b)
-  if (Array.isArray(a) !== Array.isArray(b)) return false
-  const left = a as Record<string, unknown>
-  const right = b as Record<string, unknown>
-  const keys = Object.keys(left)
-  if (keys.length !== Object.keys(right).length) return false
-  return keys.every((key) => deepEqual(left[key], right[key]))
+  if (Object.is(a, b)) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false
+    return a.every((value, index) => deepEqual(value, (b as unknown[])[index]))
+  }
+  if (a instanceof Date) return b instanceof Date && a.getTime() === b.getTime()
+  if (a instanceof RegExp) return b instanceof RegExp && a.source === b.source && a.flags === b.flags
+  if (a instanceof Map) {
+    if (!(b instanceof Map) || a.size !== b.size) return false
+    for (const [key, value] of a) if (!b.has(key) || !deepEqual(value, b.get(key))) return false
+    return true
+  }
+  if (a instanceof Set) {
+    if (!(b instanceof Set) || a.size !== b.size) return false
+    // Structurally, not by identity, which is what `isDeepStrictEqual` does
+    // and what this claims to match: `has` compares object members by
+    // reference, so `new Set([{x: 1}])` was never equal to another set holding
+    // the same thing and `toEqual` failed on values that were plainly the same.
+    const rest = [...b]
+    for (const value of a) {
+      const index = rest.findIndex((other) => deepEqual(value, other))
+      if (index === -1) return false
+      rest.splice(index, 1)
+    }
+    return true
+  }
+  if (ArrayBuffer.isView(a) && ArrayBuffer.isView(b)) {
+    const left = new Uint8Array(a.buffer, a.byteOffset, a.byteLength)
+    const right = new Uint8Array(b.buffer, b.byteOffset, b.byteLength)
+    return left.length === right.length && left.every((value, index) => value === right[index])
+  }
+  const keys = Object.keys(a)
+  if (keys.length !== Object.keys(b).length) return false
+  return keys.every((key) => deepEqual((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]))
+}
+
+/**
+ * Compare an attribute or a value against a string or a pattern.
+ *
+ * A pattern is tested against the empty string when the attribute is absent,
+ * and an exact comparison is not: `toHaveAttribute('x', '')` asks for an
+ * attribute that is there and empty, which an element without one is not.
+ * @param actual - what the page has, or null when it has nothing.
+ * @param expected - a string or a pattern.
+ * @returns whether it matches.
+ */
+function like(actual: string | null, expected: unknown): boolean {
+  if (expected instanceof RegExp) return patternMatches(expected, actual ?? '')
+  return actual === String(expected)
 }
 
 /** Say what a value is, briefly, for a failure message. */
@@ -1644,6 +2226,25 @@ function show(value: unknown): string {
     return String(value)
   }
 }
+
+/**
+ * The matchers that ask a locator one yes-or-no question and retry it.
+ *
+ * A table because that is what they are: a name, the question, and how to say
+ * it when the answer is the wrong one. Written out, the nine differ by two
+ * strings each and a call.
+ */
+const STATE_MATCHERS: [string, (target: Locator) => Promise<boolean>, string][] = [
+  ['toBeVisible', (target) => target.isVisible(), 'be visible'],
+  ['toBeHidden', (target) => target.isHidden(), 'be hidden'],
+  ['toBeAttached', async (target) => await target.count() > 0, 'be attached'],
+  ['toBeEnabled', (target) => target.isEnabled(), 'be enabled'],
+  ['toBeDisabled', (target) => target.isDisabled(), 'be disabled'],
+  ['toBeEditable', (target) => target.isEditable(), 'be editable'],
+  ['toBeChecked', (target) => target.isChecked(), 'be checked'],
+  ['toBeEmpty', async (target) => ((await target.textContent()) ?? '').trim() === '', 'be empty'],
+  ['toBeFocused', (target) => target.isFocused(), 'have keyboard focus'],
+]
 
 /**
  * The assertions a task makes about a page.
@@ -1670,33 +2271,12 @@ function makeExpect(subject: unknown, negated = false, timeout = EXPECT_TIMEOUT_
 
   const matchers: Record<string, unknown> = {
     // -- retrying, on a locator ---------------------------------------------
-    toBeVisible: async (options: { timeout?: number } = {}) => retry(async () => {
-      holds(await locator!.isVisible(), 'be visible')
-    }, options.timeout ?? timeout),
-    toBeHidden: async (options: { timeout?: number } = {}) => retry(async () => {
-      holds(await locator!.isHidden(), 'be hidden')
-    }, options.timeout ?? timeout),
-    toBeAttached: async (options: { timeout?: number } = {}) => retry(async () => {
-      holds(await locator!.count() > 0, 'be attached')
-    }, options.timeout ?? timeout),
-    toBeEnabled: async (options: { timeout?: number } = {}) => retry(async () => {
-      holds(await locator!.isEnabled(), 'be enabled')
-    }, options.timeout ?? timeout),
-    toBeDisabled: async (options: { timeout?: number } = {}) => retry(async () => {
-      holds(await locator!.isDisabled(), 'be disabled')
-    }, options.timeout ?? timeout),
-    toBeEditable: async (options: { timeout?: number } = {}) => retry(async () => {
-      holds(await locator!.isEditable(), 'be editable')
-    }, options.timeout ?? timeout),
-    toBeChecked: async (options: { timeout?: number } = {}) => retry(async () => {
-      holds(await locator!.isChecked(), 'be checked')
-    }, options.timeout ?? timeout),
-    toBeEmpty: async (options: { timeout?: number } = {}) => retry(async () => {
-      holds(((await locator!.textContent()) ?? '').trim() === '', 'be empty')
-    }, options.timeout ?? timeout),
-    toBeFocused: async (options: { timeout?: number } = {}) => retry(async () => {
-      holds(await locator!.isFocused(), 'have keyboard focus')
-    }, options.timeout ?? timeout),
+    ...Object.fromEntries(STATE_MATCHERS.map(([key, probe, phrase]) => [
+      key,
+      async (options: { timeout?: number } = {}) => retry(async () => {
+        holds(await probe(locator!), phrase)
+      }, options.timeout ?? timeout),
+    ])),
     toHaveText: async (expected: unknown, options: { timeout?: number } = {}) => retry(async () => {
       if (Array.isArray(expected)) {
         const actual = await locator!.allInnerTexts()
@@ -1709,13 +2289,14 @@ function makeExpect(subject: unknown, negated = false, timeout = EXPECT_TIMEOUT_
     }, options.timeout ?? timeout),
     toContainText: async (expected: unknown, options: { timeout?: number } = {}) => retry(async () => {
       const actual = await locator!.innerText()
-      const matched = expected instanceof RegExp ? expected.test(actual) : actual.includes(String(expected))
+      const matched = expected instanceof RegExp
+        ? patternMatches(expected, actual)
+        : actual.includes(String(expected))
       holds(matched, `contain ${show(expected)}; it has ${show(actual)}`)
     }, options.timeout ?? timeout),
     toHaveValue: async (expected: unknown, options: { timeout?: number } = {}) => retry(async () => {
       const actual = await locator!.inputValue()
-      holds(expected instanceof RegExp ? expected.test(actual) : actual === String(expected),
-        `have value ${show(expected)}; it has ${show(actual)}`)
+      holds(like(actual, expected), `have value ${show(expected)}; it has ${show(actual)}`)
     }, options.timeout ?? timeout),
     toHaveAttribute: async (attribute: string, expected?: unknown, options: { timeout?: number } = {}) => retry(async () => {
       const actual = await locator!.getAttribute(attribute)
@@ -1723,13 +2304,11 @@ function makeExpect(subject: unknown, negated = false, timeout = EXPECT_TIMEOUT_
         holds(actual !== null, `have the attribute ${attribute}`)
         return
       }
-      holds(expected instanceof RegExp ? expected.test(actual ?? '') : actual === String(expected),
-        `have ${attribute}=${show(expected)}; it is ${show(actual)}`)
+      holds(like(actual, expected), `have ${attribute}=${show(expected)}; it is ${show(actual)}`)
     }, options.timeout ?? timeout),
     toHaveClass: async (expected: unknown, options: { timeout?: number } = {}) => retry(async () => {
       const actual = (await locator!.getAttribute('class')) ?? ''
-      holds(expected instanceof RegExp ? expected.test(actual) : actual === String(expected),
-        `have class ${show(expected)}; it has ${show(actual)}`)
+      holds(like(actual, expected), `have class ${show(expected)}; it has ${show(actual)}`)
     }, options.timeout ?? timeout),
     toHaveCount: async (expected: number, options: { timeout?: number } = {}) => retry(async () => {
       const actual = await locator!.count()
@@ -1737,8 +2316,7 @@ function makeExpect(subject: unknown, negated = false, timeout = EXPECT_TIMEOUT_
     }, options.timeout ?? timeout),
     toHaveId: async (expected: unknown, options: { timeout?: number } = {}) => retry(async () => {
       const actual = await locator!.getAttribute('id')
-      holds(expected instanceof RegExp ? expected.test(actual ?? '') : actual === String(expected),
-        `have id ${show(expected)}; it is ${show(actual)}`)
+      holds(like(actual, expected), `have id ${show(expected)}; it is ${show(actual)}`)
     }, options.timeout ?? timeout),
     toHaveJSProperty: async (property: string, expected: unknown, options: { timeout?: number } = {}) => retry(async () => {
       const actual = await locator!.evaluate(`(node, key) => node[key]`, property)
@@ -1749,13 +2327,14 @@ function makeExpect(subject: unknown, negated = false, timeout = EXPECT_TIMEOUT_
     toHaveURL: async (expected: unknown, options: { timeout?: number } = {}) => retry(async () => {
       const info = await rpc('page.info', { tab: page!.tabId }) as { url: string, title: string }
       page!.update(info)
-      holds(expected instanceof RegExp ? expected.test(info.url) : info.url === String(expected) || info.url.includes(String(expected)),
+      holds(expected instanceof RegExp
+        ? patternMatches(expected, info.url)
+        : info.url === String(expected) || info.url.includes(String(expected)),
         `have the URL ${show(expected)}; it is ${show(info.url)}`)
     }, options.timeout ?? timeout),
     toHaveTitle: async (expected: unknown, options: { timeout?: number } = {}) => retry(async () => {
       const title = await page!.title()
-      holds(expected instanceof RegExp ? expected.test(title) : title === String(expected),
-        `have the title ${show(expected)}; it is ${show(title)}`)
+      holds(like(title, expected), `have the title ${show(expected)}; it is ${show(title)}`)
     }, options.timeout ?? timeout),
 
     // -- plain values --------------------------------------------------------
@@ -1775,7 +2354,9 @@ function makeExpect(subject: unknown, negated = false, timeout = EXPECT_TIMEOUT_
       holds(held, `contain ${show(expected)}`)
     },
     toMatch: (expected: unknown) => {
-      holds(expected instanceof RegExp ? expected.test(String(subject)) : String(subject).includes(String(expected)),
+      holds(expected instanceof RegExp
+        ? patternMatches(expected, String(subject))
+        : String(subject).includes(String(expected)),
         `match ${show(expected)}`)
     },
     toHaveLength: (expected: number) => {
@@ -1821,37 +2402,54 @@ const expect = Object.assign(
 
 /** `node:assert/strict`, as much of it as a task body uses. */
 function assertion(value: unknown, message?: string): void {
-  if (value === false || value === null || value === undefined || value === 0 || value === '') {
+  // Truthiness, not a list of the falsy values somebody remembered: `NaN` is
+  // what `Number(cell)` gives for a price that did not parse, and enumerating
+  // instead of negating let exactly that through as a passing assertion.
+  if (!value) {
     throw new Error(message ?? `assertion failed: ${show(value)} is not truthy`)
   }
+}
+
+/**
+ * `equal` and `strictEqual`, which `node:assert/strict` makes the same thing.
+ * @param actual - what there is.
+ * @param expected - what was wanted.
+ * @param message - what to say instead of the default.
+ */
+const strictEqual = (actual: unknown, expected: unknown, message?: string): void => {
+  if (!Object.is(actual, expected)) throw new Error(message ?? `expected ${show(expected)}, got ${show(actual)}`)
+}
+
+/**
+ * `deepEqual` and `deepStrictEqual`, likewise.
+ * @param actual - what there is.
+ * @param expected - what was wanted.
+ * @param message - what to say instead of the default.
+ */
+const deepStrictEqual = (actual: unknown, expected: unknown, message?: string): void => {
+  if (!deepEqual(actual, expected)) throw new Error(message ?? `expected ${show(expected)}, got ${show(actual)}`)
 }
 
 const assert = Object.assign(assertion, {
   /** Truthy. */
   ok: assertion,
   /** Strictly equal. */
-  equal: (actual: unknown, expected: unknown, message?: string): void => {
-    if (!Object.is(actual, expected)) throw new Error(message ?? `expected ${show(expected)}, got ${show(actual)}`)
-  },
+  equal: strictEqual,
   /** The same. */
-  strictEqual: (actual: unknown, expected: unknown, message?: string): void => {
-    if (!Object.is(actual, expected)) throw new Error(message ?? `expected ${show(expected)}, got ${show(actual)}`)
-  },
+  strictEqual,
   /** Not equal. */
   notEqual: (actual: unknown, expected: unknown, message?: string): void => {
     if (Object.is(actual, expected)) throw new Error(message ?? `expected something other than ${show(expected)}`)
   },
   /** Deeply equal. */
-  deepEqual: (actual: unknown, expected: unknown, message?: string): void => {
-    if (!deepEqual(actual, expected)) throw new Error(message ?? `expected ${show(expected)}, got ${show(actual)}`)
-  },
+  deepEqual: deepStrictEqual,
   /** The same. */
-  deepStrictEqual: (actual: unknown, expected: unknown, message?: string): void => {
-    if (!deepEqual(actual, expected)) throw new Error(message ?? `expected ${show(expected)}, got ${show(actual)}`)
-  },
+  deepStrictEqual,
   /** Matches a pattern. */
   match: (actual: string, pattern: RegExp, message?: string): void => {
-    if (!pattern.test(actual)) throw new Error(message ?? `${show(actual)} does not match ${String(pattern)}`)
+    if (!patternMatches(pattern, actual)) {
+      throw new Error(message ?? `${show(actual)} does not match ${String(pattern)}`)
+    }
   },
   /** Always fails. */
   fail: (message?: string): never => { throw new Error(message ?? 'failed') },
@@ -1932,10 +2530,28 @@ const tabbit = Object.freeze({
     boxes?: boolean
   } = {}): Promise<unknown> => rpc('observe', { tab: state.page?.tabId, ...options }),
 
-  /** What has focus, followed through frames and shadow roots. */
-  focusInfo: async (): Promise<unknown> => rpc('page.command', {
-    tab: state.page?.tabId, kind: 'focus.info', payload: {},
-  }),
+  /**
+   * What has focus, followed through frames and shadow roots.
+   *
+   * Two questions, because a document can only answer for itself: the page
+   * says which of its frames holds focus, and that frame is then asked what
+   * inside it does. Asking only the first left "what would my keystroke
+   * reach" answered with `<iframe>`, which is never what the caller meant.
+   */
+  focusInfo: async (): Promise<unknown> => {
+    const tab = state.page?.tabId
+    const outer = await rpc('page.command', { tab, kind: 'focus.info', payload: {} }) as { inFrame?: unknown }
+    const inside = outer.inFrame
+    if (typeof inside !== 'string' || inside === '' || inside === 'unknown') return outer
+    try {
+      const inner = await rpc('page.command', { tab, frameToken: inside, kind: 'focus.info', payload: {} })
+      return { ...(inner as Record<string, unknown>), inFrame: inside }
+    } catch {
+      // The frame has gone, or it has no runtime in it. What the page above
+      // said still stands.
+      return outer
+    }
+  },
 
   /**
    * What would stop an action on a target right now, frame hosts included.
@@ -1968,11 +2584,9 @@ const tabbit = Object.freeze({
    * @param target - a locator or a viewport point.
    * @returns what the browser would deliver a click to.
    */
-  hitTest: async (target: Locator | { x: number, y: number }): Promise<unknown> => rpc('page.command', {
-    tab: state.page?.tabId,
-    kind: 'hit.test',
-    payload: target instanceof Locator ? { chain: target.chain } : { x: target.x, y: target.y },
-  }),
+  hitTest: async (target: Locator | { x: number, y: number }): Promise<unknown> => (target instanceof Locator
+    ? rpc('page.command', { ...target.address(), kind: 'hit.test', payload: { chain: target.chain } })
+    : rpc('page.command', { tab: state.page?.tabId, kind: 'hit.test', payload: { x: target.x, y: target.y } })),
 
   /**
    * Paste into the focused field, which is how long or tabular text gets in.
@@ -1982,7 +2596,18 @@ const tabbit = Object.freeze({
    */
   pasteText: async (text: string, options: { format?: 'text' | 'tsv', requireEditableFocus?: boolean } = {}): Promise<unknown> => {
     guard('pasteText()')
-    return rpc('page.command', { tab: state.page?.tabId, kind: 'paste', payload: { text, ...options } })
+    const tab = state.page?.tabId
+    // Into the document that has focus, which for a framed editor is not the
+    // page around it: a paste dispatched at the outer document lands on the
+    // `<iframe>` element, so `requireEditableFocus` refused a field that had
+    // just been clicked and without it the event went nowhere at all.
+    const frame = await focusedFrame(tab)
+    return rpc('page.command', {
+      tab,
+      ...(frame === undefined ? {} : { frameToken: frame }),
+      kind: 'paste',
+      payload: { text, ...options },
+    })
   },
 
   /**
@@ -2001,7 +2626,7 @@ const tabbit = Object.freeze({
     trigger: () => Promise<unknown> | unknown,
     options: { timeoutMs?: number, url?: string | RegExp } = {},
   ): Promise<unknown> => {
-    const timeout = options.timeoutMs ?? 15_000
+    const timeout = timeoutOf(options.timeoutMs, 15_000)
     if (event === 'url' || event === 'navigation') {
       const before = state.page?.url() ?? ''
       await trigger()
@@ -2019,6 +2644,12 @@ const tabbit = Object.freeze({
       }
     }
     const waiting = waitForEvent(event === 'popup' ? 'page' : event, { timeout })
+    // Marked as handled before the trigger can throw. `waiting` rejects on its
+    // own timer, and a trigger that failed — an occluded button, say — left it
+    // with nobody listening, so the realm reported an unhandled rejection
+    // fifteen seconds after the error the body had already seen. The `await`
+    // below still delivers it to a caller who gets that far.
+    void waiting.catch(() => undefined)
     await trigger()
     return waiting
   },
@@ -2038,13 +2669,16 @@ const tabbit = Object.freeze({
     trigger: () => Promise<unknown> | unknown,
     options: { timeoutMs?: number, settleMs?: number, activatePage?: boolean } = {},
   ): Promise<{ kind: string, url?: string, page?: Page, revision?: number }> => {
-    const timeout = options.timeoutMs ?? 5000
-    const settle = options.settleMs ?? 400
+    const timeout = timeoutOf(options.timeoutMs, 5000)
+    const settle = timeoutOf(options.settleMs, 400)
     const current = state.page
     const before = current?.url() ?? ''
     const revisionOf = async (): Promise<number> => {
       try {
-        return await current?.evaluate('() => document.querySelectorAll("*").length') as number
+        // A function, not its source: `evaluate` routes a string to the
+        // expression evaluator, which returns the function object itself, and
+        // `[Function anonymous]` compares equal to `[Function anonymous]`.
+        return await current?.evaluate(() => document.querySelectorAll('*').length) as number
       } catch {
         return -1
       }
@@ -2128,7 +2762,11 @@ function portable(value: unknown, depth = 0): unknown {
   }
   if (value instanceof Map) return portable(Object.fromEntries(value), depth + 1)
   if (value instanceof Set) return portable([...value], depth + 1)
-  const entries: Record<string, unknown> = {}
+  // Prototype-less, because the keys come off a value the page supplied:
+  // `entries['__proto__'] = …` on a plain object runs the inherited setter and
+  // re-parents the accumulator instead of adding a field, so a `__proto__` key
+  // vanished from the answer with no truncation notice.
+  const entries: Record<string, unknown> = Object.create(null) as Record<string, unknown>
   let count = 0
   for (const key of Object.keys(value as Record<string, unknown>)) {
     if (count++ > 200) break
@@ -2180,14 +2818,20 @@ async function run(message: RunMessage): Promise<void> {
     context,
     browser,
     () => context.pages(),
-    (next: Page) => {
-      // A page, the `page` stand-in itself, or anything else carrying a tab
-      // id: a recipe that saved `const original = page` is handing back the
-      // proxy, and refusing it would be refusing the documented pattern.
-      const tab = (next as { tabId?: unknown } | undefined)?.tabId
-      const resolved = typeof tab === 'string' ? pages.get(tab) ?? (next instanceof Page ? next : undefined) : undefined
+    (next: Page | string) => {
+      // A page, a tab id, the `page` stand-in itself, or anything else
+      // carrying a tab id. The tab id is the one that keeps: `page` is a
+      // stand-in that follows `usePage`, so a recipe that saved
+      // `const original = page` saved the stand-in and got back wherever the
+      // task had moved to — `const original = page.tabId` names one page and
+      // keeps naming it.
+      const tab = typeof next === 'string' ? next : (next as { tabId?: unknown } | undefined)?.tabId
+      const resolved = typeof tab === 'string'
+        ? pages.get(tab) ?? (next instanceof Page ? next : undefined)
+        : undefined
       if (resolved === undefined) {
-        throw new Error('usePage() takes a page — the one a popup event gave you, or one from pages()')
+        throw new Error('usePage() takes a page or a tab id — the page a popup event gave you, one from '
+          + 'pages(), or a `page.tabId` saved earlier')
       }
       // A page that has since been closed selects the nearest live one rather
       // than failing: `usePage(original)` after closing a popup is the
@@ -2197,18 +2841,14 @@ async function run(message: RunMessage): Promise<void> {
     },
     assert,
     expect,
-    (name: string) => `${artifactRoot}/${String(name).replace(/^\/+/, '').replace(/\.\./g, '')}`,
+    (name: string) => artifactPath(name),
     tabbit,
     async (path: string, contents: unknown) => {
       guard('saveFile()')
       const bytes = contents instanceof Uint8Array
         ? contents
         : new TextEncoder().encode(typeof contents === 'string' ? contents : JSON.stringify(contents, null, 2))
-      let binary = ''
-      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
-      }
-      return rpc('fs.write', { path, base64: btoa(binary) })
+      return rpc('fs.write', { path, base64: base64(bytes) })
     },
     viewport,
     message.task,
@@ -2220,35 +2860,48 @@ async function run(message: RunMessage): Promise<void> {
   // nothing happened".
   const focus = message.diagnostics === 'focus'
   const focusBefore = focus ? await tabbit.focusInfo().catch(() => undefined) : undefined
-  try {
-    const body = new AsyncFunction(...names, `return (async () => { with (globalThis) {\n${message.code}\n} })()`)
-    const value = await body(...values)
+
+  /**
+   * Report the run, however it ended.
+   *
+   * One envelope rather than two. While success and failure each wrote their
+   * own, they had already drifted — `pages` was added to one and not the
+   * other, which reported `pages: []` for exactly the run whose state was in
+   * question — and every field added afterwards had to be written twice.
+   *
+   * The pages a failed run left open are the pages somebody now has to look
+   * at, so they are here rather than in the branch that succeeded.
+   * @param outcome - the value, or the error and its stack.
+   */
+  const report = async (outcome: Record<string, unknown>): Promise<void> => {
     post({
       type: 'done',
       id: message.id,
-      value: portable(value),
       mutated,
       log,
       ms: Date.now() - started,
       pages: context.pages().map((page) => ({ tab: page.tabId, url: page.url() })),
+      // Which of them the body left itself on, which is not the last one it
+      // opened: `usePage(original)` after reading a popup moves it back, and
+      // the host's own idea of the task's page had no way to hear about that.
+      ...(state.page === undefined || state.page.tabId === '' ? {} : { active: state.page.tabId }),
       ...(focus
         ? { focus: { before: portable(focusBefore), after: portable(await tabbit.focusInfo().catch(() => undefined)) } }
         : {}),
+      ...outcome,
     })
+  }
+
+  try {
+    const body = new AsyncFunction(...names, `return (async () => { with (globalThis) {\n${message.code}\n} })()`)
+    const value = await body(...values)
+    await report({ value: portable(value) })
   } catch (error) {
-    post({
-      type: 'done',
-      id: message.id,
+    await report({
       error: error instanceof Error
         ? `${error.name === 'Error' ? '' : `${error.name}: `}${error.message}`
         : String(error),
       stack: error instanceof Error ? (error.stack ?? '').split('\n').slice(0, 4).join('\n') : '',
-      mutated,
-      log,
-      ms: Date.now() - started,
-      ...(focus
-        ? { focus: { before: portable(focusBefore), after: portable(await tabbit.focusInfo().catch(() => undefined)) } }
-        : {}),
     })
   }
 }

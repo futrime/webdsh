@@ -51,7 +51,7 @@ import { WORKSPACE_ROOT } from './seed.ts'
 import { dirname } from '../vfs/path.ts'
 import { machineNetworkConfig } from '../net/machine-network.ts'
 import { proxyConfig } from '../net/cors-proxy.ts'
-import { REQUEST_PIXEL_BUDGET, routeSeesImages, type Attachments } from './vision.ts'
+import { REQUEST_PIXEL_BUDGET, attachImage, fitToBudget, type AttachedImage } from './vision.ts'
 
 /** Services this row waits for before it applies. */
 export const inject = ['tools', 'systemPrompt']
@@ -649,14 +649,7 @@ interface Shot {
   /** Picture pixels per screen pixel, when the picture had to be made smaller. */
   scale?: number
   /** The attached image, when this route can be shown one. */
-  image?: {
-    attachmentId: string
-    mediaType: 'image/png'
-    bytes: number
-    width: number
-    height: number
-    name?: string
-  }
+  image?: AttachedImage
 }
 
 
@@ -824,26 +817,15 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
 
       // Brought within the model's own image budget here rather than left to
       // the layer that would otherwise do it silently — see
-      // {@link REQUEST_PIXEL_BUDGET}. `fit: 'inside'` keeps the aspect ratio, so
-      // one number describes the whole mapping.
-      let scale: number | undefined
-      if (width * height > REQUEST_PIXEL_BUDGET) {
-        const ratio = Math.sqrt(REQUEST_PIXEL_BUDGET / (width * height))
-        const { default: sharp } = await import('../node/sharp.ts')
-        const shrunk = await sharp(bytes)
-          .resize({
-            width: Math.max(1, Math.floor(width * ratio)),
-            height: Math.max(1, Math.floor(height * ratio)),
-            fit: 'inside',
-            withoutEnlargement: true,
-          })
-          .png()
-          .toBuffer({ resolveWithObject: true }) as { data: Buffer, info: { width: number, height: number } }
-        scale = shrunk.info.width / width
-        bytes = new Uint8Array(shrunk.data)
-        width = shrunk.info.width
-        height = shrunk.info.height
-      }
+      // {@link REQUEST_PIXEL_BUDGET}. The arithmetic is `fitToBudget`'s, in
+      // `src/host/vision.ts`, which is where the browser's screen tool reads it
+      // from too: two copies of one resize is two places for the budget to
+      // change in.
+      const fitted = await fitToBudget(bytes, width, height)
+      const scale = fitted.scale
+      bytes = fitted.bytes
+      width = fitted.width
+      height = fitted.height
       // Stated whenever the picture is not the screen itself, which is what a
       // crop and a resize both make true.
       const of = origin !== undefined || scale !== undefined
@@ -863,27 +845,12 @@ function registerScreenshot(ctx: Context, spec: GuestSpec): void {
       const relative = args.path ?? `screenshots/${spec.id}-${String(counter + 1)}.png`
       const path = relative.startsWith('/') ? relative : `${WORKSPACE_ROOT}/${relative}`
 
-      // The picture itself, when there is somewhere for it to go. Both halves
-      // have to hold: a store to put it in, and a model that will be shown it.
-      // Where either does not, the file is the whole answer and the render
-      // above says so rather than leaving the model waiting for a picture that
-      // never arrives.
-      const attachments = ctx.get('attachments') as Attachments | undefined
-      let image: Shot['image']
-      if (attachments !== undefined && await routeSeesImages(ctx, exec)) {
-        try {
-          const saved = await attachments.saveImage({
-            data: bytes,
-            mediaType: 'image/png',
-            name: path.slice(path.lastIndexOf('/') + 1),
-          })
-          image = { ...saved, mediaType: 'image/png' }
-        } catch {
-          // A screen too large for this deployment's image limits is still a
-          // screen worth having. Losing the tool call over the attachment would
-          // be the worse trade — and the file below is what is left of it.
-        }
-      }
+      // The picture itself, when there is somewhere for it to go. All three
+      // ways that can fail mean the same thing to this tool — no image, and
+      // the file below is the whole answer — so they are answered in one
+      // place, next to the other two facts both machines hit. See
+      // `attachImage` in `src/host/vision.ts`.
+      const image = await attachImage(ctx, exec, { bytes, path })
 
       // The file, when it is wanted or when it is all there is. Watching a
       // machine is a screenshot every few seconds, and a workspace filling with

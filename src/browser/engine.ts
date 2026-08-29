@@ -50,7 +50,7 @@
  */
 
 import { BrowserProfile } from './profile.ts'
-import { BrowserNetworkError, ResourceCache, load } from './net.ts'
+import { BrowserNetworkError, ResourceCache, base64, load } from './net.ts'
 import {
   RUNTIME_GLOBAL, decodeDocument, injectRuntime, moduleUrl, rewriteDocument, type RewriteContext,
 } from './rewrite.ts'
@@ -64,6 +64,9 @@ const MAX_TABS = 12
 
 /** How long a document may take to fetch, rewrite and report itself ready. */
 const NAVIGATION_TIMEOUT_MS = 60_000
+
+/** How long a command addressed to a nested frame waits for that frame to arrive. */
+const FRAME_READY_TIMEOUT_MS = 10_000
 
 /** How long one driver command may run inside the frame. */
 const COMMAND_TIMEOUT_MS = 30_000
@@ -137,6 +140,15 @@ export interface MachineEvent {
   frame?: string
 }
 
+/** One modal a page raised, and the answer the policy had ready for it. */
+export interface DialogEntry {
+  kind: string
+  message: string
+  /** What the page was told, since nobody was there to answer it. */
+  answer: string
+  at: number
+}
+
 /** What a tab looks like from outside. */
 export interface TabInfo {
   id: string
@@ -144,17 +156,50 @@ export interface TabInfo {
   title: string
   active: boolean
   loading: boolean
+  /** What the last navigation answered, which an HTML error page hides. */
+  status: number
   /** What went wrong with the last navigation, if anything. */
   error?: string
   canGoBack: boolean
   canGoForward: boolean
 }
 
-/** Randomness good enough to name a tab and authenticate its messages. */
-function token(): string {
-  const bytes = new Uint8Array(16)
+/**
+ * Randomness good enough to name a tab, a task or a realm, and to authenticate
+ * their messages.
+ * @param size - how many bytes of it.
+ * @returns the token, as hex.
+ */
+export function token(size = 16): string {
+  const bytes = new Uint8Array(size)
   crypto.getRandomValues(bytes)
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+/**
+ * Whether a window is somewhere *inside* another, without being it.
+ *
+ * `parent` is readable across an opaque origin — identity is all that survives
+ * the boundary, and identity is exactly what this asks about. It is what
+ * separates "a nested frame announcing itself" from "the page around it
+ * announcing itself as one of its children": a browsed document holds its
+ * frames' `srcdoc` in its own DOM, nonce and all, so a nonce alone proves
+ * nothing about who is speaking.
+ * @param source - the window that sent a message.
+ * @param root - the tab's own document.
+ * @returns whether `source` is a strict descendant of `root`.
+ */
+function insideFrameTree(source: Window, root: Window): boolean {
+  let current: Window = source
+  // MAX_FRAME_DEPTH is 1, so one hop is the whole of it; the bound is only so
+  // a cycle in somebody else's frame tree cannot spin here.
+  for (let hops = 0; hops < 8; hops += 1) {
+    const parent: Window = current.parent
+    if (parent === current) return false
+    if (parent === root) return true
+    current = parent
+  }
+  return false
 }
 
 /** Escape text for a document this module builds itself. */
@@ -164,15 +209,14 @@ function escapeHtml(text: string): string {
   ))
 }
 
-/** Base64 for bytes that have to cross the message channel. */
-function base64(bytes: Uint8Array): string {
-  let binary = ''
-  const step = 0x8000
-  for (let offset = 0; offset < bytes.length; offset += step) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + step))
-  }
-  return btoa(binary)
-}
+/**
+ * The runtime, in the tag it is injected in.
+ *
+ * Built once rather than per document: every nested frame carries its own copy
+ * of the preamble, so a page with six iframes would otherwise concatenate this
+ * 57 kB constant six more times on every render.
+ */
+const FRAME_SCRIPT = `<script>${BROWSER_FRAME}</script>`
 
 /** One tab: a frame, a history, and everything that frame has said. */
 class Tab {
@@ -186,11 +230,50 @@ class Tab {
   loading = false
   error: string | undefined
 
-  /** `sessionStorage`, which belongs to the tab and dies with it. */
-  readonly session = new Map<string, string>()
+  /**
+   * What the last navigation answered.
+   *
+   * Kept because it is the only place it survives: `#render` sets `error` for
+   * an HTTP failure it has no document for, but an HTML error page renders
+   * like any other page — so a tab showing a 404 was indistinguishable from
+   * one showing what was asked for, and `page.goto()` reported `200`.
+   */
+  status = 200
+
+  /**
+   * `sessionStorage`, which belongs to the tab and dies with it.
+   *
+   * Per origin, not per tab. A tab holds documents from more than one site —
+   * every nested frame is somebody else's — and `sessionStorage` is
+   * origin-partitioned in a real browser for the reason the profile's cookies
+   * and `localStorage` are here: one map for the whole tab handed a
+   * third-party advert the page's session keys in its own `__WB_INIT__`, and
+   * let it write over them.
+   */
+  readonly session = new Map<string, Map<string, string>>()
+
+  /**
+   * This tab's session store for one origin, made on first use.
+   * @param origin - the writing document's origin.
+   * @returns the store.
+   */
+  sessionFor(origin: string): Map<string, string> {
+    const held = this.session.get(origin) ?? new Map<string, string>()
+    this.session.set(origin, held)
+    return held
+  }
   readonly console: ConsoleEntry[] = []
   readonly requests: RequestEntry[] = []
-  readonly dialogs: { kind: string, message: string, at: number }[] = []
+  /**
+   * The modals this tab raised, and what each was told.
+   *
+   * `answer` as well as `kind` and `message`, because the answer is the whole
+   * question anyone asks of this log: the policy decides it before the modal
+   * exists, so "was the confirm accepted" is not something a later look at the
+   * page can always settle. The skill's recipes say `browser_console` shows
+   * it, and while this held three fields it did not.
+   */
+  readonly dialogs: DialogEntry[] = []
 
   history: HistoryEntry[] = []
   index = -1
@@ -214,7 +297,59 @@ class Tab {
    * as `event.source` on the frame's first message, which is the one handle to
    * it that crossing an opaque origin leaves intact.
    */
-  readonly frames = new Map<string, { window: Window, url: string, at: number }>()
+  readonly frames = new Map<string, { window: Window, url: string, at: number, loaded: boolean }>()
+
+  /**
+   * The URL this machine actually fetched for each frame token.
+   *
+   * Not the one the frame reports: a document's cookies and its `localStorage`
+   * are filed by origin, and a frame that could name its own origin could name
+   * anybody's — a third-party advert writing `bank.example`'s session cookie
+   * into the shared profile, to be handed to the real `bank.example` the next
+   * time one is opened. The engine did the fetch, so the engine knows.
+   */
+  readonly frameUrls = new Map<string, string>()
+
+  /**
+   * Which document each nonce belongs to, keyed by the nonce.
+   *
+   * A nested frame is content from another site, and its own scripts can read
+   * the `__WB_INIT__` this machine injects into it — so a nonce shared with it
+   * is a nonce the site has. While every document in a tab carried the same
+   * one, a frame (or the page itself) could announce itself under *any* frame
+   * token and take over the routing for a sibling it was never allowed to
+   * touch. Each document gets its own instead, and the nonce is what says
+   * which document a message came from.
+   */
+  readonly frameNonces = new Map<string, string>()
+
+  /**
+   * The nonce a nested frame's document is given, minted once per token.
+   * @param frame - the frame's token.
+   * @returns the nonce that identifies that document to this tab.
+   */
+  nonceFor(frame: string): string {
+    for (const [nonce, held] of this.frameNonces) if (held === frame) return nonce
+    const minted = token()
+    this.frameNonces.set(minted, frame)
+    return minted
+  }
+
+  /**
+   * Forget every frame this tab had, because it is about to have a new document.
+   *
+   * The nonces go with them. A nonce outliving the document it was minted for
+   * is a credential for a frame that no longer exists — and a bound on the map
+   * rather than a clear was worse than either: past the cap it evicted the
+   * oldest entry whether or not that frame was still live, silently dropping
+   * every message from it and answering every command to it with the wrong
+   * nonce. Tokens only ever count up, so nothing here is ever re-minted.
+   */
+  forgetFrames(): void {
+    this.frames.clear()
+    this.frameNonces.clear()
+    this.frameUrls.clear()
+  }
 
   /** Whoever opened this tab, when something did. */
   opener: string | undefined
@@ -233,9 +368,24 @@ class Tab {
     this.container.append(this.frame)
   }
 
+  /** Whether the document now in this tab has already said it was there. */
+  #announced = false
+
   /** Arm the promise that the next document's runtime will resolve. */
   expectReady(): void {
+    this.#announced = false
     this.ready = new Promise<void>((resolve) => { this.#announce = resolve })
+  }
+
+  /**
+   * Note that the document has announced itself, and say whether it is the
+   * first time for this document.
+   * @returns true only for the first announcement after {@link expectReady}.
+   */
+  announce(): boolean {
+    if (this.#announced) return false
+    this.#announced = true
+    return true
   }
 
   /** The frame's runtime has announced itself. */
@@ -264,6 +414,7 @@ class Tab {
       title: this.title,
       active,
       loading: this.loading,
+      status: this.status,
       ...(this.error === undefined ? {} : { error: this.error }),
       canGoBack: this.index > 0,
       canGoForward: this.index >= 0 && this.index < this.history.length - 1,
@@ -418,7 +569,10 @@ export class BrowserMachine {
    * @param url - where to send it, or undefined for a blank one.
    * @returns the new tab's id.
    */
-  async newTab(url?: string, options: { background?: boolean, opener?: string } = {}): Promise<string> {
+  async newTab(
+    url?: string,
+    options: { background?: boolean, opener?: string, created?: (id: string) => void } = {},
+  ): Promise<string> {
     await this.open()
     if (this.#tabs.size >= MAX_TABS) {
       throw new Error(`this machine holds ${String(MAX_TABS)} tabs at once; close one first`)
@@ -433,6 +587,11 @@ export class BrowserMachine {
     // pages should not take the view six times.
     if (options.background !== true || this.#active === undefined) this.#active = tab.id
     this.#showActive()
+    // Before the event, not after the await below: a task that only learns the
+    // id when `newTab` resolves has already missed the `page`, `navigated` and
+    // `load` events for the tab it asked for — which is every waiter armed the
+    // documented way, `Promise.all([context.waitForEvent('page'), …])`.
+    options.created?.(tab.id)
     this.emit({ kind: 'page', tab: tab.id, at: Date.now(), ...(options.opener === undefined ? {} : { opener: options.opener }) })
     if (url !== undefined && url !== '') await this.navigate(url, tab.id)
     else {
@@ -525,9 +684,11 @@ export class BrowserMachine {
 
     tab.loading = true
     tab.error = undefined
+    tab.status = 0
     this.#changed()
     try {
       const resource = await load(target)
+      tab.status = resource.status
       this.#note(tab, { url: resource.url, method: 'GET', status: resource.status, at: Date.now() })
       await this.#render(tab, resource.url, resource.type, resource.contentType, resource.bytes, resource.status)
       if (mode === 'replace' && tab.index >= 0) {
@@ -543,6 +704,10 @@ export class BrowserMachine {
         : String(error)
       tab.error = detail
       this.#note(tab, { url: target, method: 'GET', status: 0, at: Date.now(), error: detail })
+      // Nothing survives a document being replaced, and this path does not go
+      // through `#render`, which is the only other caller that retires them. A
+      // nonce outliving its document is a credential for a frame that is gone.
+      tab.forgetFrames()
       await this.#install(
         tab,
         `<!doctype html><html><head><title>Cannot load</title></head><body style="font:14px system-ui;padding:2rem">`
@@ -550,7 +715,6 @@ export class BrowserMachine {
         + `<pre style="white-space:pre-wrap;color:#a00">${escapeHtml(detail)}</pre></body></html>`,
         target,
       )
-      tab.url = target
     } finally {
       tab.loading = false
       this.emit({
@@ -584,12 +748,15 @@ export class BrowserMachine {
     bytes: Uint8Array,
     status: number,
   ): Promise<void> {
+    // Ahead of the rewrite, which is what mints this document's frame tokens
+    // and files their URLs. Doing it in `#install` instead would have thrown
+    // away the entries the rewrite had just made.
+    tab.forgetFrames()
     if (type.includes('html') || type === '') {
       const context: RewriteContext = this.#rewriteContext(tab)
       const rewritten = await rewriteDocument(decodeDocument(bytes, contentType), url, context)
       tab.title = rewritten.title === '' ? url : rewritten.title
       await this.#install(tab, rewritten.html, url)
-      tab.url = url
       return
     }
     if (type.startsWith('image/')) {
@@ -597,7 +764,6 @@ export class BrowserMachine {
         + `<img src="data:${contentType};base64,${base64(bytes)}" style="max-width:100%;max-height:100vh"></body>`
       tab.title = url.split('/').pop() ?? url
       await this.#install(tab, `<!doctype html><html><head><title>${escapeHtml(tab.title)}</title></head>${body}</html>`, url)
-      tab.url = url
       return
     }
     const text = decodeDocument(bytes, contentType)
@@ -618,7 +784,6 @@ export class BrowserMachine {
       + `padding:1rem;margin:0">${escapeHtml(pretty.slice(0, 2_000_000))}</pre></body></html>`,
       url,
     )
-    tab.url = url
     if (status >= 400) tab.error = `HTTP ${String(status)}`
   }
 
@@ -634,6 +799,16 @@ export class BrowserMachine {
    * @param url - what the document should believe its URL is.
    */
   async #install(tab: Tab, html: string, url: string): Promise<void> {
+    // Here, and not earlier. Ahead of `expectReady()` because the announcement
+    // that answers it emits the tab's `load` event and that reads the URL from
+    // here — assigned afterwards, every `load` carried the *previous*
+    // document's address. But no earlier than this either: fetching and
+    // rewriting a document takes as long as its subresources do, the document
+    // being replaced is live for all of it, and while `tab.url` already named
+    // where the tab was *going*, every `document.cookie` and
+    // `localStorage.setItem` a timer in the old page made was filed by
+    // `#receive` against the destination's origin.
+    tab.url = url
     tab.frames.clear()
     tab.expectReady()
     tab.frame.srcdoc = injectRuntime(html, this.#preamble(tab, url))
@@ -651,6 +826,10 @@ export class BrowserMachine {
    * @returns the script text.
    */
   #preamble(tab: Tab, url: string, frame?: string): string {
+    // Noted before the document exists, because this is the one moment the
+    // machine and the document agree about where it came from. See
+    // {@link Tab.frameUrls}.
+    if (frame !== undefined) tab.frameUrls.set(frame, url)
     let origin = 'null'
     try {
       origin = new URL(url).origin
@@ -658,16 +837,21 @@ export class BrowserMachine {
       // `about:blank` and friends have no origin worth partitioning by.
     }
     const init = {
-      nonce: tab.nonce,
+      // Each document its own, so that presenting a nonce is a claim only
+      // about the document it was handed to. See {@link Tab.frameNonces}.
+      nonce: frame === undefined ? tab.nonce : tab.nonceFor(frame),
       url,
       cookie: url.startsWith('http') ? this.profile.cookies.header(new URL(url)) : '',
       local: Object.fromEntries(origin === 'null' ? [] : this.profile.localStore(origin)),
-      session: Object.fromEntries(tab.session),
+      session: Object.fromEntries(origin === 'null' ? [] : tab.sessionFor(origin)),
       userAgent: USER_AGENT,
-      ...(frame === undefined ? {} : { frame }),
+      // A nested frame has the tab's own document between it and the machine,
+      // so it is two hops up rather than one. `MAX_FRAME_DEPTH` is 1, which is
+      // what makes that a constant rather than a depth to carry around.
+      ...(frame === undefined ? {} : { frame, hops: 2 }),
     }
     return `<script>window.__WB_INIT__=${JSON.stringify(init).replace(/</g, '\\u003c')}</script>`
-      + `<script>${BROWSER_FRAME}</script>`
+      + FRAME_SCRIPT
   }
 
   /**
@@ -705,15 +889,26 @@ export class BrowserMachine {
   ): Promise<unknown> {
     await this.open()
     const tab = this.#tab(id)
-    await tab.ready
-    const frame = options.frame === undefined || options.frame === '' ? undefined : tab.frames.get(options.frame)
-    if (options.frame !== undefined && options.frame !== '' && frame === undefined) {
-      throw new Error(`frame ${options.frame} is not in this tab any more — the page replaced it. `
-        + 'Resolve the frame again from the current document.')
+    const limit = options.timeoutMs ?? COMMAND_TIMEOUT_MS
+    // Bounded, like the command it precedes. `#install` deliberately carries on
+    // past a document that never announces itself, which leaves `tab.ready`
+    // pending for ever — and a second navigation rebinds the promise, so a wait
+    // armed against the first can never settle either. Awaited bare, both left
+    // every later command on that tab parked with no deadline at all, before
+    // the timer below had been armed to say so.
+    let readyTimer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        tab.ready,
+        new Promise<void>((resolve) => { readyTimer = setTimeout(resolve, limit) }),
+      ])
+    } finally {
+      if (readyTimer !== undefined) clearTimeout(readyTimer)
     }
+    const wanted = options.frame === undefined || options.frame === '' ? undefined : options.frame
+    const frame = wanted === undefined ? undefined : await this.#frameWindow(tab, wanted)
     const window_ = frame?.window ?? tab.frame.contentWindow
     if (window_ === null || window_ === undefined) throw new Error('that tab has no live frame')
-    const limit = options.timeoutMs ?? COMMAND_TIMEOUT_MS
     const commandId = token()
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -722,8 +917,47 @@ export class BrowserMachine {
           + `${String(Math.round(limit / 1000))}s — it may be busy in a script`))
       }, limit)
       tab.waiting.set(commandId, { resolve, reject, timer })
-      window_.postMessage({ wb: true, nonce: tab.nonce, type: 'command', id: commandId, kind, payload }, '*')
+      // The nonce of the document being addressed, which for a nested frame is
+      // its own: that is what its runtime checks incoming messages against.
+      const secret = options.frame === undefined || options.frame === '' ? tab.nonce : tab.nonceFor(options.frame)
+      window_.postMessage({ wb: true, nonce: secret, type: 'command', id: commandId, kind, payload }, '*')
     })
+  }
+
+  /**
+   * The window of a nested frame, waited for if it is on its way.
+   *
+   * A frame's token is written by the rewriter, so a locator can resolve one
+   * the moment the tab's own document is parsed — which is well before the
+   * `<iframe srcdoc>` in its `<body>` has evaluated the runtime that announces
+   * it. Failing straight away meant `await page.goto(url)` followed by
+   * `page.frameLocator(...)` in the same body raced, and lost with a message
+   * saying the page had replaced a frame it had not finished creating.
+   *
+   * The two cases are told apart by the nonce ledger: a token this document
+   * minted is one that is coming, and a token it did not is one from a
+   * document that is gone.
+   * @param tab - the tab.
+   * @param token - the frame's token.
+   * @returns the frame's window.
+   */
+  async #frameWindow(tab: Tab, token: string): Promise<{ window: Window, url: string, at: number, loaded: boolean }> {
+    const held = tab.frames.get(token)
+    if (held !== undefined) return held
+    const minted = [...tab.frameNonces.values()].includes(token)
+    if (minted) {
+      const deadline = Date.now() + FRAME_READY_TIMEOUT_MS
+      while (Date.now() < deadline) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 50))
+        const arrived = tab.frames.get(token)
+        if (arrived !== undefined) return arrived
+      }
+      throw new Error(`frame ${token} has not loaded: this machine fetched it, but nothing inside it has `
+        + 'announced itself within '
+        + `${String(Math.round(FRAME_READY_TIMEOUT_MS / 1000))}s. Its document may be empty or still fetching.`)
+    }
+    throw new Error(`frame ${token} is not in this tab any more — the page replaced it. `
+      + 'Resolve the frame again from the current document.')
   }
 
   /**
@@ -751,6 +985,22 @@ export class BrowserMachine {
       ...(init.body === undefined ? {} : { body: init.body }),
     })
     return { status: resource.status, url: resource.url, contentType: resource.contentType, bytes: resource.bytes }
+  }
+
+  /**
+   * Go to a URL, in whichever document asked to go there.
+   *
+   * A link or a form inside a frame moves that frame, not the tab around it: a
+   * page whose content is framed would otherwise lose its chrome on the first
+   * click. Both ways in ask the same question, so they ask it in one place.
+   * @param tab - the tab it happened in.
+   * @param from - the frame that asked, or undefined for the tab's own document.
+   * @param url - where to go.
+   * @param mode - whether the tab's history gains an entry or replaces one.
+   */
+  #follow(tab: Tab, from: string | undefined, url: string, mode: 'push' | 'replace' = 'push'): void {
+    if (from !== undefined) void this.#renderFrame(tab, from, url)
+    else void this.navigate(url, tab.id, mode)
   }
 
   /**
@@ -848,7 +1098,7 @@ export class BrowserMachine {
    * @param id - which tab.
    * @returns the logs.
    */
-  logs(id?: string): { console: ConsoleEntry[], requests: RequestEntry[], dialogs: { kind: string, message: string, at: number }[] } {
+  logs(id?: string): { console: ConsoleEntry[], requests: RequestEntry[], dialogs: DialogEntry[] } {
     const tab = this.#tab(id)
     return { console: [...tab.console], requests: [...tab.requests], dialogs: [...tab.dialogs] }
   }
@@ -868,25 +1118,50 @@ export class BrowserMachine {
   #receive(event: MessageEvent): void {
     const message = event.data as Record<string, unknown> | undefined
     if (message === undefined || message.wb !== true || typeof message.nonce !== 'string') return
-    const tab = [...this.#tabs.values()].find((held) => held.nonce === message.nonce)
+    const nonce = message.nonce
+    const tab = [...this.#tabs.values()].find((held) => held.nonce === nonce || held.frameNonces.has(nonce))
     if (tab === undefined) return
 
-    // Which document in the tab sent this. The top one has to be the frame
-    // this machine made; a nested one has to be a window that has already
-    // announced itself under that token, and the announcement itself is
-    // trusted on the nonce — which is this tab's alone and never leaves it.
-    const from = typeof message.frame === 'string' && message.frame !== '' ? message.frame : undefined
+    // Which document in the tab sent this — read off the nonce, never off the
+    // message. A nonce is handed to exactly one document, so it says which one
+    // is speaking; `message.frame` is whatever the sender chose to write, and
+    // trusting that let any document in the tab seize a sibling's token.
+    const from = tab.nonce === nonce ? undefined : tab.frameNonces.get(nonce)
     if (from === undefined) {
       if (event.source !== tab.frame.contentWindow) return
     } else if (message.type === 'ready') {
-      if (event.source === null) return
+      const root = tab.frame.contentWindow
+      // A nonce says which document a message is *about*; only the window says
+      // which document is speaking. The page holding a frame can read that
+      // frame's nonce straight out of the `srcdoc` attribute in its own DOM,
+      // so without this it could claim the frame's slot and then forge every
+      // `cookie`, `storage`, `navigate` and `submit` message from it.
+      if (event.source === null || root === null) return
+      if (!insideFrameTree(event.source as Window, root)) return
+      // A token belongs to the first window that claims it, until the document
+      // holding it is replaced — which goes through `#renderFrame`, and that
+      // drops the entry first. `insideFrameTree` only proves the sender is
+      // *somewhere* in this tab; the page holding a frame can read that frame's
+      // nonce straight out of the `srcdoc` attribute in its own DOM and
+      // announce from a child of its own, so without this it could take over a
+      // live sibling's slot and have its `cookie` and `storage` writes filed
+      // against that frame's origin.
+      const bound = tab.frames.get(from)
+      if (bound !== undefined && bound.window !== event.source) return
       // A document announces itself more than once — on parse, on
       // `DOMContentLoaded`, on `load` — because the machine has to be able to
-      // drive it as early as possible. Only the first is news.
-      const known = tab.frames.get(from)
-      tab.frames.set(from, { window: event.source as Window, url: String(message.url ?? ''), at: Date.now() })
-      if (known?.window !== event.source || known.url !== String(message.url ?? '')) {
-        this.emit({ kind: 'load', tab: tab.id, at: Date.now(), url: String(message.url ?? ''), frame: from })
+      // drive it as early as possible. The window is news the first time; the
+      // `load` event is not, and it is not news at all while the document is
+      // still `loading`. The same rule the tab's own document follows below:
+      // announcing at the top of `<head>` made `framenavigated` fire on a
+      // frame with no `<body>` yet, so a body that waited for one and then read
+      // the frame read an empty document.
+      const url = String(message.url ?? '')
+      const settled = String(message.readyState ?? 'complete') !== 'loading'
+      const announced = bound !== undefined && bound.url === url && bound.loaded
+      tab.frames.set(from, { window: event.source as Window, url, at: Date.now(), loaded: announced || settled })
+      if (settled && !announced) {
+        this.emit({ kind: 'load', tab: tab.id, at: Date.now(), url, frame: from })
       }
       return
     } else if (tab.frames.get(from)?.window !== event.source) return
@@ -894,12 +1169,27 @@ export class BrowserMachine {
     switch (message.type) {
       case 'ready': {
         if (typeof message.title === 'string' && message.title !== '') tab.title = message.title
+        // The runtime is injected at the top of `<head>`, so its first
+        // announcement happens while the parser is still on the head — which
+        // is what makes the tab drivable early, and which is why the tab is
+        // marked ready on any announcement.
         tab.markReady()
-        this.emit({ kind: 'load', tab: tab.id, at: Date.now(), url: tab.url, title: tab.title })
+        // `load` is not that. A document announces itself on parse, on
+        // `DOMContentLoaded` and on `load`, and it says which; emitting on the
+        // first one told a body waiting for `load` that a page with no `<body>`
+        // yet had finished. Only the announcement that says the document is
+        // done is the tab finishing, and only the first of those — a task
+        // counting `load` events should not get two for one navigation.
+        const state = String(message.readyState ?? 'complete')
+        if (state !== 'loading' && tab.announce()) {
+          this.emit({ kind: 'load', tab: tab.id, at: Date.now(), url: tab.url, title: tab.title })
+        }
         this.#changed()
         return
       }
       case 'title': {
+        // A framed document renaming itself is not the tab renaming itself.
+        if (from !== undefined) return
         if (typeof message.title === 'string' && message.title !== '' && message.title !== tab.title) {
           tab.title = message.title
           this.#changed()
@@ -915,7 +1205,12 @@ export class BrowserMachine {
         return
       }
       case 'dialog': {
-        tab.dialogs.push({ kind: String(message.kind ?? ''), message: String(message.message ?? ''), at: Date.now() })
+        tab.dialogs.push({
+          kind: String(message.kind ?? ''),
+          message: String(message.message ?? ''),
+          answer: String(message.answer ?? ''),
+          at: Date.now(),
+        })
         tab.log({ level: 'info', text: `${String(message.kind)}: ${String(message.message)}`, at: Date.now() })
         this.emit({
           kind: 'dialog', tab: tab.id, at: Date.now(), dialog: String(message.kind ?? ''),
@@ -925,16 +1220,20 @@ export class BrowserMachine {
         return
       }
       case 'download': {
-        this.emit({
-          kind: 'download', tab: tab.id, at: Date.now(), url: String(message.url ?? ''),
-          suggestedFilename: String(message.suggestedFilename ?? '') || (() => {
-            try {
-              return new URL(String(message.url ?? '')).pathname.split('/').pop() ?? 'download'
-            } catch {
-              return 'download'
-            }
-          })(),
-        })
+        const offered = String(message.url ?? '')
+        const name = String(message.suggestedFilename ?? '') || (() => {
+          try {
+            return new URL(offered).pathname.split('/').pop() ?? 'download'
+          } catch {
+            return 'download'
+          }
+        })()
+        // Noted as well as announced. A `download` link clicked outside a task
+        // space has nobody listening for the event, and without this the click
+        // left no trace at all: the tab did not move, nothing was logged, and
+        // the page read as one that ignored the button.
+        tab.log({ level: 'info', text: `download offered: ${name} (${offered})`, at: Date.now() })
+        this.emit({ kind: 'download', tab: tab.id, at: Date.now(), url: offered, suggestedFilename: name })
         return
       }
       case 'filechooser': {
@@ -946,17 +1245,22 @@ export class BrowserMachine {
         return
       }
       case 'navigate': {
-        // A link inside a frame navigates that frame, not the tab: a page whose
-        // content is framed would otherwise lose its chrome on the first click.
-        if (from !== undefined) {
-          void this.#renderFrame(tab, from, String(message.url))
-          return
-        }
-        void this.navigate(String(message.url), tab.id, message.mode === 'replace' ? 'replace' : 'push')
+        this.#follow(tab, from, String(message.url), message.mode === 'replace' ? 'replace' : 'push')
         return
       }
       case 'open': {
-        void this.newTab(String(message.url), { background: true, opener: tab.id })
+        // Caught, like the `history` case below: `newTab` refuses once the
+        // machine is holding its twelve tabs, and with nothing listening that
+        // was an unhandled rejection and a `window.open` that left no trace at
+        // all — the click did nothing and nothing said why.
+        void this.newTab(String(message.url), { background: true, opener: tab.id }).catch((error: unknown) => {
+          tab.log({
+            level: 'warn',
+            text: `a popup could not be opened: ${error instanceof Error ? error.message : String(error)}`,
+            at: Date.now(),
+          })
+          this.#changed()
+        })
         return
       }
       case 'submit': {
@@ -965,9 +1269,13 @@ export class BrowserMachine {
         const target = String(message.url)
         if (method === 'GET') {
           const url = new URL(target)
-          for (const [name, value] of fields) url.searchParams.set(name, value)
-          if (from !== undefined) void this.#renderFrame(tab, from, url.href)
-          else void this.navigate(url.href, tab.id)
+          // The form's fields *replace* the action's query, the way a browser
+          // does it, and repeated names are kept. `set` in a loop did neither:
+          // three checked boxes named `tag` collapsed to the last one, and a
+          // `page=2` already on the action URL survived a search that meant to
+          // start over.
+          url.search = new URLSearchParams(fields).toString()
+          this.#follow(tab, from, url.href)
           return
         }
         if (from !== undefined) {
@@ -982,6 +1290,11 @@ export class BrowserMachine {
         return
       }
       case 'history': {
+        // A frame's own history is the frame's. Letting a framed widget's
+        // `pushState` become the tab's URL is how `page.url()` starts naming
+        // an advert, and letting its `back()` through moves the whole tab off
+        // the page the task was on.
+        if (from !== undefined) return
         if (message.action === 'go') {
           void this.go(Number(message.delta ?? 0), tab.id).catch(() => undefined)
           return
@@ -999,11 +1312,17 @@ export class BrowserMachine {
         return
       }
       case 'cookie': {
-        if (!tab.url.startsWith('http')) return
-        this.profile.cookies.set(new URL(tab.url), String(message.value))
-        const refreshed = this.profile.cookies.header(new URL(tab.url))
-        tab.frame.contentWindow?.postMessage(
-          { wb: true, nonce: tab.nonce, type: 'cookieUpdate', value: refreshed },
+        // The document that set it, which for a nested frame is another site
+        // entirely: filing its cookie against the page around it both loses
+        // the write (the frame is re-seeded from its own origin) and hands the
+        // outer page a third party's cookie.
+        const where = from === undefined ? tab.url : tab.frameUrls.get(from) ?? ''
+        if (!where.startsWith('http')) return
+        this.profile.cookies.set(new URL(where), String(message.value))
+        const refreshed = this.profile.cookies.header(new URL(where))
+        const target = from === undefined ? tab.frame.contentWindow : tab.frames.get(from)?.window
+        target?.postMessage(
+          { wb: true, nonce: from === undefined ? tab.nonce : tab.nonceFor(from), type: 'cookieUpdate', value: refreshed },
           '*',
         )
         return
@@ -1011,27 +1330,27 @@ export class BrowserMachine {
       case 'storage': {
         const key = message.key === null ? null : String(message.key)
         const value = message.value === null ? null : String(message.value)
-        if (message.area === 'session') {
-          if (key === null) tab.session.clear()
-          else if (value === null) tab.session.delete(key)
-          else tab.session.set(key, value)
-          return
-        }
         let origin: string
         try {
-          origin = new URL(tab.url).origin
+          // The writing document's origin. `#preamble` seeds each frame from
+          // its own, so partitioning the write by the tab's URL meant a frame
+          // never read back what it wrote and the page around it was left
+          // holding somebody else's keys. Both areas, not only the persistent
+          // one: a tab's `sessionStorage` is per origin in a real browser too.
+          origin = new URL(from === undefined ? tab.url : tab.frameUrls.get(from) ?? '').origin
         } catch {
           return
         }
-        const store = this.profile.localStore(origin)
+        const store = message.area === 'session' ? tab.sessionFor(origin) : this.profile.localStore(origin)
         if (key === null) store.clear()
         else if (value === null) store.delete(key)
         else store.set(key, value)
-        this.profile.touch()
+        // Only the profile is written to disk; the tab's own store dies with it.
+        if (message.area !== 'session') this.profile.touch()
         return
       }
       case 'ask': {
-        void this.#answer(tab, message)
+        void this.#answer(tab, from, message)
         return
       }
       case 'result': {
@@ -1078,15 +1397,25 @@ export class BrowserMachine {
 
   /**
    * Answer one request a page made through its shims.
+   *
+   * To the document that asked, which is not always the tab's own: every
+   * nested frame carries the same runtime and so makes the same requests, and
+   * request ids are a per-document counter — so posting every answer to the
+   * top document both stranded the frame's `fetch` for ever and let a frame's
+   * reply settle an unrelated request of the same id in the page above it.
    * @param tab - the tab that asked.
+   * @param from - the nested frame that asked, or undefined for the tab's own
+   * document.
    * @param message - the request.
    */
-  async #answer(tab: Tab, message: Record<string, unknown>): Promise<void> {
+  async #answer(tab: Tab, from: string | undefined, message: Record<string, unknown>): Promise<void> {
     const id = String(message.id)
     const payload = (message.payload as Record<string, unknown> | undefined) ?? {}
+    const asker = from === undefined ? tab.frame.contentWindow : tab.frames.get(from)?.window
+    const secret = from === undefined ? tab.nonce : tab.nonceFor(from)
     const reply = (value: unknown, error?: string): void => {
-      tab.frame.contentWindow?.postMessage(
-        { wb: true, nonce: tab.nonce, type: 'reply', id, ...(error === undefined ? { value } : { error }) },
+      asker?.postMessage(
+        { wb: true, nonce: secret, type: 'reply', id, ...(error === undefined ? { value } : { error }) },
         '*',
       )
     }
@@ -1133,7 +1462,14 @@ export class BrowserMachine {
           return
         }
         case 'reload': {
-          void this.navigate(tab.url, tab.id, 'replace')
+          // A frame reloading itself reloads the frame; only the tab's own
+          // document reloads the tab. The address comes from `frameUrls` — the
+          // machine's own record of what it fetched — and not from what the
+          // frame said it was showing, which is a string the framed site can
+          // choose and would otherwise decide what this machine fetches next.
+          const where = from === undefined ? undefined : tab.frameUrls.get(from)
+          if (from === undefined) void this.navigate(tab.url, tab.id, 'replace')
+          else if (where !== undefined && where !== '') void this.#renderFrame(tab, from, where)
           reply(true)
           return
         }

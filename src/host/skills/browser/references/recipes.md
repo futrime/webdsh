@@ -69,7 +69,7 @@ success message or the changed element instead.
 Install the waiter first, always:
 
 ```js
-const original = page;
+const original = page.tabId;
 const [popup] = await Promise.all([
   context.waitForEvent('page', {timeout: 15000}),
   page.getByRole('link', {name: /details/i}).click(),
@@ -85,7 +85,9 @@ return evidence;
 
 Closing the page a task is working on moves the task to another of its pages
 by itself, so `usePage(original)` above is belt and braces rather than a
-requirement.
+requirement. Save `page.tabId` rather than `page`: `page` is a stand-in that
+follows `usePage`, so a variable holding it always names wherever the task is
+now, not where it was.
 
 When a popup is only one possible outcome, bound the waiter and inspect both:
 

@@ -2,7 +2,7 @@
  * What a machine's screen has to survive on its way to the model.
  *
  * Two machines take pictures — the emulated PC in `src/host/vm-tools.ts` and
- * the browser in `src/host/browser-tools.ts` — and both hit the same two
+ * the browser in `src/host/browser-tools.ts` — and both hit the same three
  * facts, so both read them from here rather than each keeping a copy.
  *
  * The first is that not every route accepts an image. Most of the free routes
@@ -17,6 +17,12 @@
  * a pixel the machine has, and every coordinate read off that picture is a
  * fifth short. So the resize happens here, where the numbers can be reported
  * honestly.
+ *
+ * The third is that offering the picture can fail for three unrelated reasons
+ * — no attachment store, a route that takes no images, a deployment limit the
+ * store itself enforces — and all three mean the same thing to a caller: no
+ * image, and the file on disk is the whole answer. That is {@link attachImage},
+ * at the end of this file.
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -112,5 +118,68 @@ export async function fitToBudget(bytes: Uint8Array, width: number, height: numb
     width: shrunk.info.width,
     height: shrunk.info.height,
     scale: Number((shrunk.info.width / width).toFixed(4)),
+  }
+}
+
+/** A picture the model can be shown, as the attachment store returned it. */
+export interface AttachedImage {
+  attachmentId: string
+  mediaType: 'image/png'
+  bytes: number
+  width: number
+  height: number
+  name?: string
+}
+
+/**
+ * Whether a picture would reach the model at all, asked once.
+ *
+ * Two of the three facts {@link attachImage} checks, separated so that a caller
+ * holding several pictures can find out before reading and resizing any of
+ * them: on a route that takes no images, doing that work per picture and
+ * discarding the result is the whole cost of the feature paid for nothing.
+ * @param ctx - the row's context.
+ * @param exec - the tool-execution context.
+ * @returns whether there is a store and a route that will carry an image.
+ */
+export async function imagesReachTheModel(
+  ctx: Context,
+  exec: { agent?: unknown, signal: AbortSignal },
+): Promise<boolean> {
+  return ctx.get('attachments') !== undefined && await routeSeesImages(ctx, exec)
+}
+
+/**
+ * Offer a picture to the model, if this deployment and this route can take one.
+ *
+ * The third fact both machines hit, and the one that used to be copied: the
+ * store is optional, the route may not accept images, and a picture that is
+ * over this deployment's own attachment limits is refused by `saveImage`
+ * rather than by anything either tool can check first. All three answers are
+ * the same answer — no image — and in every case the file on disk is what is
+ * left of it, so the failure is swallowed here rather than at each call site.
+ * @param ctx - the row's context.
+ * @param exec - the tool-execution context.
+ * @param picture - the PNG, already fitted, and the path it was saved under.
+ * @returns the attachment, or undefined when the model cannot be shown one.
+ */
+export async function attachImage(
+  ctx: Context,
+  exec: { agent?: unknown, signal: AbortSignal },
+  picture: { bytes: Uint8Array, path: string },
+): Promise<AttachedImage | undefined> {
+  const attachments = ctx.get('attachments') as Attachments | undefined
+  if (attachments === undefined || !await routeSeesImages(ctx, exec)) return undefined
+  try {
+    const saved = await attachments.saveImage({
+      data: picture.bytes,
+      mediaType: 'image/png',
+      name: picture.path.slice(picture.path.lastIndexOf('/') + 1),
+    })
+    return { ...saved, mediaType: 'image/png' }
+  } catch {
+    // A picture this deployment's image limits will not carry is still a
+    // picture worth having; the file it was written to is what is left of it.
+    return undefined
   }
 }
